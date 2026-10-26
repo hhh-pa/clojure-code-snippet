@@ -1,0 +1,4 @@
+.ci/
+tests/resources/
+secret-chunks/
+resources.b64

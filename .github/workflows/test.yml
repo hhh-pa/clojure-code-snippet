@@ -1,0 +1,60 @@
+name: clojure-snippets
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Test data (recipes superproject resource/shared) is not part of this repo.
+# It is delivered as a compressed, base64-encoded tarball split across
+# RESOURCES_B64_NNNN repository secrets (see tools/build_secrets.sh and
+# tools/upload_secrets.sh). The reassembly step below fails loudly when no
+# such secret is configured.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download Clojure jars
+        run: |
+          mkdir -p .ci/jars
+          base=https://repo1.maven.org/maven2
+          curl -fsSL -o .ci/jars/clojure.jar "$base/org/clojure/clojure/1.12.0/clojure-1.12.0.jar"
+          curl -fsSL -o .ci/jars/spec.alpha.jar "$base/org/clojure/spec.alpha/0.5.238/spec.alpha-0.5.238.jar"
+          curl -fsSL -o .ci/jars/core.specs.alpha.jar "$base/org/clojure/core.specs.alpha/0.4.74/core.specs.alpha-0.4.74.jar"
+
+      - name: Reassemble resource bundle from secrets
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+          secrets = json.loads(os.environ.get("ALL_SECRETS") or "{}")
+          keys = sorted(k for k in secrets if re.fullmatch(r"RESOURCES_B64_\d+", k))
+          if not keys:
+              sys.exit(
+                  "error: no RESOURCES_B64_NNNN secrets configured; "
+                  "see tools/build_secrets.sh and tools/upload_secrets.sh"
+              )
+          with open("resources.b64", "w") as fd:
+              fd.write("".join(secrets[k] for k in keys))
+          print("reassembled {} chunks".format(len(keys)))
+          PY
+
+      - name: Extract resources
+        run: |
+          mkdir -p tests/resources
+          base64 -d resources.b64 | tar -xJ -C tests/resources --strip-components=1
+          rm -f resources.b64
+
+      - name: Run Clojure snippet tests
+        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
