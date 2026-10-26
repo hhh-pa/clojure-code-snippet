@@ -2,3 +2,4 @@
 tests/resources/
 secret-chunks/
 resources.b64
+__pycache__/
