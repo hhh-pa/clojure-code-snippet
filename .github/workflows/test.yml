@@ -122,6 +122,10 @@ jobs:
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main
 
+      # Threshold policy: peak_memory (t_test) only, by design.
+      # cpu_time is too noisy on shared runners to threshold, so
+      # Bencher's residual No-Threshold boilerplate for cpu_time is
+      # expected and not actionable.
       - name: Track benchmarks with Bencher
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
