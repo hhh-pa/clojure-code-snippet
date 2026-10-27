@@ -163,9 +163,20 @@ def parse_shard(text):
 
 
 def select_shard(tasks, index, total):
-    """Deterministically keep every total-th task starting at index."""
-    ordered = sorted(tasks, key=lambda t: (t[0], t[1], t[2]))
-    return [t for i, t in enumerate(ordered) if i % total == index]
+    """Deterministically keep every total-th snippet starting at index.
+
+    Sharding is by SNIPPET (label/stem), never by case: each snippet's
+    cases stay together in one shard, so per-shard BMF aggregates are
+    complete per snippet and the fan-in `jq -s add` merge is exact.
+    (Splitting cases of one snippet across shards would leave each
+    shard with a partial per-snippet aggregate that the merge would
+    silently overwrite — undercounting cpu_time.)
+    """
+    groups = {}
+    for t in tasks:
+        groups.setdefault((t[0], t[1]), []).append(t)
+    keep = {g for i, g in enumerate(sorted(groups)) if i % total == index}
+    return [t for t in tasks if (t[0], t[1]) in keep]
 
 
 def summarize_case(runs):
@@ -559,7 +570,16 @@ def self_test():
     s1 = select_shard(toy, 1, 2)
     check("shard-split",
           sorted(s0 + s1) == sorted(toy) and not set(s0) & set(s1)
-          and [t[0] for t in s0] == ["a", "b"], repr((s0, s1)))
+          and sorted((t[0], t[1]) for t in s0) == [("a", "s"), ("a", "s"), ("c", "s")]
+          and [(t[0], t[1]) for t in s1] == [("b", "s")], repr((s0, s1)))
+    # Snippet cohesion: a snippet's cases never split across shards,
+    # so per-shard BMF aggregates merge exactly with jq -s add.
+    def snippets(tasks):
+        return {(t[0], t[1]) for t in tasks}
+    check("shard-cohesion",
+          not snippets(s0) & snippets(s1)
+          and snippets(s0) | snippets(s1) == snippets(toy),
+          repr((snippets(s0), snippets(s1))))
 
     runs = [
         {"cpu_s": 1.0, "maxrss_kb": 100, "wall_s": 1.2,
@@ -624,7 +644,8 @@ def main(argv=None):
     parser.add_argument("--command-template", default=DEFAULT_COMMAND_TEMPLATE,
                         help="snippet argv with {cp}, {script}, {stem} holes")
     parser.add_argument("--shard", default=None, metavar="K/N",
-                        help="measure only shard K of N (0-based, deterministic)")
+                        help="measure only shard K of N (0-based, deterministic;"
+                             " split by snippet so per-shard BMFs merge exactly)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
