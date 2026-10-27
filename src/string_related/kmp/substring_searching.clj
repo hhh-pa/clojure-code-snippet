@@ -11,16 +11,16 @@
       true
       (let [n (alength text)
             pi (int-array m)]
-        (loop [i (int 1) j (int 0)]
+        (loop [i (long 1) j (long 0)]
           (when (< i m)
             (let [j (loop [j j]
                       (if (and (pos? j) (not (= (aget pat i) (aget pat j))))
                         (recur (aget pi (dec j)))
                         j))
                   j (if (= (aget pat i) (aget pat j)) (inc j) j)]
-              (aset pi i j)
-              (recur (inc i) j))))
-        (loop [i (int 0) j (int 0)]
+              (aset pi i (int j))
+              (recur (inc i) (long j)))))
+        (loop [i (long 0) j (long 0)]
           (if (>= i n)
             false
             (let [c (aget text i)
@@ -31,7 +31,7 @@
                   j (if (= c (aget pat j)) (inc j) j)]
               (if (= j m)
                 true
-                (recur (inc i) j)))))))))
+                (recur (inc i) (long j))))))))))
 
 (let [data (slurp *in*)]
   (when-not (str/blank? data)

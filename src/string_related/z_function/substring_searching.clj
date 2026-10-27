@@ -10,7 +10,7 @@
       (let [^chars b (.toCharArray (.concat (.concat pat "$") text))
             n (alength b)
             z (int-array n)]
-        (loop [i (int 1) l (int 0) r (int 0)]
+        (loop [i (int 1) l (int 0) r (long 0)]
           (if (>= i n)
             false
             (let [zi (if (<= i r) (min (- (inc r) i) (aget z (- i l))) (int 0))
@@ -18,11 +18,11 @@
                        (if (and (< (+ i zv) n) (= (aget b zv) (aget b (+ i zv))))
                          (recur (inc zv))
                          zv))]
-              (aset z i zi)
+              (aset z i (int zi))
               (if (= zi m)
                 true
                 (if (and (pos? (+ i zi)) (> (+ i zi -1) r))
-                  (recur (inc i) i (+ i zi -1))
+                  (recur (inc i) i (long (+ i zi -1)))
                   (recur (inc i) l r))))))))))
 
 (let [data (slurp *in*)]

@@ -23,7 +23,7 @@
           (print "GOOD SET\n")
           (let [^String w (nth words wi)
                 nw (.length w)
-                bad (loop [i (int 0) cur (int 0) bad false]
+                bad (loop [i (int 0) cur (long 0) bad false]
                       (if (>= i nw)
                         (let [bad (or bad (pos? (aget hasc cur)))]
                           (aset endf cur (byte 1))
@@ -44,7 +44,7 @@
                                           (inc id))
                                         (= (aget chs e) c) (aget tos e)
                                         :else (recur (aget nxts e))))]
-                          (recur (inc i) child (or bad (pos? (aget endf child)))))))]
+                          (recur (inc i) (long child) (or bad (pos? (aget endf child)))))))]
             (if bad
               (print (.concat "BAD SET\n" (.concat w "\n")))
               (recur (inc wi)))))))))

@@ -4,7 +4,7 @@
   (let [n (alength a)]
     (when (> n 1)
       (let [size (loop [s 1] (if (< s n) (recur (* s 2)) s))
-            tree (long-array (* 2 size))]
+            ^longs tree (long-array (* 2 size))]
         (loop [i 0]
           (when (< i size)
             (aset tree (+ size i) (if (< i n) i -1))
@@ -13,9 +13,9 @@
               winner (fn [x y] (if (<= (val x) (val y)) x y))]
           (loop [i (dec size)]
             (when (>= i 1)
-              (aset tree i (winner (aget tree (* 2 i)) (aget tree (inc (* 2 i)))))
+              (aset tree i (long (winner (aget tree (* 2 i)) (aget tree (inc (* 2 i))))))
               (recur (dec i))))
-          (let [out (long-array n)]
+          (let [^longs out (long-array n)]
             (loop [k 0]
               (when (< k n)
                 (let [w (aget tree 1)]
@@ -23,7 +23,7 @@
                   (aset tree (+ size w) -1)
                   (loop [i (quot (+ size w) 2)]
                     (when (>= i 1)
-                      (aset tree i (winner (aget tree (* 2 i)) (aget tree (inc (* 2 i)))))
+                      (aset tree i (long (winner (aget tree (* 2 i)) (aget tree (inc (* 2 i))))))
                       (recur (quot i 2))))
                   (recur (inc k)))))
             (System/arraycopy out 0 a 0 n)))))))

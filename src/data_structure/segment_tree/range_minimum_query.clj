@@ -4,9 +4,9 @@
           nt (count toks)
           n (Integer/parseInt (nth toks 0))
           q (Integer/parseInt (nth toks 1))
-          a (int-array n)
+          ^ints a (int-array n)
           _ (loop [i 0] (when (< i n) (aset a i (Integer/parseInt (nth toks (+ 2 i)))) (recur (inc i))))
-          t (int-array (* 4 (max 1 n)))]
+          ^ints t (int-array (* 4 (max 1 n)))]
       (letfn [(build [node l r]
                 (if (= l r)
                   (aset t node (aget a l))
@@ -23,7 +23,7 @@
                                (query (inc (* 2 node)) (inc m) r ql qr)))))
               (update [node l r idx val]
                 (if (= l r)
-                  (aset t node val)
+                  (aset t node (int val))
                   (let [m (quot (+ l r) 2)]
                     (if (<= idx m)
                       (update (* 2 node) l m idx val)

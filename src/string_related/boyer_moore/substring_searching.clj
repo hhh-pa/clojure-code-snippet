@@ -13,7 +13,7 @@
       (let [right (int-array 256 -1)]
         (dotimes [j m]
           (aset right (bit-and (int (aget pat j)) 255) j))
-        (loop [i (int 0)]
+        (loop [i (long 0)]
           (if (> (+ i m) n)
             false
             (let [skip (loop [j (int (dec m))]
@@ -25,7 +25,7 @@
                                (int (if (< s 1) 1 s))))))]
               (if (zero? skip)
                 true
-                (recur (+ i skip))))))))))
+                (recur (long (+ i skip)))))))))))
 
 (let [data (slurp *in*)]
   (when-not (str/blank? data)

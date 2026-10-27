@@ -28,7 +28,7 @@
       (when (>= nd 2)
         (let [vv (aget d 0) ee (aget d 1)
               m (int (min (long ee) (long (quot (- nd 2) 2))))
-              g (make-array java.util.ArrayList vv)
+              ^objects g (make-array java.util.ArrayList vv)
               indeg (int-array vv)]
           (dotimes [i vv] (aset g i (java.util.ArrayList.)))
           (dotimes [k m]

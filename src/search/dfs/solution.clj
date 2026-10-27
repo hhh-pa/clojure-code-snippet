@@ -49,5 +49,5 @@
                                                           (aset g ni -1)
                                                           (.add work (int ni)))))))
                                                 (recur (inc sz)))))]
-                                   (recur (inc idx) (max best sz)))))))]
+                                   (recur (inc idx) (long (max best sz))))))))]
                 (print (str best "\n"))))))))))

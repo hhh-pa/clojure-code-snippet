@@ -54,5 +54,5 @@
                       (.append sb " ")))
                   (recur (inc i))))
               (.append sb "\n")
-              (recur (inc pp) (dec qq))))))
+              (recur (long (inc pp)) (dec qq))))))
       (print (str sb)))))

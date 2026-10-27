@@ -29,8 +29,8 @@
         (let [nn (aget d 0)
               ;; like the reference, consume (a b) pairs until EOF (m ignored)
               npairs (quot (- nd 2) 2)
-              g (make-array java.util.ArrayList nn)
-              rg (make-array java.util.ArrayList nn)]
+              ^objects g (make-array java.util.ArrayList nn)
+              ^objects rg (make-array java.util.ArrayList nn)]
           (dotimes [i nn]
             (aset g i (java.util.ArrayList.))
             (aset rg i (java.util.ArrayList.)))

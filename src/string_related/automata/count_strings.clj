@@ -161,7 +161,7 @@
           (loop [y (long 0)]
             (when (< y n)
               (aset r (+ xb y)
-                    (loop [i (long 0) s (long 0)]
+                    (long (loop [i (long 0) s (long 0)]
                       (if (>= i n)
                         s
                         (let [av (aget a (+ xb i))]
@@ -169,7 +169,7 @@
                                  (if (zero? av)
                                    s
                                    (rem (unchecked-add s (unchecked-multiply av (aget b (+ (* i n) y))))
-                                        mod)))))))
+                                        mod))))))))
               (recur (unchecked-inc y)))))
         (recur (unchecked-inc x))))
     r))
@@ -197,7 +197,7 @@
       (doseq [c (nth dfa (int i))]
         (let [j (+ (* i n) (long c))]
           (aset m j (inc (aget m j))))))
-    (let [pw (mexp m l n MOD)]
+    (let [^longs pw (mexp m l n MOD)]
       (rem (reduce + 0 (map #(aget pw (long %)) ends)) MOD))))
 
 (let [data (slurp *in*)]
