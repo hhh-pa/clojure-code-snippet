@@ -66,15 +66,17 @@ python3 tools/measure.py --self-test  # parser checks, no JVM needed
 ```
 
 CI runs correctness in the `test` job, then measures each configured
-compiler in a matrix `perf` job (`needs: test`), uploads per-runtime
-`perf-results-<runtime>` artifacts, appends a results table to the step
-summary, and reports the BMF file to Bencher
+compiler in a sharded matrix `perf` job (`needs: test`, 4 shards via
+`tools/measure.py --shard K/N`), uploads per-shard artifacts, and a
+fan-in `report` job merges the BMF files, appends a results table to
+the step summary, and reports once per runtime to Bencher
 (`bencher run --adapter json --file bencher-bmf.json`), which plots each
 snippet's `cpu_time`/`peak_memory` per commit and posts a check on the
 head commit (the BMF payload carries only those two measures to fit
 GitHub's check-summary limit; full metrics stay in the uploaded
 `perf-results.json` artifact). The Bencher project API key lives
-in the `BENCHER_API_KEY` repository secret.
+in the `BENCHER_API_KEY` repository secret. Clojure jars and apt
+packages are cached between runs.
 
 ## Comparing compilers
 
