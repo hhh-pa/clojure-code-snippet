@@ -70,8 +70,10 @@ compiler in a matrix `perf` job (`needs: test`), uploads per-runtime
 `perf-results-<runtime>` artifacts, appends a results table to the step
 summary, and reports the BMF file to Bencher
 (`bencher run --adapter json --file bencher-bmf.json`), which plots each
-snippet's `cpu_time`/`peak_memory`/`wall_time`/`instructions` per commit
-and posts a check on the head commit. The Bencher project API key lives
+snippet's `cpu_time`/`peak_memory` per commit and posts a check on the
+head commit (the BMF payload carries only those two measures to fit
+GitHub's check-summary limit; full metrics stay in the uploaded
+`perf-results.json` artifact). The Bencher project API key lives
 in the `BENCHER_API_KEY` repository secret.
 
 ## Comparing compilers

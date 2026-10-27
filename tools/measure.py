@@ -23,7 +23,9 @@ Outputs:
 
   * --output: full JSON (per-run metrics, per-case summaries, failures).
   * --bmf-output: Bencher Metric Format JSON (one Benchmark per snippet,
-    measures cpu_time/peak_memory/wall_time/instructions), consumable by
+    measures cpu_time/peak_memory only -- wall_time and perf counters
+    stay in the full report to keep Bencher's check summary under
+    GitHub's size limit), consumable by
     `bencher run --adapter json --file ...` to track evolution in Bencher.
   * --summary-file: Markdown table appended for GitHub step summaries.
 
@@ -364,11 +366,16 @@ def measure_case(time_bin, use_perf, template, classpath, label, stem, script,
 def build_bmf(results):
     """Aggregate per-case summaries into Bencher Metric Format JSON.
 
-    One Benchmark per snippet (label/stem); each measure uses the median
-    as value with min/max as lower/upper bounds so Bencher tracks the
-    robust middle while keeping the spread visible. cpu_time, wall_time
-    and instructions are summed over a snippet's cases; peak_memory takes
-    the worst case (max), in bytes.
+    One Benchmark per snippet (label/stem) with EXACTLY the measures
+    cpu_time and peak_memory: wall_time is dropped (load-dependent on
+    shared runners; cpu_time is the stable proxy) and
+    instructions/cycles are never emitted even when perf data is
+    present (always null on hosted runners, and extra rows re-truncate
+    Bencher's GitHub check summary). Each measure uses the median as
+    value with min/max as lower/upper bounds so Bencher tracks the
+    robust middle while keeping the spread visible. cpu_time is summed
+    over a snippet's cases; peak_memory takes the worst case (max),
+    in bytes.
     """
     per_snippet = {}
     for res in results:
@@ -390,19 +397,7 @@ def build_bmf(results):
                 "lower_value": max(s["maxrss_kb"]["min"] for s in summaries) * 1024,
                 "upper_value": max(s["maxrss_kb"]["max"] for s in summaries) * 1024,
             },
-            "wall_time": {
-                "value": sum(s["wall_s"]["median"] for s in summaries),
-                "lower_value": sum(s["wall_s"]["min"] for s in summaries),
-                "upper_value": sum(s["wall_s"]["max"] for s in summaries),
-            },
         }
-        insn = [s["instructions"] for s in summaries if s.get("instructions")]
-        if insn and len(insn) == len(summaries):
-            measures["instructions"] = {
-                "value": sum(s["median"] for s in insn),
-                "lower_value": sum(s["min"] for s in insn),
-                "upper_value": sum(s["max"] for s in insn),
-            }
         bmf[name] = measures
     return bmf
 
@@ -459,17 +454,29 @@ def append_summary(path, report, bmf):
         "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     per_snippet_cases = {}
+    per_snippet_wall = {}
+    per_snippet_insn = {}
     for res in results:
         if res["ok"]:
             key = "{}/{}".format(res["label"], res["stem"])
             per_snippet_cases[key] = per_snippet_cases.get(key, 0) + 1
+            # Wall time and instructions are not in the BMF payload
+            # (T11: Bencher report hygiene), so total them here from
+            # the full per-case summaries to keep this table complete.
+            per_snippet_wall[key] = (per_snippet_wall.get(key, 0.0)
+                                     + res["summary"]["wall_s"]["median"])
+            ins = res["summary"]["instructions"]
+            per_snippet_insn.setdefault(key, []).append(
+                ins["median"] if ins else None)
     for name in sorted(bmf):
         m = bmf[name]
-        insn = m.get("instructions", {}).get("value", "n/a")
+        parts = per_snippet_insn.get(name, [])
+        insn = (sum(parts) if parts and all(p is not None for p in parts)
+                else "n/a")
         lines.append("| {} | {} | {:.3f} | {:.1f} | {} | {:.3f} |".format(
             name, per_snippet_cases.get(name, 0),
             m["cpu_time"]["value"], m["peak_memory"]["value"] / 1048576,
-            insn, m["wall_time"]["value"]))
+            insn, per_snippet_wall.get(name, 0.0)))
     lines.append("")
     try:
         with open(path, "a") as fd:
@@ -542,15 +549,16 @@ def self_test():
          "summary": None},
     ])
     entry = bmf.get("sort/quick_sort/solution", {})
+    # The fixture summary carries instructions data, so the exact key
+    # set also proves perf counters are never emitted (T11).
     check("bmf",
-          entry.get("cpu_time") == {"value": 2.0, "lower_value": 1.0,
-                                    "upper_value": 3.0}
+          set(entry) == {"cpu_time", "peak_memory"}
+          and entry.get("cpu_time") == {"value": 2.0, "lower_value": 1.0,
+                                        "upper_value": 3.0}
           and entry.get("peak_memory") == {"value": 105 * 1024,
                                            "lower_value": 100 * 1024,
-                                           "upper_value": 110 * 1024}
-          and entry.get("instructions") == {"value": 11.0, "lower_value": 10,
-                                            "upper_value": 12}
-          and "wall_time" in entry, repr(entry))
+                                           "upper_value": 110 * 1024},
+          repr(entry))
 
     print("self-test: {} failed".format(len(failures)))
     return 1 if failures else 0
