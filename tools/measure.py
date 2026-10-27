@@ -49,7 +49,7 @@ Usage:
         [--repeat 5] [--jobs 1] [--timeout 300] [--only substring] \
         [--output perf.json] [--bmf-output bencher.json] \
         [--summary-file "$GITHUB_STEP_SUMMARY"] [--no-perf] \
-        [--runtime jvm] [--command-template '...']
+        [--runtime jvm] [--command-template '...'] [--shard K/N]
 
     python3 tools/measure.py --self-test   # durable parser checks, no JVM needed
 
@@ -147,6 +147,36 @@ def summarize_numbers(values):
     values = sorted(values)
     return {"min": values[0], "median": statistics.median(values),
             "max": values[-1]}
+
+
+def parse_shard(text):
+    """Parse K/N shard selector into (index, total), 0-based index."""
+    try:
+        k, _, n = text.partition("/")
+        index, total = int(k), int(n)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("bad --shard {!r}: want K/N".format(text)) from exc
+    if total < 1 or not 0 <= index < total:
+        raise ValueError(
+            "bad --shard {!r}: need 0 <= K < N".format(text))
+    return index, total
+
+
+def select_shard(tasks, index, total):
+    """Deterministically keep every total-th snippet starting at index.
+
+    Sharding is by SNIPPET (label/stem), never by case: each snippet's
+    cases stay together in one shard, so per-shard BMF aggregates are
+    complete per snippet and the fan-in `jq -s add` merge is exact.
+    (Splitting cases of one snippet across shards would leave each
+    shard with a partial per-snippet aggregate that the merge would
+    silently overwrite — undercounting cpu_time.)
+    """
+    groups = {}
+    for t in tasks:
+        groups.setdefault((t[0], t[1]), []).append(t)
+    keep = {g for i, g in enumerate(sorted(groups)) if i % total == index}
+    return [t for t in tasks if (t[0], t[1]) in keep]
 
 
 def summarize_case(runs):
@@ -526,6 +556,31 @@ def self_test():
     inner2 = build_inner_command("./build/{stem}", "/a", "/s/y.clj", "y")
     check("template-stem", inner2 == ["./build/y"], repr(inner2))
 
+    check("shard-parse", parse_shard("1/4") == (1, 4))
+    bad = 0
+    for text in ("4/4", "-1/4", "0/0", "x", "1/2/3", ""):
+        try:
+            parse_shard(text)
+        except ValueError:
+            bad += 1
+    check("shard-parse-rejects", bad == 6, str(bad))
+    toy = [("b", "s", "c", "x", "i", "o"), ("a", "s", "c", "x", "i", "o"),
+           ("c", "s", "c", "x", "i", "o"), ("a", "s", "b", "x", "i", "o")]
+    s0 = select_shard(toy, 0, 2)
+    s1 = select_shard(toy, 1, 2)
+    check("shard-split",
+          sorted(s0 + s1) == sorted(toy) and not set(s0) & set(s1)
+          and sorted((t[0], t[1]) for t in s0) == [("a", "s"), ("a", "s"), ("c", "s")]
+          and [(t[0], t[1]) for t in s1] == [("b", "s")], repr((s0, s1)))
+    # Snippet cohesion: a snippet's cases never split across shards,
+    # so per-shard BMF aggregates merge exactly with jq -s add.
+    def snippets(tasks):
+        return {(t[0], t[1]) for t in tasks}
+    check("shard-cohesion",
+          not snippets(s0) & snippets(s1)
+          and snippets(s0) | snippets(s1) == snippets(toy),
+          repr((snippets(s0), snippets(s1))))
+
     runs = [
         {"cpu_s": 1.0, "maxrss_kb": 100, "wall_s": 1.2,
          "instructions": 10, "cycles": 20},
@@ -588,6 +643,9 @@ def main(argv=None):
                         help="compiler/runtime label recorded in the report")
     parser.add_argument("--command-template", default=DEFAULT_COMMAND_TEMPLATE,
                         help="snippet argv with {cp}, {script}, {stem} holes")
+    parser.add_argument("--shard", default=None, metavar="K/N",
+                        help="measure only shard K of N (0-based, deterministic;"
+                             " split by snippet so per-shard BMFs merge exactly)")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
@@ -597,6 +655,12 @@ def main(argv=None):
         parser.error("--repeat must be >= 1")
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
+    shard = None
+    if args.shard is not None:
+        try:
+            shard = parse_shard(args.shard)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     time_bin = resolve_time_bin(args.time_bin)
     use_perf = args.perf and perf_usable()
@@ -617,6 +681,8 @@ def main(argv=None):
             continue
         for case_name, inp, outp in cases:
             tasks.append((label, stem, case_name, script, inp, outp))
+    if shard is not None:
+        tasks = select_shard(tasks, *shard)
 
     results = []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -654,6 +720,7 @@ def main(argv=None):
             "jobs": args.jobs,
             "timeout": args.timeout,
             "only": args.only,
+            "shard": args.shard,
         },
         "results": results,
         "failures": failures,

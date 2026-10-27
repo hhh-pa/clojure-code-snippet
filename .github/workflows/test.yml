@@ -24,7 +24,15 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Cache Clojure jars
+        id: jars-cache
+        uses: actions/cache@v4
+        with:
+          path: .ci/jars
+          key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
+
       - name: Download Clojure jars
+        if: steps.jars-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p .ci/jars
           base=https://repo1.maven.org/maven2
@@ -51,18 +59,19 @@ jobs:
   perf:
     needs: test
     runs-on: ubuntu-latest
-    # contents:read for checkout; checks:write so Bencher can post its report
-    # check; pull-requests:write so it can post its PR comment on PR runs.
+    # contents:read for checkout (Bencher reporting moved to the report job).
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
     strategy:
+      # Let every shard finish so partial artifacts upload for diagnosis.
+      fail-fast: false
       matrix:
+        shard: [0, 1, 2, 3]
         include:
           # One entry per compiler/runtime. Benchmark names stay identical
           # across runtimes; Bencher compares them via testbeds, so overlay
           # the testbeds on the perf page for visual comparison.
+          # Keep in sync with the report job's runtime matrix below.
           - runtime: jvm
             testbed: ubuntu-latest-jvm
     steps:
@@ -74,7 +83,15 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Cache Clojure jars
+        id: jars-cache
+        uses: actions/cache@v4
+        with:
+          path: .ci/jars
+          key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
+
       - name: Download Clojure jars
+        if: steps.jars-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p .ci/jars
           base=https://repo1.maven.org/maven2
@@ -96,17 +113,17 @@ jobs:
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
       - name: Install measurement tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y time
-          sudo apt-get install -y linux-tools-common linux-tools-generic || \
-            echo "perf unavailable; instructions/cycles will be null"
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: time linux-tools-common linux-tools-generic
+          version: 1.0
 
       - name: Measure performance (load-independent metrics)
         run: |
           python3 tools/measure.py --resources tests/resources \
             --repeat 3 --jobs 2 --timeout 300 \
             --runtime ${{ matrix.runtime }} \
+            --shard ${{ matrix.shard }}/4 \
             --output perf-results.json --bmf-output bencher-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
@@ -114,10 +131,32 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-results-${{ matrix.runtime }}
+          name: perf-results-${{ matrix.runtime }}-shard-${{ matrix.shard }}
           path: |
             perf-results.json
             bencher-bmf.json
+
+  report:
+    needs: perf
+    runs-on: ubuntu-latest
+    # checks:write so Bencher can post its report check (and PR comment).
+    permissions:
+      checks: write
+      pull-requests: write
+    # One report per runtime; keep in sync with the perf job's matrix above.
+    strategy:
+      matrix:
+        include:
+          - runtime: jvm
+            testbed: ubuntu-latest-jvm
+    steps:
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: perf-results-${{ matrix.runtime }}-shard-*
+
+      - name: Merge benchmark files
+        run: jq -s 'add' perf-results-*/bencher-bmf.json > bencher-bmf.json
 
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main
