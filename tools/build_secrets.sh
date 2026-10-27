@@ -10,7 +10,7 @@ set -euo pipefail
 
 shared_dir="${1:?usage: build_secrets.sh <resource/shared dir> <output dir>}"
 out_dir="${2:?usage: build_secrets.sh <resource/shared dir> <output dir>}"
-chunk_chars=60000
+chunk_chars=45056  # API-verified max per secret
 
 mkdir -p "$out_dir"
 work="$(mktemp -d)"
