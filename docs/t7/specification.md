@@ -7,11 +7,12 @@ audit, with byte-identical outputs. Ship only changes with measured
 evidence; revert the rest and record why.
 
 Targets and acceptance criteria:
-- kruskalmstrsub (SHIPPED): edge order sorted by a primitive index
-  quicksort (replacing boxed `sort-by` over a lazy range); Union-Find
-  loop walks the index array; unchecked arithmetic in hot loops. Same
-  MST weight output on all inputs. Measured: peak RSS 263MB -> 163MB
-  (-38%), CPU/instructions neutral.
+- kruskalmstrsub (SHIPPED): edge order by ascending weight via
+  packed (weight, index) longs sorted with `java.util.Arrays/sort`
+  (replacing boxed `sort-by` over a lazy range); Union-Find loop
+  walks the sorted packed array; unchecked arithmetic in hot loops.
+  Same MST weight output on all inputs. Measured: peak RSS 263MB ->
+  ~163MB (-38%), CPU/instructions neutral.
 - backtracking + dancing_links sudoku (REVERTED after measurement):
   packed-long MRV state was implemented and output-verified (MATCH on
   fixtures), then reverted: the solver is sub-millisecond even on hard
@@ -31,8 +32,8 @@ Targets and acceptance criteria:
 
 - Outputs must be byte-identical (line-stripped): keep traversal orders,
   tie-breaking, and formatting exactly.
-- Sudoku early-exit (stop scan at first count-1 cell) must be preserved
-  exactly, including its skip-rest behavior.
-- Kruskal quicksort need not be stable: equal-weight edge order can
-  differ as long as the MST *weight* is identical. Differential tests
-  compare the printed weight (the program's only output).
+- Kruskal sort need not be stable: equal-weight edge order can differ
+  as long as the MST *weight* is identical (all MSTs share one total
+  weight). Differential tests compare the printed weight (the
+  program's only output). The packed `Arrays/sort` additionally keeps
+  index order among equal weights, so output is deterministic.
