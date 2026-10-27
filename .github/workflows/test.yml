@@ -164,7 +164,9 @@ jobs:
       # Threshold policy: peak_memory (t_test) only, by design.
       # cpu_time is too noisy on shared runners to threshold, so
       # Bencher's residual No-Threshold boilerplate for cpu_time is
-      # expected and not actionable.
+      # expected and not actionable. min-sample-size 10: the t_test
+      # needs history to calibrate maxrss variance (both master
+      # false positives so far fired on tiny samples).
       - name: Track benchmarks with Bencher
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -188,6 +190,7 @@ jobs:
               --testbed ${{ matrix.testbed }} \
               --threshold-measure peak_memory \
               --threshold-test t_test \
+              --threshold-min-sample-size 10 \
               --threshold-max-sample-size 64 \
               --threshold-upper-boundary 0.99 \
               --adapter json \
