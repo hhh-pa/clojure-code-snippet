@@ -1,15 +1,45 @@
-# Clojure version of the algorithms and data structures
+# clojure-code-snippet
 
-Solutions mirror the other snippet repos: one script per problem at
-`src/<topic>/<problem>.clj`, executed by the recipes test harness as
-`java -cp <clojure.jar> clojure.main <script>` (stdin in, stdout out).
+## Introduction
 
-## Testing
+This piece of code is a curated collection of commonly used algorithms, aimed at reinforcing a software engineer's general algorithmic knowledge. Each snippet is implemented in a minimal and accessible manner, focusing on clarity of logic rather than production-readiness.
 
-`tests/run_tests.py` runs every `src/**/*.clj` script against the shared
-test cases from the recipes superproject (`resource/shared`). The cases
-ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz,
-AES-256, ASCII-armored); the passphrase is the `RESOURCES_PASSPHRASE`
-repository secret, and `.github/workflows/test.yml` decrypts it in CI.
-Rebuild the bundle after resource changes with
-`tools/build_bundle.sh <resource/shared dir> <passphrase-file>`.
+This repository is the Clojure port of the collection (see [cpp-code-snippets](https://github.com/m-hu/cpp-code-snippets)). Solutions mirror the other snippet repos: one script per problem at `src/<topic>/<problem>.clj`, executed as `java -cp <clojure.jar> clojure.main <script>` (stdin in, stdout out).
+
+### Scope
+
+The repository intentionally excludes production-level concerns such as:
+
+- Memory management
+- Error handling
+- Vulnerability mitigation
+
+These aspects, while important in real-world applications, are intentionally left out to keep the focus on core algorithmic logic. The assumption is that the intended viewers are primarily interested in the conceptual content itself, rather than scrutinizing the code for potential attack surfaces or production-level robustness.
+
+### Privacy & Exposure
+
+Some code examples have been moved to a **private repository** as a precautionary measure to limit exposure and reduce potential risk, especially when the repository is accessed in contexts where the intent of the viewer is uncertain.
+
+### Test Cases
+
+To respect the rights of original content creators, **test cases are not included** in this repository in plain form. Instead, they can be found on the websites where the referenced problems originate.
+
+For automated validation, the shared test cases from the recipes superproject (`resource/shared`) ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz, AES-256, ASCII-armored). `tests/run_tests.py` runs every `src/**/*.clj` script against the decrypted cases and diff-compares stdout against the expected output (trailing whitespace per line ignored).
+
+### CI/CD Pipeline
+
+`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, decrypts the bundle with the `RESOURCES_PASSPHRASE` repository secret, and runs:
+
+```sh
+python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
+```
+
+To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only) and run the same command. The Clojure classpath comes from `--cp` or `$CLOJURE_CP`; when neither is set, sibling `spec.alpha` / `core.specs.alpha` jars next to a jar named by `$CLOJURE_JAR` (or `.ci/jars/*.jar`) are picked up automatically.
+
+Rebuild the bundle after resource changes with:
+
+```sh
+tools/build_bundle.sh <resource/shared dir> <passphrase-file>
+```
+
+See `tools/build_bundle.sh` for the rotation instructions when using a fresh passphrase.
