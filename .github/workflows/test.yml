@@ -51,10 +51,12 @@ jobs:
   perf:
     needs: test
     runs-on: ubuntu-latest
-    # contents:read for checkout; checks:write so Bencher can post its report check.
+    # contents:read for checkout; checks:write so Bencher can post its report
+    # check; pull-requests:write so it can post its PR comment on PR runs.
     permissions:
       contents: read
       checks: write
+      pull-requests: write
     strategy:
       matrix:
         include:
@@ -141,6 +143,10 @@ jobs:
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.ref_name }}" \
               --testbed ${{ matrix.testbed }} \
+              --threshold-measure peak_memory \
+              --threshold-test t_test \
+              --threshold-max-sample-size 64 \
+              --threshold-upper-boundary 0.99 \
               --adapter json \
               --file bencher-bmf.json \
               --github-actions "${{ secrets.GITHUB_TOKEN }}"
