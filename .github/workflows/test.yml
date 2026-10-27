@@ -51,10 +51,12 @@ jobs:
   perf:
     needs: test
     runs-on: ubuntu-latest
-    # contents:read for checkout; checks:write so Bencher can post its report check.
+    # contents:read for checkout; checks:write so Bencher can post its report
+    # check; pull-requests:write so it can post its PR comment on PR runs.
     permissions:
       contents: read
       checks: write
+      pull-requests: write
     strategy:
       matrix:
         include:
