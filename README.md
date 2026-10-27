@@ -43,3 +43,31 @@ tools/build_bundle.sh <resource/shared dir> <passphrase-file>
 ```
 
 See `tools/build_bundle.sh` for the rotation instructions when using a fresh passphrase.
+
+## Performance tracking
+
+`tools/measure.py` runs the same scripts and cases but records
+load-independent metrics per case (Linux-only, needs GNU `time`,
+optionally `perf`):
+
+- `cpu_s` (user+sys CPU time) — primary time signal; min-of-repeats
+- `maxrss_kb` (peak RSS) — primary memory signal; max-of-repeats
+- `instructions`/`cycles` (`perf stat`, user-space) — most stable signal
+- `wall_s` — secondary; not load-independent
+
+Each case runs `--repeat` times (default 5, CI uses 3); summaries keep
+min/median/max. Compare same-machine ratios only (e.g. Clojure vs native
+back-to-back), never absolutes across machines.
+
+```sh
+python3 tools/measure.py --resources tests/resources --repeat 5 \
+  --output perf.json --bmf-output bencher.json
+python3 tools/measure.py --self-test  # parser checks, no JVM needed
+```
+
+CI appends a results table to the step summary, uploads
+`perf-results.json`/`bencher-bmf.json` as artifacts, and reports the BMF
+file to Bencher (`bencher run --adapter json --file bencher-bmf.json`),
+which plots each snippet's `cpu_time`/`peak_memory`/`wall_time`/
+`instructions` per commit and posts a check on the head commit. The
+Bencher project API key lives in the `BENCHER_API_KEY` repository secret.
