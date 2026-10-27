@@ -29,37 +29,46 @@
               g-nodes (aget d 0)
               g-edges (aget d 1)
               m (int (min (long g-edges) (long (quot (- nd 2) 3))))
-              us (int-array m) vs (int-array m) ws (int-array m)]
+              ^ints us (int-array m) ^ints vs (int-array m) ^ints ws (int-array m)]
           (dotimes [k m]
-            (aset-int us k (- (aget d (+ 2 (* k 3))) 1))
-            (aset-int vs k (- (aget d (+ 3 (* k 3))) 1))
-            (aset-int ws k (aget d (+ 4 (* k 3)))))
-          (let [order (sort-by #(aget ^ints ws %) (range m))
-                parent (int-array g-nodes) sz (int-array g-nodes)]
+            (let [b3 (unchecked-multiply-int (int k) (int 3))]
+              (aset-int us k (unchecked-subtract-int (aget d (unchecked-add-int b3 (int 2))) (int 1)))
+              (aset-int vs k (unchecked-subtract-int (aget d (unchecked-add-int b3 (int 3))) (int 1)))
+              (aset-int ws k (aget d (unchecked-add-int b3 (int 4))))))
+          (let [^longs packed (long-array m)
+                ^ints parent (int-array g-nodes) ^ints sz (int-array g-nodes)]
+            ;; Edge order by ascending weight: pack (weight, index)
+            ;; into longs, sort with java.util.Arrays/sort (dual-pivot,
+            ;; robust on sorted/uniform input, deterministic; equal
+            ;; weights keep index order). No boxed seq or key calls.
+            (dotimes [k m]
+              (aset-long packed k (bit-or (bit-shift-left (long (aget ws k)) 32)
+                                          (long k))))
+            (java.util.Arrays/sort packed)
             (dotimes [i g-nodes] (aset-int parent i i) (aset-int sz i 1))
             (letfn [(find [x]
                       (loop [x (int x)]
-                        (let [p (aget ^ints parent x)]
+                        (let [p (aget parent x)]
                           (if (= p x)
                             x
                             (recur p)))))]
-              (loop [os order acc (long 0)]
-                (if (empty? os)
+              (loop [ki (int 0) acc (long 0)]
+                (if (>= ki m)
                   (print (str acc "\n"))
-                  (let [k (int (first os))
-                        x (aget ^ints us k) y (aget ^ints vs k)
+                  (let [k (unchecked-int (aget packed ki))
+                        x (aget us k) y (aget vs k)
                         rx (find x) ry (find y)]
                     (if (= rx ry)
-                      (recur (rest os) acc)
-                      (let [sx (aget ^ints sz rx) sy (aget ^ints sz ry)]
+                      (recur (unchecked-inc-int ki) acc)
+                      (let [sx (aget sz rx) sy (aget sz ry)]
                         ;; union by size; path halving on the two find paths
                         (loop [z (int x)]
-                          (let [p (aget ^ints parent z)]
+                          (let [p (aget parent z)]
                             (when (not= p rx)
                               (aset-int parent z rx)
                               (recur p))))
                         (loop [z (int y)]
-                          (let [p (aget ^ints parent z)]
+                          (let [p (aget parent z)]
                             (when (not= p ry)
                               (aset-int parent z ry)
                               (recur p))))
@@ -68,4 +77,4 @@
                               (aset-int sz rx (+ sx sy)))
                           (do (aset-int parent rx ry)
                               (aset-int sz ry (+ sx sy))))
-                        (recur (rest os) (+ acc (long (aget ^ints ws k))))))))))))))))
+                        (recur (unchecked-inc-int ki) (unchecked-add acc (long (aget ws k))))))))))))))))
