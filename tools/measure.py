@@ -27,11 +27,27 @@ Outputs:
     `bencher run --adapter json --file ...` to track evolution in Bencher.
   * --summary-file: Markdown table appended for GitHub step summaries.
 
+Compiler comparison: benchmark names are compiler-agnostic on purpose.
+Report each compiler as its own Bencher testbed (e.g. ubuntu-latest-jvm
+vs ubuntu-latest-native) with identical benchmark names, then overlay the
+testbeds on Bencher's perf page for visual comparison. Use --runtime to
+label which compiler produced a report and --command-template to change
+how snippets are invoked (default runs them on the JVM):
+
+    python3 tools/measure.py --resources tests/resources --runtime native \
+        --command-template './build/{stem}' ...
+
+Available template placeholders: {cp}, {script}, {stem}. stdin still
+comes from the test-case input file and stdout is still diffed, so any
+runtime that honors the snippet stdin/stdout contract can be measured
+with the exact same harness (GNU time + perf), keeping numbers comparable.
+
 Usage:
     python3 tools/measure.py --resources tests/resources \
         [--repeat 5] [--jobs 1] [--timeout 300] [--only substring] \
         [--output perf.json] [--bmf-output bencher.json] \
-        [--summary-file "$GITHUB_STEP_SUMMARY"] [--no-perf]
+        [--summary-file "$GITHUB_STEP_SUMMARY"] [--no-perf] \
+        [--runtime jvm] [--command-template '...']
 
     python3 tools/measure.py --self-test   # durable parser checks, no JVM needed
 
@@ -47,6 +63,7 @@ import datetime
 import json
 import os
 import platform
+import shlex
 import shutil
 import socket
 import statistics
@@ -65,6 +82,7 @@ TIME_FORMAT = (
 )
 PERF_EVENTS = "instructions:u,cycles:u"
 TOOL_VERSION = 1
+DEFAULT_COMMAND_TEMPLATE = "java -cp {cp} clojure.main {script}"
 
 
 def parse_time_text(text):
@@ -240,10 +258,14 @@ def java_version():
     return out[0] if out else None
 
 
-def build_command(time_bin, time_file, use_perf, perf_file, classpath, script):
-    # GNU time must wrap java directly: its max-RSS covers only the direct
-    # child, so perf goes outside and time inside.
-    inner = ["java", "-cp", classpath, "clojure.main", script]
+def build_inner_command(template, classpath, script, stem):
+    """Expand a --command-template into the snippet argv (no shell)."""
+    return shlex.split(template.format(cp=classpath, script=script, stem=stem))
+
+
+def build_command(time_bin, time_file, use_perf, perf_file, inner):
+    # GNU time must wrap the snippet directly: its max-RSS covers only the
+    # direct child, so perf goes outside and time inside.
     timed = [time_bin, "-f", TIME_FORMAT, "-o", time_file] + inner
     if use_perf:
         return ["perf", "stat", "-e", PERF_EVENTS, "-x,", "-o", perf_file,
@@ -251,8 +273,15 @@ def build_command(time_bin, time_file, use_perf, perf_file, classpath, script):
     return timed
 
 
-def measure_once(time_bin, use_perf, classpath, script, input_path, timeout):
+def measure_once(time_bin, use_perf, template, classpath, script, stem,
+                 input_path, timeout):
     """Run script once under GNU time (+perf). Return (stdout, metrics, err)."""
+    try:
+        inner = build_inner_command(template, classpath, script, stem)
+    except (KeyError, ValueError) as exc:
+        return None, None, "bad command template: {}".format(exc)
+    if not inner:
+        return None, None, "bad command template: expands to empty argv"
     time_fd, time_file = tempfile.mkstemp(prefix="snip-time-")
     os.close(time_fd)
     perf_file = None
@@ -260,8 +289,7 @@ def measure_once(time_bin, use_perf, classpath, script, input_path, timeout):
         perf_fd, perf_file = tempfile.mkstemp(prefix="snip-perf-")
         os.close(perf_fd)
     try:
-        cmd = build_command(time_bin, time_file, use_perf, perf_file,
-                            classpath, script)
+        cmd = build_command(time_bin, time_file, use_perf, perf_file, inner)
         with open(input_path, "rb") as stdin_fd:
             try:
                 proc = subprocess.run(
@@ -299,7 +327,7 @@ def measure_once(time_bin, use_perf, classpath, script, input_path, timeout):
                     pass
 
 
-def measure_case(time_bin, use_perf, classpath, label, stem, script,
+def measure_case(time_bin, use_perf, template, classpath, label, stem, script,
                  case_name, input_path, output_path, repeat, timeout):
     result = {
         "label": label,
@@ -315,7 +343,8 @@ def measure_case(time_bin, use_perf, classpath, label, stem, script,
         expected = run_tests.normalize(fd.read())
     for _ in range(repeat):
         stdout, metrics, error = measure_once(
-            time_bin, use_perf, classpath, script, input_path, timeout)
+            time_bin, use_perf, template, classpath, script, stem,
+            input_path, timeout)
         if error is not None:
             result["error"] = "{}/{}: {}".format(label, case_name, error)
             return result
@@ -416,8 +445,8 @@ def append_summary(path, report, bmf):
         "- {} ({}), java: {}".format(
             report["timestamp_utc"], host.get("cpu_model") or "unknown cpu",
             runtime["java_version"] or "unknown"),
-        "- perf counters: {}, repeat: {}, jobs: {}".format(
-            "yes" if runtime["perf_used"] else "no",
+        "- runtime: {}, perf counters: {}, repeat: {}, jobs: {}".format(
+            runtime["name"], "yes" if runtime["perf_used"] else "no",
             report["config"]["repeat"], report["config"]["jobs"]),
         "- {} ok, {} failed, {} missing-resource problems".format(
             ok, len(report["failures"]) - len(report["missing"]),
@@ -482,6 +511,14 @@ def self_test():
     check("perf-parse-unsupported",
           p2 == {"instructions": None, "cycles": None}, repr(p2))
 
+    inner = build_inner_command(DEFAULT_COMMAND_TEMPLATE, "/a/b.jar",
+                                "/s/x.clj", "x")
+    check("template-default",
+          inner == ["java", "-cp", "/a/b.jar", "clojure.main", "/s/x.clj"],
+          repr(inner))
+    inner2 = build_inner_command("./build/{stem}", "/a", "/s/y.clj", "y")
+    check("template-stem", inner2 == ["./build/y"], repr(inner2))
+
     runs = [
         {"cpu_s": 1.0, "maxrss_kb": 100, "wall_s": 1.2,
          "instructions": 10, "cycles": 20},
@@ -539,6 +576,10 @@ def main(argv=None):
     parser.add_argument("--time-bin", default=None)
     parser.add_argument("--perf", action=argparse.BooleanOptionalAction,
                         default=True, help="use perf counters when available")
+    parser.add_argument("--runtime", default="jvm",
+                        help="compiler/runtime label recorded in the report")
+    parser.add_argument("--command-template", default=DEFAULT_COMMAND_TEMPLATE,
+                        help="snippet argv with {cp}, {script}, {stem} holes")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
@@ -572,7 +613,8 @@ def main(argv=None):
     results = []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {
-            pool.submit(measure_case, time_bin, use_perf, classpath,
+            pool.submit(measure_case, time_bin, use_perf,
+                        args.command_template, classpath,
                         label, stem, script, case, inp, outp,
                         args.repeat, args.timeout): (label, stem, case)
             for label, stem, case, script, inp, outp in tasks
@@ -592,6 +634,8 @@ def main(argv=None):
             datetime.timezone.utc).isoformat(),
         "host": host_info(),
         "runtime": {
+            "name": args.runtime,
+            "command_template": args.command_template,
             "java_version": java_version(),
             "classpath": classpath,
             "time_bin": time_bin,

@@ -15,10 +15,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # contents:read for checkout; checks:write so Bencher can post its report check.
-    permissions:
-      contents: read
-      checks: write
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +48,51 @@ jobs:
       - name: Run Clojure snippet tests
         run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
 
+  perf:
+    needs: test
+    runs-on: ubuntu-latest
+    # contents:read for checkout; checks:write so Bencher can post its report check.
+    permissions:
+      contents: read
+      checks: write
+    strategy:
+      matrix:
+        include:
+          # One entry per compiler/runtime. Benchmark names stay identical
+          # across runtimes; Bencher compares them via testbeds, so overlay
+          # the testbeds on the perf page for visual comparison.
+          - runtime: jvm
+            testbed: ubuntu-latest-jvm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download Clojure jars
+        run: |
+          mkdir -p .ci/jars
+          base=https://repo1.maven.org/maven2
+          curl -fsSL -o .ci/jars/clojure.jar "$base/org/clojure/clojure/1.12.0/clojure-1.12.0.jar"
+          curl -fsSL -o .ci/jars/spec.alpha.jar "$base/org/clojure/spec.alpha/0.5.238/spec.alpha-0.5.238.jar"
+          curl -fsSL -o .ci/jars/core.specs.alpha.jar "$base/org/clojure/core.specs.alpha/0.4.74/core.specs.alpha-0.4.74.jar"
+
+      - name: Decrypt and extract resources
+        env:
+          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
+        run: |
+          if [ -z "$RESOURCES_PASSPHRASE" ]; then
+            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
+            exit 1
+          fi
+          mkdir -p tests/resources
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$RESOURCES_PASSPHRASE" \
+            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+
       - name: Install measurement tools
         run: |
           sudo apt-get update
@@ -63,6 +104,7 @@ jobs:
         run: |
           python3 tools/measure.py --resources tests/resources \
             --repeat 3 --jobs 2 --timeout 300 \
+            --runtime ${{ matrix.runtime }} \
             --output perf-results.json --bmf-output bencher-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
@@ -70,7 +112,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-results
+          name: perf-results-${{ matrix.runtime }}
           path: |
             perf-results.json
             bencher-bmf.json
@@ -89,7 +131,7 @@ jobs:
               --start-point "${{ github.base_ref }}" \
               --start-point-hash "${{ github.event.pull_request.base.sha }}" \
               --start-point-clone-thresholds \
-              --testbed ubuntu-latest \
+              --testbed ${{ matrix.testbed }} \
               --adapter json \
               --file bencher-bmf.json \
               --github-actions "${{ secrets.GITHUB_TOKEN }}"
@@ -98,7 +140,7 @@ jobs:
               --project hhh-pa \
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.ref_name }}" \
-              --testbed ubuntu-latest \
+              --testbed ${{ matrix.testbed }} \
               --adapter json \
               --file bencher-bmf.json \
               --github-actions "${{ secrets.GITHUB_TOKEN }}"

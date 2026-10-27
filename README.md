@@ -65,9 +65,24 @@ python3 tools/measure.py --resources tests/resources --repeat 5 \
 python3 tools/measure.py --self-test  # parser checks, no JVM needed
 ```
 
-CI appends a results table to the step summary, uploads
-`perf-results.json`/`bencher-bmf.json` as artifacts, and reports the BMF
-file to Bencher (`bencher run --adapter json --file bencher-bmf.json`),
-which plots each snippet's `cpu_time`/`peak_memory`/`wall_time`/
-`instructions` per commit and posts a check on the head commit. The
-Bencher project API key lives in the `BENCHER_API_KEY` repository secret.
+CI runs correctness in the `test` job, then measures each configured
+compiler in a matrix `perf` job (`needs: test`), uploads per-runtime
+`perf-results-<runtime>` artifacts, appends a results table to the step
+summary, and reports the BMF file to Bencher
+(`bencher run --adapter json --file bencher-bmf.json`), which plots each
+snippet's `cpu_time`/`peak_memory`/`wall_time`/`instructions` per commit
+and posts a check on the head commit. The Bencher project API key lives
+in the `BENCHER_API_KEY` repository secret.
+
+## Comparing compilers
+
+Each compiler is a Bencher testbed (`ubuntu-latest-jvm` today); benchmark
+names stay identical across compilers, so overlay the testbeds on
+Bencher's perf page to compare them visually. To add a compiler:
+
+1. Add a matrix entry in `.github/workflows/test.yml` (`runtime` label +
+   `testbed` name) with whatever build steps it needs.
+2. Point `tools/measure.py` at its invocation via `--runtime <label>
+   --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes); the
+   same GNU `time` + `perf` harness measures every runtime, keeping
+   numbers comparable.
