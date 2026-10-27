@@ -7,10 +7,9 @@ Solutions mirror the other snippet repos: one script per problem at
 ## Testing
 
 `tests/run_tests.py` runs every `src/**/*.clj` script against the shared
-test cases from the recipes superproject (`resource/shared`). Resources
-are not committed here; GitHub Actions receives them as a compressed,
-base64-encoded tarball split across `RESOURCES_B64_NNNN` secrets:
-
-- `tools/build_secrets.sh <resource/shared dir> <chunk dir>` builds chunks
-- `tools/upload_secrets.sh <chunk dir>` uploads them with `gh secret set`
-- `.github/workflows/test.yml` reassembles, extracts, and runs the tests
+test cases from the recipes superproject (`resource/shared`). The cases
+ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz,
+AES-256, ASCII-armored); the passphrase is the `RESOURCES_PASSPHRASE`
+repository secret, and `.github/workflows/test.yml` decrypts it in CI.
+Rebuild the bundle after resource changes with
+`tools/build_bundle.sh <resource/shared dir> <passphrase-file>`.
