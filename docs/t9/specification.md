@@ -114,3 +114,11 @@ Post-slim CI numbers decide the residual; whatever remains
 is the inherent one-time DLX method tax, documented here,
 not a per-board cost (empty-input and per-board marginals
 are unaffected).
+
+Post-slim CI (branch run 40583894465, same 9 cases): rss_max
+109928-116704 KB (8 of 9 cases at 110-111 MB; one 116.7 MB
+single-case outlier), cpu_med 2.51-2.60 s — i.e. back to the
+MRV baseline envelope (105-110 MB, 2.50-2.60 s). Bencher
+fired no alert and the report check is green. The slimming
+recovered the full +15% memory / +12% cpu: the residual is
+~+1-4 MB peak RSS and ~0 cpu, within run-to-run noise.
