@@ -26,9 +26,17 @@ Acceptance criteria:
   inputs are out of scope (valid puzzles only, as before).
 - Differential DLX-vs-MRV passes on fixtures, hard boards
   (Escargot, Norvig 17-clue), and randomized sparse boards;
-  `tools/measure.py` passes (`ok`) with whole-process metrics
-  within startup-dominated noise of the MRV copy (a larger file
-  costs ~0.26 s one-time extra user-CPU at Clojure compile).
+  `tools/measure.py` passes (`ok`). Whole-process metrics are NOT
+  within noise of the MRV copy (earlier wording was wrong): CI
+  (JDK 21, 9 real cases) measured pre-slim cpu_time +12% and
+  peak_memory +15% (105-110MB -> 121-130MB, all cases). Root
+  cause is one-time class-load/verify + JIT code-cache for the
+  larger method set (empty-input runs are unaffected; local NMT
+  shows +1.0MB code cache, +1.7MB compiler arenas; solver data
+  itself is ~100KB). The implementation was slimmed (346 -> ~270
+  lines; 4 giant cover/uncover variants -> small helpers + one
+  cover!/uncover!) to shrink exactly that footprint; post-slim
+  CI numbers decide the residual (see Part 3).
 
 ## Part 2 — technical notes
 
@@ -45,15 +53,21 @@ Acceptance criteria:
   givens+zeros (matches MRV's fully-backtracked board).
 - Implementation: `int[]` L/R/U/D/C/S arrays plus auxiliary
   indexes (PL/PP/PN packed uncovered-cell list, RC/RD row decode,
-  RB row-base), `letfn` search (depth ≤ 81), primitive hints,
-  unchecked math, no per-node allocation. The static matrix is
-  built once per process; each puzzle gets fresh mutable arrays
-  via `System/arraycopy` (C/RC/RD/RB are read-only, shared).
-  Rows own 4 consecutive node ids, so cover/uncover visit
-  siblings by direct unrolled index; S is maintained for cell
-  columns only (never read for constraint columns); cell and
-  constraint covers are split per call site (column kind is
-  statically known). L/R links stay fully built and maintained.
+  RB row-base), `letfn` search (depth ≤ 81), primitive hints
+  (`^long` params + `(int ...)` entry coercions — plain `Object`
+  params reflect on `aset` values, and fns with >4 args cannot
+  take primitives at all), unchecked math, no per-node
+  allocation. The static matrix is built once per process; each
+  puzzle gets fresh mutable arrays via `System/arraycopy`
+  (C/RC/RD/RB are read-only, shared). Rows own 4 consecutive
+  node ids, so cover/uncover visit siblings by small-offset
+  loop (RB maps node to row base); S is maintained for cell
+  columns only (never read for constraint columns). One
+  cover!/uncover! (cell vs constraint by column index) plus
+  shared unlink/relink/drop/restore helpers and a setup
+  append! closure: methods stay small to bound Clojure
+  compile + class-load + JIT footprint (see Part 3). L/R
+  links stay fully built and maintained.
 - TDD: byte-compare against MRV on a corpus of sparse boards
   (empty → dense) before benchmarking.
 
@@ -79,3 +93,24 @@ is JVM-startup-dominated (~1 s wall): DLX +~70 ms wall
 `tools/measure.py` (fixture, `--repeat 3`): both `ok`;
 before cpu_med 2.21 s / wall_min 0.96 s, after cpu_med
 2.47 s / wall_min 1.04 s (startup-dominated).
+
+CI whole-process deltas, pre-slim code (branch run 40578788609
+vs master run at base 6469a6c, JDK 21, 9 real cases, 3
+repeats): cpu_med +0.28-0.37 s (+11-15%), rss_max +15-19 MB
+(+14-18%; 105-110 MB -> 121-130 MB, every case, ranges
+non-overlapping over ~27 samples/side). Bencher fired a
+peak_memory alert on search/dancing_links/sudoku. Local
+probes (JDK 27): maxrss identical for both solvers under
+-Xmx512m and -Xmx4g and on empty input; NMT at exit shows
+DLX +1.0 MB code cache, +1.7 MB compiler arenas, heap/GC
+unchanged — i.e. the delta is one-time class-load/verify +
+JIT code-cache for the larger method set, not solver data
+(~100KB static matrix). Response: mechanical slimming
+(346 -> ~270 lines; cover/uncover split variants unified;
+setup append factored out) with byte-identical outputs
+re-verified (fixture, Escargot, Norvig, t8, t64, 46-board
+corpus all MATCH; node counts unchanged: 482/4336/6842).
+Post-slim CI numbers decide the residual; whatever remains
+is the inherent one-time DLX method tax, documented here,
+not a per-board cost (empty-input and per-board marginals
+are unaffected).

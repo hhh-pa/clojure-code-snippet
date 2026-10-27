@@ -6,13 +6,15 @@
 ;; which is the MRV backtracker's expansion order, so this finds the same
 ;; first solution on every input (verified by byte-compare) while visiting
 ;; no more search nodes. The static matrix is built once per process; each
-;; puzzle gets fresh mutable arrays via System/arraycopy (C/RC/RD are
+;; puzzle gets fresh mutable arrays via System/arraycopy (C/RC/RD/RB are
 ;; read-only, shared). Uncovered cell columns live in a packed list for a
 ;; short column-choice scan. Each exact-cover row owns 4 consecutive node
-;; ids [cell, row-digit, col-digit, box-digit], so cover/uncover visit a
-;; row's other nodes by direct unrolled index (RB maps node to row base)
-;; instead of L/R traversal; offset 0 is always the cell node, hence the
-;; only S update (S is only read for cell columns).
+;; ids [cell, row-digit, col-digit, box-digit]; cover/uncover visit a
+;; row's other nodes by small-offset loop (RB maps node to row base)
+;; instead of L/R traversal. S is maintained for cell columns only
+;; (never read for constraint columns). Methods are kept small on
+;; purpose: one cover!/uncover! (cell vs constraint by column index)
+;; and shared link helpers, to bound Clojure/JIT compile footprint.
 (require '[clojure.string :as str])
 ;; All arithmetic below is small (indices < 3241, sizes < 10): overflow
 ;; checks are dead weight, so compile the rest of the file unchecked.
@@ -57,6 +59,20 @@
           (recur (inc i))))
       ;; Data rows: cells row-major, digits ascending, so each cell
       ;; column's D-chain tries digits 1..9 in order.
+      ;; append! is a small closure (setup only, once per process) to
+      ;; keep the big setup loop small (compile footprint).
+      (letfn [(append! [^long nodel ^long coll ^long idxl ^long dl]
+                (let [node (int nodel) col (int coll)
+                      idx (int idxl) d (int dl)
+                      u (aget U0 col)]
+                  (aset U0 node u)
+                  (aset D0 node col)
+                  (aset D0 u node)
+                  (aset U0 col node)
+                  (aset C node col)
+                  (aset S0 col (inc (aget S0 col)))
+                  (aset RC node idx)
+                  (aset RD node d)))]
       (loop [k 0]
         (when (< k 729)
           (let [idx (quot k 9)
@@ -81,44 +97,12 @@
             ;; Append each node to the bottom of its column.
             (let [m1 (inc m)
                   m2 (+ m 2)
-                  m3 (+ m 3)
-                  u0 (aget U0 c0)
-                  u1 (aget U0 c1)
-                  u2 (aget U0 c2)
-                  u3 (aget U0 c3)]
-              (aset U0 m u0)
-              (aset D0 m c0)
-              (aset D0 u0 m)
-              (aset U0 c0 m)
-              (aset C m c0)
-              (aset S0 c0 (inc (aget S0 c0)))
-              (aset RC m idx)
-              (aset RD m d)
-              (aset U0 m1 u1)
-              (aset D0 m1 c1)
-              (aset D0 u1 m1)
-              (aset U0 c1 m1)
-              (aset C m1 c1)
-              (aset S0 c1 (inc (aget S0 c1)))
-              (aset RC m1 idx)
-              (aset RD m1 d)
-              (aset U0 m2 u2)
-              (aset D0 m2 c2)
-              (aset D0 u2 m2)
-              (aset U0 c2 m2)
-              (aset C m2 c2)
-              (aset S0 c2 (inc (aget S0 c2)))
-              (aset RC m2 idx)
-              (aset RD m2 d)
-              (aset U0 m3 u3)
-              (aset D0 m3 c3)
-              (aset D0 u3 m3)
-              (aset U0 c3 m3)
-              (aset C m3 c3)
-              (aset S0 c3 (inc (aget S0 c3)))
-              (aset RC m3 idx)
-              (aset RD m3 d)))
-          (recur (inc k))))
+                  m3 (+ m 3)]
+              (append! m c0 idx d)
+              (append! m1 c1 idx d)
+              (append! m2 c2 idx d)
+              (append! m3 c3 idx d)))
+          (recur (inc k)))))
       (loop [p 0]
         (when (< p t)
           (let [base (+ 1 (* p 81))
@@ -141,130 +125,71 @@
             (System/arraycopy PL0 0 PL 0 81)
             (System/arraycopy PP0 0 PP 0 82)
             (aset PN 0 81)
-            ;; Cell/column variants are split (every call site knows the
-            ;; column kind statically) to skip the dispatch branch.
-            (letfn [(cover-cell! [c]
-                      (aset R (aget L c) (aget R c))
-                      (aset L (aget R c) (aget L c))
-                      (let [pn (dec (aget PN 0))]
-                        (aset PN 0 pn)
-                        (let [pos (aget PP c)
-                              last (aget PL pn)]
-                          (aset PL pos last)
-                          (aset PP last pos)))
+            ;; Small helpers + one cover!/uncover! (cell vs constraint
+            ;; decided by column index): identical link updates to the
+            ;; split variants, much smaller methods (compile footprint).
+            (letfn [(unlink! [^long jl]
+                      (let [j (int jl)
+                            u (aget U j) d (aget D j)]
+                        (aset D u d)
+                        (aset U d u)))
+                    (relink! [^long jl]
+                      (let [j (int jl)
+                            u (aget U j) d (aget D j)]
+                        (aset D u j)
+                        (aset U d j)))
+                    (drop-col! [^long cl]
+                      (let [c (int cl)]
+                        (aset R (aget L c) (aget R c))
+                        (aset L (aget R c) (aget L c))))
+                    (restore-col! [^long cl]
+                      (let [c (int cl)]
+                        (aset R (aget L c) c)
+                        (aset L (aget R c) c)))
+                    (cover! [^long cl]
+                      (let [c (int cl)]
+                        (drop-col! c)
+                      (when (<= c 81)
+                        (let [pn (dec (aget PN 0))]
+                          (aset PN 0 pn)
+                          (let [pos (aget PP c)
+                                last (aget PL pn)]
+                            (aset PL pos last)
+                            (aset PP last pos))))
                       (loop [i (aget D c)]
                         (when (not (= i c))
-                          (let [b (aget RB i)
-                                j1 (inc b)
-                                j2 (+ b 2)
-                                j3 (+ b 3)
-                                u1 (aget U j1) d1 (aget D j1)
-                                u2 (aget U j2) d2 (aget D j2)
-                                u3 (aget U j3) d3 (aget D j3)]
-                            (aset D u1 d1)
-                            (aset U d1 u1)
-                            (aset D u2 d2)
-                            (aset U d2 u2)
-                            (aset D u3 d3)
-                            (aset U d3 u3))
-                          (recur (aget D i)))))
-                    (cover-con! [c]
-                      (aset R (aget L c) (aget R c))
-                      (aset L (aget R c) (aget L c))
-                      (loop [i (aget D c)]
-                        (when (not (= i c))
-                          (let [b (aget RB i)
-                                cc0 (aget C b)
-                                u0 (aget U b) d0 (aget D b)]
-                            (aset D u0 d0)
-                            (aset U d0 u0)
-                            (aset S cc0 (dec (aget S cc0)))
-                            (let [j1 (inc b)
-                                  j2 (+ b 2)
-                                  j3 (+ b 3)]
-                              (cond
-                                (= i j1)
-                                (let [u2 (aget U j2) d2 (aget D j2)
-                                      u3 (aget U j3) d3 (aget D j3)]
-                                  (aset D u2 d2)
-                                  (aset U d2 u2)
-                                  (aset D u3 d3)
-                                  (aset U d3 u3))
-                                (= i j2)
-                                (let [u1 (aget U j1) d1 (aget D j1)
-                                      u3 (aget U j3) d3 (aget D j3)]
-                                  (aset D u1 d1)
-                                  (aset U d1 u1)
-                                  (aset D u3 d3)
-                                  (aset U d3 u3))
-                                :else
-                                (let [u1 (aget U j1) d1 (aget D j1)
-                                      u2 (aget U j2) d2 (aget D j2)]
-                                  (aset D u1 d1)
-                                  (aset U d1 u1)
-                                  (aset D u2 d2)
-                                  (aset U d2 u2)))))
-                          (recur (aget D i)))))
-                    (uncover-cell! [c]
+                          (let [b (aget RB i)]
+                            (loop [o 0]
+                              (when (< o 4)
+                                (let [j (+ b o)]
+                                  (when (not (= j i))
+                                    (unlink! j)
+                                    (when (= j b)
+                                      (let [cc (aget C j)]
+                                        (aset S cc (dec (aget S cc)))))))
+                                (recur (inc o)))))
+                          (recur (aget D i))))))
+                    (uncover! [^long cl]
+                      (let [c (int cl)]
                       (loop [i (aget U c)]
                         (when (not (= i c))
-                          (let [b (aget RB i)
-                                j1 (inc b)
-                                j2 (+ b 2)
-                                j3 (+ b 3)
-                                u1 (aget U j1) d1 (aget D j1)
-                                u2 (aget U j2) d2 (aget D j2)
-                                u3 (aget U j3) d3 (aget D j3)]
-                            (aset D u1 j1)
-                            (aset U d1 j1)
-                            (aset D u2 j2)
-                            (aset U d2 j2)
-                            (aset D u3 j3)
-                            (aset U d3 j3))
+                          (let [b (aget RB i)]
+                            (loop [o 0]
+                              (when (< o 4)
+                                (let [j (+ b o)]
+                                  (when (not (= j i))
+                                    (relink! j)
+                                    (when (= j b)
+                                      (let [cc (aget C j)]
+                                        (aset S cc (inc (aget S cc)))))))
+                                (recur (inc o)))))
                           (recur (aget U i))))
-                      (aset R (aget L c) (int c))
-                      (aset L (aget R c) (int c))
-                      (let [pn (aget PN 0)]
-                        (aset PL pn (int c))
-                        (aset PP c pn)
-                        (aset PN 0 (inc pn))))
-                    (uncover-con! [c]
-                      (loop [i (aget U c)]
-                        (when (not (= i c))
-                          (let [b (aget RB i)
-                                cc0 (aget C b)
-                                u0 (aget U b) d0 (aget D b)]
-                            (aset D u0 b)
-                            (aset U d0 b)
-                            (aset S cc0 (inc (aget S cc0)))
-                            (let [j1 (inc b)
-                                  j2 (+ b 2)
-                                  j3 (+ b 3)]
-                              (cond
-                                (= i j1)
-                                (let [u2 (aget U j2) d2 (aget D j2)
-                                      u3 (aget U j3) d3 (aget D j3)]
-                                  (aset D u2 j2)
-                                  (aset U d2 j2)
-                                  (aset D u3 j3)
-                                  (aset U d3 j3))
-                                (= i j2)
-                                (let [u1 (aget U j1) d1 (aget D j1)
-                                      u3 (aget U j3) d3 (aget D j3)]
-                                  (aset D u1 j1)
-                                  (aset U d1 j1)
-                                  (aset D u3 j3)
-                                  (aset U d3 j3))
-                                :else
-                                (let [u1 (aget U j1) d1 (aget D j1)
-                                      u2 (aget U j2) d2 (aget D j2)]
-                                  (aset D u1 j1)
-                                  (aset U d1 j1)
-                                  (aset D u2 j2)
-                                  (aset U d2 j2)))))
-                          (recur (aget U i))))
-                      (aset R (aget L c) (int c))
-                      (aset L (aget R c) (int c)))
+                      (restore-col! c)
+                      (when (<= c 81)
+                        (let [pn (aget PN 0)]
+                          (aset PL pn c)
+                          (aset PP c pn)
+                          (aset PN 0 (inc pn))))))
                     ;; Exact min (size, index) over the packed uncovered
                     ;; cell columns: the MRV backtracker's best cell (any
                     ;; size-0 column means dead, so the first one returns).
@@ -287,7 +212,7 @@
                           (zero? (aget S c)) false
                           :else
                           (do
-                            (cover-cell! c)
+                            (cover! c)
                             ;; rr is in a cell column, hence row offset 0:
                             ;; its side columns sit at rr+1..rr+3.
                             (let [ok (loop [rr (aget D c)]
@@ -295,18 +220,18 @@
                                          false
                                          (let [nx (aget D rr)]
                                            (aset O k rr)
-                                           (cover-con! (aget C (inc rr)))
-                                           (cover-con! (aget C (+ rr 2)))
-                                           (cover-con! (aget C (+ rr 3)))
+                                           (cover! (aget C (inc rr)))
+                                           (cover! (aget C (+ rr 2)))
+                                           (cover! (aget C (+ rr 3)))
                                            (if (search! (inc k))
                                              true
                                              (do
-                                               (uncover-con! (aget C (+ rr 3)))
-                                               (uncover-con! (aget C (+ rr 2)))
-                                               (uncover-con! (aget C (inc rr)))
+                                               (uncover! (aget C (+ rr 3)))
+                                               (uncover! (aget C (+ rr 2)))
+                                               (uncover! (aget C (inc rr)))
                                                (recur nx))))))]
                               (when-not ok
-                                (uncover-cell! c))
+                                (uncover! c))
                               ok)))))]
               ;; Cover the given clues and push them on the solution stack.
               (let [ng (loop [idx 0 g 0]
@@ -319,10 +244,10 @@
                                (do
                                  (let [n0 (+ 325 (* (+ (* idx 9) (dec v)) 4))]
                                    (aset O g n0)
-                                   (cover-cell! (aget C n0))
-                                   (cover-con! (aget C (inc n0)))
-                                   (cover-con! (aget C (+ n0 2)))
-                                   (cover-con! (aget C (+ n0 3))))
+                                   (cover! (aget C n0))
+                                   (cover! (aget C (inc n0)))
+                                   (cover! (aget C (+ n0 2)))
+                                   (cover! (aget C (+ n0 3))))
                                  (recur (inc idx) (inc g)))))))]
                 (when (search! ng)
                   ;; Decode the non-given rows (O[0..ng) are the givens,
