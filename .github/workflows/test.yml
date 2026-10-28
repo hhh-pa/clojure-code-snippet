@@ -171,7 +171,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             bencher run \
-              --project hhh-pa \
+              --project clojure-code-snippet \
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.head_ref }}" \
               --hash "${{ github.event.pull_request.head.sha }}" \
@@ -184,7 +184,7 @@ jobs:
               --github-actions "${{ secrets.GITHUB_TOKEN }}"
           else
             bencher run \
-              --project hhh-pa \
+              --project clojure-code-snippet \
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.ref_name }}" \
               --testbed ${{ matrix.testbed }} \
