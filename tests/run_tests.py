@@ -74,7 +74,7 @@ def discover(resources_root):
                         os.path.join(case, "output.txt"),
                     )
                 )
-        area, problem = area_problem.split(os.sep, 1)
+        area, problem = area_problem.split(os.sep, 1) if os.sep in area_problem else (area_problem, stem)
         yield area, problem, script, cases
 
 
@@ -116,7 +116,7 @@ def main(argv=None):
     missing = []
     for area, problem, script, cases in discover(args.resources):
         label = "{}/{}".format(area, problem)
-        if args.only and args.only not in label:
+        if args.only and args.only not in label and args.only not in script:
             continue
         if not cases:
             missing.append(label)

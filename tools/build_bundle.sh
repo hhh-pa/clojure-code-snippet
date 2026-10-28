@@ -24,16 +24,34 @@ trap 'rm -rf "$work"' EXIT
 
 if [ -n "$pass_file" ]; then
   pass_opt=(--passphrase-file "$pass_file")
+  actual_pass_file="$pass_file"
 else
   openssl rand -base64 48 | tr -d '\n' > "$work/pass.txt"
   pass_opt=(--passphrase-file "$work/pass.txt")
+  actual_pass_file="$work/pass.txt"
 fi
 
 tar -cJf "$work/bundle.tar.xz" -C "$(dirname "$shared_dir")" "$(basename "$shared_dir")"
-gpg --batch --yes --pinentry-mode loopback "${pass_opt[@]}" \
-  --symmetric --cipher-algo AES256 --armor -o "$out" "$work/bundle.tar.xz"
 
-echo "wrote $out ($(stat -c%s "$out") bytes)"
+if command -v gpg >/dev/null 2>&1; then
+  gpg --batch --yes --pinentry-mode loopback "${pass_opt[@]}" \
+    --symmetric --cipher-algo AES256 --armor -o "$out" "$work/bundle.tar.xz"
+else
+  python3 -c "
+import sys, pgpy
+from pgpy.constants import SymmetricKeyAlgorithm
+with open(sys.argv[1], 'r') as f:
+    passphrase = f.read().strip()
+with open(sys.argv[2], 'rb') as f:
+    data = f.read()
+msg = pgpy.PGPMessage.new(data, format='b')
+enc = msg.encrypt(passphrase, cipher=SymmetricKeyAlgorithm.AES256)
+with open(sys.argv[3], 'w') as f:
+    f.write(str(enc))
+" "$actual_pass_file" "$work/bundle.tar.xz" "$out"
+fi
+
+echo "wrote $out ($(wc -c < "$out" | tr -d ' ') bytes)"
 if [ -z "$pass_file" ]; then
   echo "FRESH PASSPHRASE (set as RESOURCES_PASSPHRASE, then destroy this copy):"
   cat "$work/pass.txt"
