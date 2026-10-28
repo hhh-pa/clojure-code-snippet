@@ -37,6 +37,9 @@ Outputs:
     CI reports each --shard's BMF separately: one merged report at 3
     measures would re-truncate the check summary (T11), while per-shard
     reports (~9 benchmarks x 3 measures) fit with headroom.
+    Under --slope, covered benchmarks gain a sparse `complexity_exponent`
+    measure (fitted power-law exponent; no threshold, informational
+    trend) and the full report gains a "complexity" section.
   * --summary-file: Markdown table appended for GitHub step summaries.
 
 Compiler comparison: benchmark names are compiler-agnostic on purpose.
@@ -60,7 +63,7 @@ Usage:
         [--output perf.json] [--bmf-output bencher.json] \
         [--summary-file "$GITHUB_STEP_SUMMARY"] [--no-perf] \
         [--runtime jvm] [--command-template '...'] [--shard K/N] \
-        [--alloc-repeat 3 | --no-alloc]
+        [--alloc-repeat 3 | --no-alloc] [--slope]
 
     python3 tools/measure.py --merge shard-*.json --output merged.json \
         [--bmf-output bencher.json] [--summary-file summary.md]
@@ -545,7 +548,7 @@ def measure_case(time_bin, use_perf, template, classpath, label, stem, script,
     return result
 
 
-def build_bmf(results):
+def build_bmf(results, complexity=None):
     """Aggregate per-case summaries into Bencher Metric Format JSON.
 
     One Benchmark per snippet (label/stem) with EXACTLY the measures
@@ -561,7 +564,10 @@ def build_bmf(results):
     cpu_time and allocated_bytes are summed over a snippet's cases;
     peak_memory takes the worst case (max). Memory measures are in
     bytes. Snippets without allocation data (non-JVM runtimes, or
-    pre-T19 reports) omit allocated_bytes.
+    pre-T19 reports) omit allocated_bytes. When complexity (T20
+    slope results) is given, covered benchmarks with a successful
+    fit gain a sparse fourth measure, complexity_exponent (slope
+    with its leave-one-out band).
     """
     per_snippet = {}
     for res in results:
@@ -593,6 +599,17 @@ def build_bmf(results):
                 "upper_value": sum(a["max"] for a in alloc),
             }
         bmf[name] = measures
+    # ---- T20 hook: sparse complexity_exponent for covered benchmarks. ----
+    for name in sorted(complexity or {}):
+        entry = (complexity or {})[name]
+        fit = entry.get("fit") or {}
+        if not entry.get("ok") or not fit.get("ok"):
+            continue
+        bmf.setdefault(name, {})["complexity_exponent"] = {
+            "value": fit["slope"],
+            "lower_value": fit["lower"],
+            "upper_value": fit["upper"],
+        }
     return bmf
 
 
@@ -605,11 +622,15 @@ def merge_reports(paths):
     (label/stem/case) entries (e.g. the same file passed twice) keep
     the first copy. Header fields (host/runtime/config) come from
     the first report with the shard tag replaced by "merged".
+    Complexity (T20 slope) sections union the same way (first wins),
+    so the merged BMF keeps every shard's complexity_exponent and
+    still equals the per-shard BMF union.
     """
     merged = []
     seen = set()
     failures = []
     missing = set()
+    complexity = {}
     base = None
     for path in paths:
         try:
@@ -627,15 +648,18 @@ def merge_reports(paths):
             merged.append(res)
         failures.extend(rep.get("failures", []))
         missing.update(rep.get("missing", []))
+        for name, entry in rep.get("complexity", {}).items():
+            complexity.setdefault(name, entry)
     merged.sort(key=lambda r: (r.get("label"), r.get("stem"), r.get("case")))
     report = dict(base) if base else {}
     report["results"] = merged
     report["failures"] = sorted(set(failures))
     report["missing"] = sorted(missing)
+    report["complexity"] = complexity
     config = dict(report.get("config", {}))
     config["shard"] = "merged"
     report["config"] = config
-    return report, build_bmf(merged)
+    return report, build_bmf(merged, complexity)
 
 
 def write_json(path, payload):
@@ -905,6 +929,14 @@ def self_test():
     os.close(fd)
     fd, shard_b = tempfile.mkstemp(prefix="bmf-shard-b-", suffix=".json")
     os.close(fd)
+    # T20 slope entries, one per shard: the merge must union them so
+    # the merged BMF keeps every shard's complexity_exponent.
+    cx_a = {"a/s": {"ok": True,
+                    "fit": {"ok": True, "slope": 1.0,
+                            "lower": 0.9, "upper": 1.1}}}
+    cx_b = {"b/s": {"ok": True,
+                    "fit": {"ok": True, "slope": 2.0,
+                            "lower": 1.9, "upper": 2.1}}}
     try:
         with open(shard_a, "w") as handle:
             json.dump({"tool": "t", "config": {"shard": "0/2"},
@@ -914,14 +946,14 @@ def self_test():
                            {"ok": True, "label": "a", "stem": "s",
                             "case": "c2", "summary": s1}],
                        "failures": ["x: no resources found"],
-                       "missing": ["x"]}, handle)
+                       "missing": ["x"], "complexity": cx_a}, handle)
         with open(shard_b, "w") as handle:
             json.dump({"tool": "t", "config": {"shard": "1/2"},
                        "results": [
                            {"ok": True, "label": "b", "stem": "s",
                             "case": "c1", "summary": s2}],
                        "failures": ["x: no resources found"],
-                       "missing": ["x", "y"]}, handle)
+                       "missing": ["x", "y"], "complexity": cx_b}, handle)
         merged, merged_bmf = merge_reports([shard_a, shard_b])
         whole_bmf = build_bmf(
             [{"ok": True, "label": "a", "stem": "s", "case": "c1",
@@ -929,12 +961,17 @@ def self_test():
              {"ok": True, "label": "a", "stem": "s", "case": "c2",
               "summary": s1},
              {"ok": True, "label": "b", "stem": "s", "case": "c1",
-              "summary": s2}])
+              "summary": s2}],
+            {"a/s": cx_a["a/s"], "b/s": cx_b["b/s"]})
         check("merge",
               merged_bmf == whole_bmf
               and merged["config"]["shard"] == "merged"
               and merged["failures"] == ["x: no resources found"]
               and merged["missing"] == ["x", "y"]
+              and merged["complexity"]
+              == {"a/s": cx_a["a/s"], "b/s": cx_b["b/s"]}
+              and merged_bmf["a/s"]["complexity_exponent"]["value"] == 1.0
+              and merged_bmf["b/s"]["complexity_exponent"]["value"] == 2.0
               and [(r["label"], r["case"]) for r in merged["results"]]
               == [("a", "c1"), ("a", "c2"), ("b", "c1")],
               repr(sorted(merged_bmf)))
@@ -945,14 +982,21 @@ def self_test():
                   [{"ok": True, "label": "a", "stem": "s",
                     "case": "c1", "summary": s1},
                    {"ok": True, "label": "a", "stem": "s",
-                    "case": "c2", "summary": s1}])
-              and len(merged2["results"]) == 2)
+                    "case": "c2", "summary": s1}],
+                  cx_a)
+              and len(merged2["results"]) == 2
+              and merged2["complexity"] == cx_a)
     finally:
         for path in (shard_a, shard_b):
             try:
                 os.unlink(path)
             except OSError:
                 pass
+    # ---- T20 hook: slope-fit checks (no JVM/time/perf needed). ----
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import slope as slope_mod
+    for _name, _ok, _detail in slope_mod.run_checks():
+        check(_name, _ok, _detail)
 
     print("self-test: {} failed".format(len(failures)))
     return 1 if failures else 0
@@ -997,6 +1041,13 @@ def main(argv=None):
                              " into one merged report instead of measuring")
     parser.add_argument("inputs", nargs="*",
                         help="full-report JSONs for --merge")
+    # ---- T20 hook: complexity-slope flags (default off: opt-in only). ----
+    parser.add_argument("--slope", action="store_true",
+                        help="run scaled slope measurements for covered benchmarks")
+    parser.add_argument("--slope-repeat", type=int, default=3,
+                        help="repeats per slope scale (the median is fitted)")
+    parser.add_argument("--slope-only", action="store_true",
+                        help="skip the regular loop; run only slope measurements")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1021,6 +1072,11 @@ def main(argv=None):
         parser.error("--alloc-repeat must be >= 1")
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
+    # ---- T20 hook: --slope-only implies --slope. ----
+    if args.slope_only:
+        args.slope = True
+    if args.slope_repeat < 1:
+        parser.error("--slope-repeat must be >= 1")
     shard = None
     if args.shard is not None:
         try:
@@ -1047,8 +1103,15 @@ def main(argv=None):
             continue
         for case_name, inp, outp in cases:
             tasks.append((label, stem, case_name, script, inp, outp))
+    # ---- T20 hook: capture full snippet groups BEFORE shard filtering,
+    # so slope entries land in the same shard as their regular entry. ----
+    slope_groups = sorted({(t[0], t[1]) for t in tasks})
     if shard is not None:
         tasks = select_shard(tasks, *shard)
+    # ---- T20 hook: slope-only mode skips the regular loop entirely. ----
+    if args.slope_only:
+        tasks = []
+        missing = []
 
     alloc_repeat = args.alloc_repeat if args.alloc else 0
     if alloc_repeat and tasks:
@@ -1077,7 +1140,39 @@ def main(argv=None):
     for label in missing:
         failures.append("{}: no resources found".format(label))
 
-    bmf = build_bmf(results)
+    # ---- T20 complexity-slope hook (begin; keep small for mergeability) ----
+    complexity = {}
+    if args.slope:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import slope as slope_mod
+        slope_scripts = {}
+        for area, problem, script, cases in run_tests.discover(args.resources):
+            slope_label = "{}/{}".format(area, problem).replace(os.sep, "/")
+            if args.only and args.only not in slope_label:
+                continue
+            # No missing-cases exclusion: slope runs use generated
+            # inputs, so they work without decrypted resources.
+            stem = os.path.basename(script)[:-len(".clj")]
+            slope_scripts[(slope_label, stem)] = script
+        complexity = slope_mod.run_slope_all(
+            measure_case, time_bin, use_perf, args.command_template,
+            classpath, slope_scripts, args.only, slope_groups, shard,
+            args.slope_repeat, args.timeout, args.jobs)
+        for name in sorted(complexity):
+            entry = complexity[name]
+            fit = entry.get("fit") or {}
+            if entry.get("ok") and fit.get("ok"):
+                print("slope {}: p={:.3f} [{:.3f},{:.3f}] R^2={:.4f} "
+                      "floor={:.2f}s n={}".format(
+                          name, fit["slope"], fit["lower"], fit["upper"],
+                          fit["r_squared"], fit["floor_c"],
+                          entry["scales"]))
+            else:
+                print("slope {}: SKIPPED {}".format(
+                    name, entry.get("error")))
+    # ---- T20 complexity-slope hook (end) ----
+
+    bmf = build_bmf(results, complexity)
     report = {
         "tool": "tools/measure.py",
         "version": TOOL_VERSION,
@@ -1099,10 +1194,13 @@ def main(argv=None):
             "only": args.only,
             "shard": args.shard,
             "alloc_repeat": alloc_repeat,
+            "slope": args.slope,  # T20 hook: slope-run provenance
+            "slope_repeat": args.slope_repeat,  # T20 hook
         },
         "results": results,
         "failures": failures,
         "missing": sorted(missing),
+        "complexity": complexity,  # T20 hook: {} unless --slope
     }
     if args.output:
         write_json(args.output, report)
@@ -1110,6 +1208,26 @@ def main(argv=None):
         write_json(args.bmf_output, bmf)
     if args.summary_file:
         append_summary(args.summary_file, report, bmf)
+    # ---- T20 hook: slope lines in the step summary (own block so
+    # append_summary stays untouched for mergeability). ----
+    if args.summary_file and complexity:
+        try:
+            with open(args.summary_file, "a") as fd:
+                fd.write("\n**Complexity exponents (T20):**\n\n")
+                for name in sorted(complexity):
+                    entry = complexity[name]
+                    fit = entry.get("fit") or {}
+                    if entry.get("ok") and fit.get("ok"):
+                        fd.write("- {}: p = {:.3f} [{:.3f}, {:.3f}], "
+                                 "R^2 = {:.4f}\n".format(
+                                     name, fit["slope"], fit["lower"],
+                                     fit["upper"], fit["r_squared"]))
+                    else:
+                        fd.write("- {}: skipped ({})\n".format(
+                            name, entry.get("error")))
+        except OSError as exc:
+            raise SystemExit("cannot append summary to {}: {}".format(
+                args.summary_file, exc))
     print_table(results, failures, missing)
     return 1 if failures else 0
 
