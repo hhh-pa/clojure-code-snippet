@@ -27,9 +27,14 @@ Acceptance criteria:
   numbers in Part 3 (the automaton is already linear — ship
   for algorithmic diversity, report the measured delta either
   way). Reflection-clean, no per-node allocation in hot paths.
-- New Bencher benchmark auto-tracked; CI test job is expected
-  to report missing-resource for the new path (no encrypted
-  cases; adding them needs the resources passphrase).
+- New Bencher benchmark auto-tracked. CI test coverage comes
+  from committed sample cases under
+  `tests/resources/string_related/suffix_tree/` (visible by
+  design — self-generated inputs with automaton-produced
+  outputs; they leak nothing about the encrypted bundle, whose
+  extension needs the unavailable resources passphrase). The
+  harness fails on missing resources by design, so committed
+  cases (not a harness carve-out) are what keeps CI green.
 
 ## Part 2 — technical notes
 
