@@ -11,22 +11,32 @@ runs, machine load, and machines:
     count is nearly load-invariant for the same binary and input.
   * maxrss_kb (peak RSS from GNU time) -- competing CPU load does not
     change how much RAM a process uses.
+  * allocated_bytes (heap-used-at-exit under EpsilonGC, min of
+    --alloc-repeat runs) -- total allocation, the load-independent
+    gauge of algorithmic work. Epsilon never collects, so nothing
+    is ever freed and used-at-exit equals total bytes allocated.
 
 Wall time is recorded too but is NOT load-independent; treat it as
 secondary. Each case runs --repeat times; the summary keeps min/median/max
 so the least-disturbed run (min CPU) and worst-case footprint (max RSS)
 stay visible. Absolute numbers must only be compared as same-machine
 ratios (e.g. Clojure vs native back-to-back); never compare absolutes
-across different machines or runners.
+across different machines or runners. Allocated bytes are comparable
+within one JDK build only -- absolutes shift between JDK versions
+(e.g. the same case reports 193M on Temurin 21 vs 136M on Oracle 27)
+-- so Bencher tracks them per testbed like every other metric.
 
 Outputs:
 
   * --output: full JSON (per-run metrics, per-case summaries, failures).
   * --bmf-output: Bencher Metric Format JSON (one Benchmark per snippet,
-    measures cpu_time/peak_memory only -- wall_time and perf counters
-    stay in the full report to keep Bencher's check summary under
-    GitHub's size limit), consumable by
+    measures cpu_time/peak_memory/allocated_bytes -- wall_time and perf
+    counters stay in the full report to keep Bencher's check summary
+    under GitHub's size limit), consumable by
     `bencher run --adapter json --file ...` to track evolution in Bencher.
+    CI reports each --shard's BMF separately: one merged report at 3
+    measures would re-truncate the check summary (T11), while per-shard
+    reports (~9 benchmarks x 3 measures) fit with headroom.
   * --summary-file: Markdown table appended for GitHub step summaries.
 
 Compiler comparison: benchmark names are compiler-agnostic on purpose.
@@ -49,7 +59,11 @@ Usage:
         [--repeat 5] [--jobs 1] [--timeout 300] [--only substring] \
         [--output perf.json] [--bmf-output bencher.json] \
         [--summary-file "$GITHUB_STEP_SUMMARY"] [--no-perf] \
-        [--runtime jvm] [--command-template '...'] [--shard K/N]
+        [--runtime jvm] [--command-template '...'] [--shard K/N] \
+        [--alloc-repeat 3 | --no-alloc]
+
+    python3 tools/measure.py --merge shard-*.json --output merged.json \
+        [--bmf-output bencher.json] [--summary-file summary.md]
 
     python3 tools/measure.py --self-test   # durable parser checks, no JVM needed
 
@@ -65,6 +79,7 @@ import datetime
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import socket
@@ -83,8 +98,22 @@ TIME_FORMAT = (
     "major_faults=%F minor_faults=%R"
 )
 PERF_EVENTS = "instructions:u,cycles:u"
-TOOL_VERSION = 1
+TOOL_VERSION = 2
 DEFAULT_COMMAND_TEMPLATE = "java -cp {cp} clojure.main {script}"
+# Allocation runs: EpsilonGC never collects, so heap-used-at-exit equals
+# total allocation. Xms=Xmx avoids resize noise; 2g fits CI runners.
+EPSILON_FLAGS = [
+    "-XX:+UnlockExperimentalVMOptions",
+    "-XX:+UseEpsilonGC",
+    "-Xms2g",
+    "-Xmx2g",
+]
+ALLOC_REPEAT_DEFAULT = 3
+_UNIT_MULTIPLIERS = {"B": 1, "K": 1024, "M": 1024 ** 2,
+                     "G": 1024 ** 3, "T": 1024 ** 4}
+# E.g. "49824K used" (old format) or "136M (6.69%) used" (new format).
+_EPSILON_USED_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*([BKMGT])(?:\s*\([^)]*\))?\s+used\b")
 
 
 def parse_time_text(text):
@@ -143,6 +172,26 @@ def parse_perf_text(text):
     return counters
 
 
+def parse_epsilon_used(text):
+    """Parse Epsilon -Xlog:gc output; return heap-used-at-exit in bytes.
+
+    Takes the used value from the LAST `Heap:` line (earlier lines are
+    mid-run states) and converts its K/M/G unit to bytes. Lines without
+    `Heap:` (metaspace, gc,exit) never match, so verbose logs are safe.
+    """
+    found = None
+    for line in text.splitlines():
+        if "Heap:" not in line:
+            continue
+        for match in _EPSILON_USED_RE.finditer(line):
+            found = match
+    if found is None:
+        raise ValueError(
+            "no Epsilon Heap used value in: {!r}".format(text.strip()[-200:])
+        )
+    return int(float(found.group(1)) * _UNIT_MULTIPLIERS[found.group(2)])
+
+
 def summarize_numbers(values):
     values = sorted(values)
     return {"min": values[0], "median": statistics.median(values),
@@ -194,6 +243,22 @@ def summarize_case(runs):
     summary["instructions"] = summarize_numbers(insn) if insn else None
     summary["cycles"] = summarize_numbers(cyc) if cyc else None
     return summary
+
+
+def summarize_alloc(byte_values):
+    """Aggregate per-run allocated-byte counts into a summary dict.
+
+    Besides min/median/max this records a `deterministic` flag (all
+    runs identical) so allocation stability stays auditable in the
+    full report. The measurement noise is one-sided -- TLAB waste
+    and allocation interleaving only inflate used-at-exit -- so BMF
+    aggregation uses the MINIMUM as the point estimate of true
+    total allocation.
+    """
+    values = sorted(byte_values)
+    return {"min": values[0], "median": statistics.median(values),
+            "max": values[-1],
+            "deterministic": len(set(values)) == 1}
 
 
 def resolve_time_bin(explicit):
@@ -359,8 +424,72 @@ def measure_once(time_bin, use_perf, template, classpath, script, stem,
                     pass
 
 
+def alloc_supported(template, classpath, script, stem):
+    """True when the template invokes a JVM (Epsilon flags apply).
+
+    Non-JVM runtimes (a future native template) skip allocation
+    measurement: their summaries record None and the BMF omits the
+    measure for those snippets.
+    """
+    try:
+        inner = build_inner_command(template, classpath, script, stem)
+    except (KeyError, ValueError):
+        return False
+    return bool(inner) and os.path.basename(inner[0]) == "java"
+
+
+def measure_alloc_once(template, classpath, script, stem,
+                       input_path, timeout):
+    """Run script once under EpsilonGC. Return (stdout, bytes, err).
+
+    The gc log goes to a file (-Xlog:gc:<file>) so program stdout
+    stays clean for the correctness diff on every JDK (unified
+    logging's default stream differs: stderr on some, stdout on
+    Oracle 27).
+    """
+    try:
+        inner = build_inner_command(template, classpath, script, stem)
+    except (KeyError, ValueError) as exc:
+        return None, None, "bad command template: {}".format(exc)
+    if not inner:
+        return None, None, "bad command template: expands to empty argv"
+    gc_fd, gc_file = tempfile.mkstemp(prefix="snip-gc-")
+    os.close(gc_fd)
+    cmd = [inner[0]] + EPSILON_FLAGS + ["-Xlog:gc:" + gc_file] + inner[1:]
+    try:
+        with open(input_path, "rb") as stdin_fd:
+            try:
+                proc = subprocess.run(
+                    cmd, stdin=stdin_fd,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return None, None, "TIMEOUT (>{}s)".format(timeout)
+        if proc.returncode != 0:
+            err_text = proc.stderr.decode(errors="ignore")
+            tail = err_text.strip().splitlines()
+            msg = "exit {}: {}".format(
+                proc.returncode, tail[-1] if tail else "no stderr")
+            if "OutOfMemoryError" in err_text:
+                msg += " (Epsilon heap exhausted; raise -Xmx in EPSILON_FLAGS)"
+            return None, None, msg
+        try:
+            with open(gc_file) as handle:
+                used = parse_epsilon_used(handle.read())
+        except (OSError, ValueError) as exc:
+            return None, None, "epsilon log unreadable: {}".format(exc)
+        return proc.stdout, used, None
+    finally:
+        try:
+            os.unlink(gc_file)
+        except OSError:
+            pass
+
+
 def measure_case(time_bin, use_perf, template, classpath, label, stem, script,
-                 case_name, input_path, output_path, repeat, timeout):
+                 case_name, input_path, output_path, repeat, alloc_repeat,
+                 timeout):
     result = {
         "label": label,
         "stem": stem,
@@ -369,6 +498,7 @@ def measure_case(time_bin, use_perf, template, classpath, label, stem, script,
         "ok": False,
         "error": None,
         "runs": [],
+        "alloc_runs": [],
         "summary": None,
     }
     with open(output_path, "rb") as fd:
@@ -389,6 +519,28 @@ def measure_case(time_bin, use_perf, template, classpath, label, stem, script,
                 return result
         result["runs"].append(metrics)
     result["summary"] = summarize_case(result["runs"])
+    # Dedicated allocation runs: separate JVM invocations alongside --
+    # never replacing -- the timed repeats above, so cpu/memory
+    # baselines are untouched.
+    if alloc_repeat and alloc_supported(template, classpath, script, stem):
+        for i in range(alloc_repeat):
+            stdout, used, error = measure_alloc_once(
+                template, classpath, script, stem, input_path, timeout)
+            if error is not None:
+                result["error"] = "{}/{}: alloc: {}".format(
+                    label, case_name, error)
+                return result
+            if i == 0 and run_tests.normalize(stdout) != expected:
+                got = run_tests.normalize(stdout).decode(errors="ignore")
+                want = expected.decode(errors="ignore")
+                result["error"] = "{}/{}: alloc output mismatch: expected {!r} got {!r}".format(
+                    label, case_name, want[:200], got[:200])
+                return result
+            result["alloc_runs"].append(used)
+        result["summary"]["allocated_bytes"] = summarize_alloc(
+            result["alloc_runs"])
+    else:
+        result["summary"]["allocated_bytes"] = None
     result["ok"] = True
     return result
 
@@ -397,15 +549,19 @@ def build_bmf(results):
     """Aggregate per-case summaries into Bencher Metric Format JSON.
 
     One Benchmark per snippet (label/stem) with EXACTLY the measures
-    cpu_time and peak_memory: wall_time is dropped (load-dependent on
-    shared runners; cpu_time is the stable proxy) and
-    instructions/cycles are never emitted even when perf data is
+    cpu_time, peak_memory, and allocated_bytes: wall_time is dropped
+    (load-dependent on shared runners; cpu_time is the stable proxy)
+    and instructions/cycles are never emitted even when perf data is
     present (always null on hosted runners, and extra rows re-truncate
-    Bencher's GitHub check summary). Each measure uses the median as
-    value with min/max as lower/upper bounds so Bencher tracks the
-    robust middle while keeping the spread visible. cpu_time is summed
-    over a snippet's cases; peak_memory takes the worst case (max),
-    in bytes.
+    Bencher's GitHub check summary). cpu_time/peak_memory use the
+    median as value with min/max as lower/upper bounds so Bencher
+    tracks the robust middle while keeping the spread visible;
+    allocated_bytes instead uses the MINIMUM as value (and lower
+    bound) because its noise is one-sided (see summarize_alloc).
+    cpu_time and allocated_bytes are summed over a snippet's cases;
+    peak_memory takes the worst case (max). Memory measures are in
+    bytes. Snippets without allocation data (non-JVM runtimes, or
+    pre-T19 reports) omit allocated_bytes.
     """
     per_snippet = {}
     for res in results:
@@ -428,8 +584,58 @@ def build_bmf(results):
                 "upper_value": max(s["maxrss_kb"]["max"] for s in summaries) * 1024,
             },
         }
+        alloc = [s.get("allocated_bytes") for s in summaries
+                 if s.get("allocated_bytes")]
+        if alloc and len(alloc) == len(summaries):
+            measures["allocated_bytes"] = {
+                "value": sum(a["min"] for a in alloc),
+                "lower_value": sum(a["min"] for a in alloc),
+                "upper_value": sum(a["max"] for a in alloc),
+            }
         bmf[name] = measures
     return bmf
+
+
+def merge_reports(paths):
+    """Concatenate full perf-report JSONs into one (report, bmf) pair.
+
+    Used by the CI fan-in job to reunite per-shard reports into a
+    single merged artifact and combined step summary. Shards are
+    disjoint by snippet, so concatenation is exact; duplicate
+    (label/stem/case) entries (e.g. the same file passed twice) keep
+    the first copy. Header fields (host/runtime/config) come from
+    the first report with the shard tag replaced by "merged".
+    """
+    merged = []
+    seen = set()
+    failures = []
+    missing = set()
+    base = None
+    for path in paths:
+        try:
+            with open(path) as fd:
+                rep = json.load(fd)
+        except (OSError, ValueError) as exc:
+            raise SystemExit("cannot read report {}: {}".format(path, exc))
+        if base is None:
+            base = rep
+        for res in rep.get("results", []):
+            key = (res.get("label"), res.get("stem"), res.get("case"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(res)
+        failures.extend(rep.get("failures", []))
+        missing.update(rep.get("missing", []))
+    merged.sort(key=lambda r: (r.get("label"), r.get("stem"), r.get("case")))
+    report = dict(base) if base else {}
+    report["results"] = merged
+    report["failures"] = sorted(set(failures))
+    report["missing"] = sorted(missing)
+    config = dict(report.get("config", {}))
+    config["shard"] = "merged"
+    report["config"] = config
+    return report, build_bmf(merged)
 
 
 def write_json(path, payload):
@@ -449,9 +655,11 @@ def print_table(results, failures, missing):
             continue
         s = res["summary"]
         insn = s["instructions"]["median"] if s["instructions"] else None
-        print("{}: ok cpu_min={:.3f}s cpu_med={:.3f}s rss_max={}K wall_min={:.3f}s insn_med={}".format(
+        ab = s.get("allocated_bytes")
+        alloc = "{}B".format(ab["min"]) if ab else "n/a"
+        print("{}: ok cpu_min={:.3f}s cpu_med={:.3f}s rss_max={}K wall_min={:.3f}s insn_med={} alloc_min={}".format(
             tag, s["cpu_s"]["min"], s["cpu_s"]["median"],
-            s["maxrss_kb"]["max"], s["wall_s"]["min"], insn))
+            s["maxrss_kb"]["max"], s["wall_s"]["min"], insn, alloc))
     for label in missing:
         print("FAIL {}: no resources found".format(label))
     ok = sum(1 for r in results if r["ok"])
@@ -470,18 +678,19 @@ def append_summary(path, report, bmf):
         "- {} ({}), java: {}".format(
             report["timestamp_utc"], host.get("cpu_model") or "unknown cpu",
             runtime["java_version"] or "unknown"),
-        "- runtime: {}, perf counters: {}, repeat: {}, jobs: {}".format(
+        "- runtime: {}, perf counters: {}, repeat: {}, jobs: {}, alloc_repeat: {}".format(
             runtime["name"], "yes" if runtime["perf_used"] else "no",
-            report["config"]["repeat"], report["config"]["jobs"]),
+            report["config"]["repeat"], report["config"]["jobs"],
+            report["config"].get("alloc_repeat", "n/a")),
         "- {} ok, {} failed, {} missing-resource problems".format(
             ok, len(report["failures"]) - len(report["missing"]),
             len(report["missing"])),
-        "- Primary signals: min CPU time, max peak RSS, median instructions "
-        "(load-independent); wall time is secondary. Compare same-machine "
-        "ratios only.",
+        "- Primary signals: min CPU time, max peak RSS, min allocated "
+        "bytes, median instructions (load-independent); wall time is "
+        "secondary. Compare same-machine ratios only.",
         "",
-        "| snippet | cases | cpu total (s) | peak RSS (MB) | instructions | wall total (s) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| snippet | cases | cpu total (s) | peak RSS (MB) | alloc total (MB) | instructions | wall total (s) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     per_snippet_cases = {}
     per_snippet_wall = {}
@@ -503,10 +712,13 @@ def append_summary(path, report, bmf):
         parts = per_snippet_insn.get(name, [])
         insn = (sum(parts) if parts and all(p is not None for p in parts)
                 else "n/a")
-        lines.append("| {} | {} | {:.3f} | {:.1f} | {} | {:.3f} |".format(
+        alloc = m.get("allocated_bytes")
+        alloc_mb = ("{:.1f}".format(alloc["value"] / 1048576)
+                    if alloc else "n/a")
+        lines.append("| {} | {} | {:.3f} | {:.1f} | {} | {} | {:.3f} |".format(
             name, per_snippet_cases.get(name, 0),
             m["cpu_time"]["value"], m["peak_memory"]["value"] / 1048576,
-            insn, per_snippet_wall.get(name, 0.0)))
+            alloc_mb, insn, per_snippet_wall.get(name, 0.0)))
     lines.append("")
     try:
         with open(path, "a") as fd:
@@ -605,7 +817,9 @@ def self_test():
     ])
     entry = bmf.get("sort/quick_sort/solution", {})
     # The fixture summary carries instructions data, so the exact key
-    # set also proves perf counters are never emitted (T11).
+    # set also proves perf counters are never emitted (T11); it lacks
+    # allocated_bytes, which proves graceful omission for pre-T19 and
+    # non-JVM summaries.
     check("bmf",
           set(entry) == {"cpu_time", "peak_memory"}
           and entry.get("cpu_time") == {"value": 2.0, "lower_value": 1.0,
@@ -614,6 +828,131 @@ def self_test():
                                            "lower_value": 100 * 1024,
                                            "upper_value": 110 * 1024},
           repr(entry))
+
+    new_log = (
+        "[0.002s][info][gc] Using Epsilon\n"
+        "[1.053s][info][gc] Heap: 2048M reserved, 2048M (100.00%) "
+        "committed, 103M (5.05%) used\n"
+        "[1.232s][info][gc] Heap: 2048M reserved, 2048M (100.00%) "
+        "committed, 136M (6.69%) used\n")
+    check("epsilon-parse-new",
+          parse_epsilon_used(new_log) == 136 * 1024 ** 2,
+          repr(parse_epsilon_used(new_log)))
+    old_log = ("[0.5s][gc] Heap: 2048M reserved, 134M committed, "
+               "49824K used\n")
+    check("epsilon-parse-old",
+          parse_epsilon_used(old_log) == 49824 * 1024)
+    check("epsilon-parse-g",
+          parse_epsilon_used("Heap: 8G reserved, 8G committed, 2G used\n")
+          == 2 * 1024 ** 3
+          and parse_epsilon_used("Heap: 8G reserved, 8G committed, "
+                                 "1.5G (18.75%) used\n")
+          == int(1.5 * 1024 ** 3))
+    # Verbose (gc*) logs interleave metaspace/exit "used" lines; only
+    # Heap: lines count, and the last one wins.
+    verbose_log = (
+        "[1.2s][info][gc] Heap: 2048M reserved, 2048M committed, "
+        "100M used\n"
+        "[1.2s][info][gc,metaspace] Metaspace: 1088M reserved, 12480K "
+        "committed, 12218K used\n"
+        "[1.3s][info][gc] Heap: 2048M reserved, 2048M committed, "
+        "137M used\n"
+        "[1.3s][info][gc,exit]    space 2097152K,   6% used "
+        "[0x0000000080000000, 0x00000000889b98b8, 0x0000000100000000)\n")
+    check("epsilon-parse-last-heap-only",
+          parse_epsilon_used(verbose_log) == 137 * 1024 ** 2)
+    bad_logs = ["", "garbage\n", "Heap: broken line\n",
+                "Heap: 2048M reserved, 134M committed, 136X used\n",
+                "Metaspace: 1088M reserved, 12218K used\n"]
+    bad = 0
+    for text in bad_logs:
+        try:
+            parse_epsilon_used(text)
+        except ValueError:
+            bad += 1
+    check("epsilon-parse-rejects", bad == len(bad_logs), str(bad))
+
+    det = summarize_alloc([61917 * 1024] * 3)
+    wob = summarize_alloc([61626 * 1024, 61628 * 1024, 61628 * 1024])
+    check("alloc-deterministic",
+          det == {"min": 61917 * 1024, "median": 61917 * 1024,
+                  "max": 61917 * 1024, "deterministic": True}, repr(det))
+    check("alloc-wobble-min",
+          wob["min"] == 61626 * 1024 and wob["max"] == 61628 * 1024
+          and wob["deterministic"] is False, repr(wob))
+
+    s1 = dict(s, allocated_bytes=summarize_alloc([300, 100, 200]))
+    s2 = dict(s, allocated_bytes=summarize_alloc([400, 400, 400]))
+    bmf2 = build_bmf([
+        {"ok": True, "label": "sort/quick_sort", "stem": "solution",
+         "summary": s1},
+        {"ok": True, "label": "sort/quick_sort", "stem": "solution2",
+         "summary": s2},
+    ])
+    entry2 = bmf2.get("sort/quick_sort/solution", {})
+    # Value is the sum of per-case MINIMUMS (one-sided noise); two
+    # snippets prove per-snippet aggregation still splits by stem.
+    check("bmf-alloc",
+          set(entry2) == {"cpu_time", "peak_memory", "allocated_bytes"}
+          and entry2.get("allocated_bytes") == {"value": 100,
+                                                "lower_value": 100,
+                                                "upper_value": 300}
+          and bmf2.get("sort/quick_sort/solution2", {}).get(
+              "allocated_bytes", {}).get("value") == 400,
+          repr(entry2))
+
+    fd, shard_a = tempfile.mkstemp(prefix="bmf-shard-a-", suffix=".json")
+    os.close(fd)
+    fd, shard_b = tempfile.mkstemp(prefix="bmf-shard-b-", suffix=".json")
+    os.close(fd)
+    try:
+        with open(shard_a, "w") as handle:
+            json.dump({"tool": "t", "config": {"shard": "0/2"},
+                       "results": [
+                           {"ok": True, "label": "a", "stem": "s",
+                            "case": "c1", "summary": s1},
+                           {"ok": True, "label": "a", "stem": "s",
+                            "case": "c2", "summary": s1}],
+                       "failures": ["x: no resources found"],
+                       "missing": ["x"]}, handle)
+        with open(shard_b, "w") as handle:
+            json.dump({"tool": "t", "config": {"shard": "1/2"},
+                       "results": [
+                           {"ok": True, "label": "b", "stem": "s",
+                            "case": "c1", "summary": s2}],
+                       "failures": ["x: no resources found"],
+                       "missing": ["x", "y"]}, handle)
+        merged, merged_bmf = merge_reports([shard_a, shard_b])
+        whole_bmf = build_bmf(
+            [{"ok": True, "label": "a", "stem": "s", "case": "c1",
+              "summary": s1},
+             {"ok": True, "label": "a", "stem": "s", "case": "c2",
+              "summary": s1},
+             {"ok": True, "label": "b", "stem": "s", "case": "c1",
+              "summary": s2}])
+        check("merge",
+              merged_bmf == whole_bmf
+              and merged["config"]["shard"] == "merged"
+              and merged["failures"] == ["x: no resources found"]
+              and merged["missing"] == ["x", "y"]
+              and [(r["label"], r["case"]) for r in merged["results"]]
+              == [("a", "c1"), ("a", "c2"), ("b", "c1")],
+              repr(sorted(merged_bmf)))
+        # Merging the same shard twice must not double-count.
+        merged2, merged_bmf2 = merge_reports([shard_a, shard_a])
+        check("merge-dedupe",
+              merged_bmf2 == build_bmf(
+                  [{"ok": True, "label": "a", "stem": "s",
+                    "case": "c1", "summary": s1},
+                   {"ok": True, "label": "a", "stem": "s",
+                    "case": "c2", "summary": s1}])
+              and len(merged2["results"]) == 2)
+    finally:
+        for path in (shard_a, shard_b):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     print("self-test: {} failed".format(len(failures)))
     return 1 if failures else 0
@@ -646,13 +985,40 @@ def main(argv=None):
     parser.add_argument("--shard", default=None, metavar="K/N",
                         help="measure only shard K of N (0-based, deterministic;"
                              " split by snippet so per-shard BMFs merge exactly)")
+    parser.add_argument("--alloc", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="run EpsilonGC allocation measurement per case")
+    parser.add_argument("--alloc-repeat", type=int,
+                        default=ALLOC_REPEAT_DEFAULT, metavar="N",
+                        help="allocation runs per case; the minimum is kept"
+                             " (default %(default)s)")
+    parser.add_argument("--merge", action="store_true",
+                        help="concatenate full-report JSONs given as INPUTS"
+                             " into one merged report instead of measuring")
+    parser.add_argument("inputs", nargs="*",
+                        help="full-report JSONs for --merge")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
     if args.self_test:
         return self_test()
+    if args.merge:
+        if not args.inputs:
+            parser.error("--merge needs at least one input report")
+        report, bmf = merge_reports(args.inputs)
+        if args.output:
+            write_json(args.output, report)
+        if args.bmf_output:
+            write_json(args.bmf_output, bmf)
+        if args.summary_file:
+            append_summary(args.summary_file, report, bmf)
+        print("merge: {} results, {} benchmarks, {} failures".format(
+            len(report["results"]), len(bmf), len(report["failures"])))
+        return 1 if report["failures"] else 0
     if args.repeat < 1:
         parser.error("--repeat must be >= 1")
+    if args.alloc_repeat < 1:
+        parser.error("--alloc-repeat must be >= 1")
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
     shard = None
@@ -684,13 +1050,24 @@ def main(argv=None):
     if shard is not None:
         tasks = select_shard(tasks, *shard)
 
+    alloc_repeat = args.alloc_repeat if args.alloc else 0
+    if alloc_repeat and tasks:
+        stem0, script0 = tasks[0][1], tasks[0][3]
+        if not alloc_supported(args.command_template, classpath,
+                               script0, stem0):
+            print("warning: allocation measurement needs a java "
+                  "command template; skipping (BMF will omit "
+                  "allocated_bytes)", file=sys.stderr)
+            alloc_repeat = 0
+
     results = []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {
             pool.submit(measure_case, time_bin, use_perf,
                         args.command_template, classpath,
                         label, stem, script, case, inp, outp,
-                        args.repeat, args.timeout): (label, stem, case)
+                        args.repeat, alloc_repeat,
+                        args.timeout): (label, stem, case)
             for label, stem, case, script, inp, outp in tasks
         }
         for future in as_completed(futures):
@@ -721,6 +1098,7 @@ def main(argv=None):
             "timeout": args.timeout,
             "only": args.only,
             "shard": args.shard,
+            "alloc_repeat": alloc_repeat,
         },
         "results": results,
         "failures": failures,

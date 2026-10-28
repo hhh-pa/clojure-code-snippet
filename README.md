@@ -52,12 +52,16 @@ optionally `perf`):
 
 - `cpu_s` (user+sys CPU time) — primary time signal; min-of-repeats
 - `maxrss_kb` (peak RSS) — primary memory signal; max-of-repeats
+- `allocated_bytes` (heap-used-at-exit under EpsilonGC, min of 3) —
+  total allocation; load-independent gauge of algorithmic work
 - `instructions`/`cycles` (`perf stat`, user-space) — most stable signal
 - `wall_s` — secondary; not load-independent
 
-Each case runs `--repeat` times (default 5, CI uses 3); summaries keep
-min/median/max. Compare same-machine ratios only (e.g. Clojure vs native
-back-to-back), never absolutes across machines.
+Each case runs `--repeat` times (default 5, CI uses 3) plus 3 dedicated
+EpsilonGC allocation runs; summaries keep min/median/max. Compare
+same-machine ratios only (e.g. Clojure vs native back-to-back), never
+absolutes across machines. Allocated bytes are comparable within one
+JDK build only (absolutes shift between JDK versions).
 
 ```sh
 python3 tools/measure.py --resources tests/resources --repeat 5 \
@@ -67,14 +71,17 @@ python3 tools/measure.py --self-test  # parser checks, no JVM needed
 
 CI runs correctness in the `test` job, then measures each configured
 compiler in a sharded matrix `perf` job (`needs: test`, 4 shards via
-`tools/measure.py --shard K/N`), uploads per-shard artifacts, and a
-fan-in `report` job merges the BMF files, appends a results table to
-the step summary, and reports once per runtime to Bencher
-(`bencher run --adapter json --file bencher-bmf.json`), which plots each
-snippet's `cpu_time`/`peak_memory` per commit and posts a check on the
-head commit (the BMF payload carries only those two measures to fit
-GitHub's check-summary limit; full metrics stay in the uploaded
-`perf-results.json` artifact). The Bencher project API key lives
+`tools/measure.py --shard K/N`). Each shard reports its own BMF subset
+to Bencher (`bencher run --adapter json --file bencher-bmf.json`) —
+per-shard reports keep every check under GitHub's check-summary limit
+at 3 measures, where one merged report would re-truncate it — and
+uploads per-shard artifacts; a fan-in `report` job merges the full
+reports (`tools/measure.py --merge`), uploads the merged bundle, and
+appends a combined results table to its step summary. Bencher plots
+each snippet's `cpu_time`/`peak_memory`/`allocated_bytes` per commit
+and posts a check per shard on the head commit (the BMF payload
+carries only those three measures; full metrics stay in the uploaded
+`perf-results.json` artifacts). The Bencher project API key lives
 in the `BENCHER_API_KEY` repository secret. Clojure jars and apt
 packages are cached between runs.
 

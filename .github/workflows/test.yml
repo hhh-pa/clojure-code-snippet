@@ -59,9 +59,13 @@ jobs:
   perf:
     needs: test
     runs-on: ubuntu-latest
-    # contents:read for checkout (Bencher reporting moved to the report job).
+    # checks:write so each shard can post its own Bencher report check
+    # (and PR comment); per-shard reports keep every check under
+    # GitHub's ~64KB summary limit at 3 measures (T19).
     permissions:
       contents: read
+      checks: write
+      pull-requests: write
     strategy:
       # Let every shard finish so partial artifacts upload for diagnosis.
       fail-fast: false
@@ -127,46 +131,22 @@ jobs:
             --output perf-results.json --bmf-output bencher-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload perf results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: perf-results-${{ matrix.runtime }}-shard-${{ matrix.shard }}
-          path: |
-            perf-results.json
-            bencher-bmf.json
-
-  report:
-    needs: perf
-    runs-on: ubuntu-latest
-    # checks:write so Bencher can post its report check (and PR comment).
-    permissions:
-      checks: write
-      pull-requests: write
-    # One report per runtime; keep in sync with the perf job's matrix above.
-    strategy:
-      matrix:
-        include:
-          - runtime: jvm
-            testbed: ubuntu-latest-jvm
-    steps:
-      - name: Download shard results
-        uses: actions/download-artifact@v4
-        with:
-          pattern: perf-results-${{ matrix.runtime }}-shard-*
-
-      - name: Merge benchmark files
-        run: jq -s 'add' perf-results-*/bencher-bmf.json > bencher-bmf.json
-
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main
 
       # Threshold policy: peak_memory (t_test) only, by design.
-      # cpu_time is too noisy on shared runners to threshold, so
-      # Bencher's residual No-Threshold boilerplate for cpu_time is
-      # expected and not actionable. min-sample-size 10: the t_test
-      # needs history to calibrate maxrss variance (both master
-      # false positives so far fired on tiny samples).
+      # cpu_time is too noisy on shared runners to threshold, and
+      # allocated_bytes is an informational trend like cpu_time, so
+      # Bencher's residual No-Threshold boilerplate for those
+      # measures is expected and not actionable. min-sample-size 10:
+      # the t_test needs history to calibrate maxrss variance (both
+      # master false positives so far fired on tiny samples).
+      # Each shard reports its own BMF subset (same project,
+      # testbed, branch, and benchmark names, so history stays
+      # continuous): one merged 37-benchmark x 3-measure report
+      # would exceed GitHub's ~64KB check-summary limit again (T11),
+      # while per-shard reports (~10 benchmarks x 3 measures) fit
+      # with headroom for a 4th measure.
       - name: Track benchmarks with Bencher
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -197,3 +177,57 @@ jobs:
               --file bencher-bmf.json \
               --github-actions "${{ secrets.GITHUB_TOKEN }}"
           fi
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ matrix.runtime }}-shard-${{ matrix.shard }}
+          path: |
+            perf-results.json
+            bencher-bmf.json
+
+  report:
+    needs: perf
+    runs-on: ubuntu-latest
+    # No Bencher run here by design: reporting the merged 37-benchmark
+    # x 3-measure file would re-truncate the check summary (T11).
+    # This job only merges artifacts and appends the combined table
+    # to its step summary (per-shard summaries stay in the perf jobs).
+    permissions:
+      contents: read
+    # One merge per runtime; keep in sync with the perf job's matrix above.
+    strategy:
+      matrix:
+        include:
+          - runtime: jvm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: perf-results-${{ matrix.runtime }}-shard-*
+
+      - name: Merge shard reports
+        run: |
+          python3 tools/measure.py --merge perf-results-*/perf-results.json \
+            --output perf-results-merged.json \
+            --bmf-output bencher-bmf-merged.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      # The merge must equal the plain BMF union: sharding is
+      # snippet-cohesive, so no benchmark straddles two shards.
+      - name: Verify merge matches per-shard BMFs
+        run: |
+          jq -s 'add' perf-results-*/bencher-bmf.json > bencher-bmf-jq.json
+          diff <(jq -S . bencher-bmf-merged.json) <(jq -S . bencher-bmf-jq.json)
+
+      - name: Upload merged results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ matrix.runtime }}-merged
+          path: |
+            perf-results-merged.json
+            bencher-bmf-merged.json
