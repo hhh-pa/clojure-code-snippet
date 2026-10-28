@@ -136,13 +136,13 @@ jobs:
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main
 
-      # Threshold policy: peak_memory (t_test) only, by design.
-      # cpu_time is too noisy on shared runners to threshold, and
-      # allocated_bytes is an informational trend like cpu_time, so
-      # Bencher's residual No-Threshold boilerplate for those
-      # measures is expected and not actionable. min-sample-size 10:
-      # the t_test needs history to calibrate maxrss variance (both
-      # master false positives so far fired on tiny samples).
+      # Threshold policy: allocated_bytes (percentage) only, by design.
+      # cpu_time and peak_memory are too noisy on shared runners to
+      # threshold (peak maxrss jitters +/-4%; the old t_test kept
+      # tripping), so Bencher's residual No-Threshold boilerplate for
+      # those measures is expected and not actionable. A fixed 10%
+      # upper boundary sits far above the ~3% worst observed alloc
+      # wobble (T24); min/max sample 10/64 match the live threshold.
       # Each shard reports its own BMF subset (same project,
       # testbed, branch, and benchmark names, so history stays
       # continuous): one merged 37-benchmark x 3-measure report
@@ -170,11 +170,11 @@ jobs:
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.ref_name }}" \
               --testbed ${{ matrix.testbed }} \
-              --threshold-measure peak_memory \
-              --threshold-test t_test \
+              --threshold-measure allocated_bytes \
+              --threshold-test percentage \
               --threshold-min-sample-size 10 \
               --threshold-max-sample-size 64 \
-              --threshold-upper-boundary 0.99 \
+              --threshold-upper-boundary 0.10 \
               --adapter json \
               --file bencher-bmf.json \
               --github-actions "${{ secrets.GITHUB_TOKEN }}"
