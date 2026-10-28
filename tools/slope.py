@@ -213,10 +213,12 @@ def run_slope_all(measure_case, time_bin, use_perf, template, classpath,
     per_scale = {}
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         futures = {
+            # alloc_repeat=0: slope scales are timing-only probes; the
+            # fit reads cpu medians, so skip EpsilonGC alloc runs.
             pool.submit(measure_case, time_bin, use_perf, template,
                         classpath, label, stem, script,
                         "slope_n_{}".format(fit_n), in_path, out_path,
-                        repeat, timeout): (name, fit_n)
+                        repeat, 0, timeout): (name, fit_n)
             for name, label, stem, script, fit_n, in_path, out_path in scale_jobs
         }
         for future in as_completed(futures):
@@ -327,7 +329,11 @@ def run_checks():
     from generators.sort_arrays import SortArrayGenerator
 
     def stub_ok(time_bin, use_perf, template, classpath, label, stem,
-               script, case_name, input_path, output_path, repeat, timeout):
+               script, case_name, input_path, output_path, repeat,
+               alloc_repeat, timeout):
+        # Mirror measure_case's real signature: a drift here fails the
+        # self-test loudly instead of crashing only on CI shards.
+        assert alloc_repeat == 0, alloc_repeat
         n = int(case_name.rsplit("_", 1)[-1])
         t = 2.0 + 1e-6 * n * n
         with open(input_path, "rb") as fd:
