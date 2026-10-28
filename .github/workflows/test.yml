@@ -123,11 +123,13 @@ jobs:
           version: 1.0
 
       - name: Measure performance (load-independent metrics)
+        # T20: --slope adds sparse complexity_exponent for covered pilots only.
         run: |
           python3 tools/measure.py --resources tests/resources \
             --repeat 3 --jobs 2 --timeout 300 \
             --runtime ${{ matrix.runtime }} \
             --shard ${{ matrix.shard }}/4 \
+            --slope \
             --output perf-results.json --bmf-output bencher-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
