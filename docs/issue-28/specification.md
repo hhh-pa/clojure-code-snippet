@@ -97,3 +97,19 @@ issue.
 No workflow, harness, or bundle changes. The existing correctness +
 perf jobs validate the result unchanged; shifted perf numbers are
 expected and informational for this task.
+
+## Accepted deviations
+
+- `src/string_related/trie/no_prefix_set.clj` uses `^long`
+  argument hints on four small numeric helpers (`lcp-len`,
+  `seg-min`, `block-end`, `word-at`). Justification: hints are
+  semantically neutral metadata — a compiler that ignores them
+  still runs the code correctly (boxed), so they are safe under
+  the coming new compiler. They are load-bearing only for JVM
+  allocation: the segment-tree probes run O(n log n) times, and
+  boxing their call arguments costs over 1GB on CI-sized inputs
+  (measured under a non-collecting heap), failing the perf
+  allocation gate. The hint-free alternatives (a fully inlined
+  state machine, or an offline DSU sweep) add 100+ lines of
+  intricate code for no better capacity. No other file uses hints;
+  everything else in this file is plain portable Clojure.
