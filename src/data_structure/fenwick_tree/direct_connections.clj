@@ -1,56 +1,154 @@
-(let [s (slurp *in*)]
-  (when-not (clojure.string/blank? s)
-    (let [toks (.split (.trim ^String s) "\\s+")
-          t (Integer/parseInt (aget ^objects toks 0))
-          mod (long 1000000007)
-          out (StringBuilder.)]
-      (loop [tc (int 0) p (int 1)]
+(require 'clojure.string)
+
+;; Optimal bounds: sorting people by population and sweeping with two Fenwick
+;; trees costs O(n log n) time and O(n) space per test case, which matches the
+;; comparison lower bound for this pairwise wiring cost problem.
+
+(def digit-values
+  "Map from each digit char to its numeric value."
+  (zipmap "0123456789" (range)))
+
+(def max-long
+  "Largest signed 64-bit value; tokens beyond long range are invalid."
+  9223372036854775807)
+
+(def min-long
+  "Smallest signed 64-bit value."
+  -9223372036854775808)
+
+(defn fit-long
+  "Returns n when it fits in a signed 64-bit long, else nil."
+  [n]
+  (when (<= min-long n max-long) n))
+
+
+(def whitespace-chars
+  "Chars treated as token separators on input."
+  #{\space \tab \newline \return})
+
+(def modulus
+  "Prime used for every modular reduction below."
+  1000000007)
+
+(defn tokenize
+  "Split s into whitespace separated tokens in O(n) time."
+  [s]
+  (loop [cs (seq s) cur [] toks []]
+    (if (nil? cs)
+      (if (seq cur) (conj toks (apply str cur)) toks)
+      (let [ch (first cs)]
+        (if (contains? whitespace-chars ch)
+          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
+          (recur (next cs) (conj cur ch) toks))))))
+
+(defn parse-num
+  "Parse tok as an integer, or nil when it is not one."
+  [tok]
+  (when (and (string? tok) (seq tok))
+    (let [cs (seq tok)
+          neg? (= (first cs) \-)
+          ds (if neg? (next cs) cs)]
+      (when (and (seq ds) (every? digit-values ds))
+        (let [v (reduce (fn [acc ch] (+' (*' acc 10) (digit-values ch))) 0 ds)]
+          (fit-long (if neg? (-' v) v)))))))
+
+(defn fail
+  "Report invalid input on stderr and return normally.
+   Note: the process still exits 0 since a nonzero status needs host calls."
+  [msg]
+  (binding [*out* *err*]
+    (println msg)))
+
+(defn emit-lines
+  "Print each line with a trailing newline, or nothing when there are none."
+  [lines]
+  (when (seq lines)
+    (print (str (clojure.string/join "\n" lines) "\n"))))
+
+(defn bit-add
+  "Add val at 1-based position idx of the Fenwick tree in O(log n)."
+  [bit n idx val]
+  (loop [i idx]
+    (when (<= i n)
+      (assoc! bit i (rem (+' (nth bit i) val) modulus))
+      (recur (+ i (bit-and i (- i)))))))
+
+(defn bit-sum
+  "Prefix sum through 1-based position idx in O(log n)."
+  [bit idx]
+  (loop [i idx acc 0]
+    (if (pos? i)
+      (recur (- i (bit-and i (- i))) (rem (+' acc (nth bit i)) modulus))
+      acc)))
+
+(defn binary-search
+  "Index of target in sorted vector v, or -1 when it is missing."
+  [v target]
+  (loop [lo 0 hi (dec (count v))]
+    (if (> lo hi)
+      -1
+      (let [mid (+ lo (quot (- hi lo) 2))
+            got (nth v mid)]
+        (cond
+          (= got target) mid
+          (< got target) (recur (inc mid) hi)
+          :else (recur lo (dec mid)))))))
+
+(defn case-answer
+  "Wiring cost for one test case with positions xs and populations ps."
+  [xs ps]
+  (let [n (count xs)
+        order (sort-by ps (range n))
+        sorted-xs (vec (sort xs))
+        counts (transient (vec (repeat (inc n) 0)))
+        sums (transient (vec (repeat (inc n) 0)))]
+    (loop [order order ans 0]
+      (if (empty? order)
+        ans
+        (let [idx (first order)
+              xi (nth xs idx)
+              pi (rem (nth ps idx) modulus)
+              rank (inc (binary-search sorted-xs xi))
+              cnt-l (bit-sum counts rank)
+              sum-l (bit-sum sums rank)
+              tot-cnt (bit-sum counts n)
+              tot-sum (bit-sum sums n)
+              cnt-r (rem (+' (- tot-cnt cnt-l) modulus) modulus)
+              sum-r (rem (+' (- tot-sum sum-l) modulus) modulus)
+              xm (rem xi modulus)
+              left-part (rem (+ (- (*' cnt-l xm) sum-l) modulus) modulus)
+              right-part (rem (+ (- sum-r (*' cnt-r xm)) modulus) modulus)
+              step-ans (rem (*' pi (rem (+' left-part right-part) modulus)) modulus)]
+          (bit-add counts n rank 1)
+          (bit-add sums n rank xi)
+          (recur (rest order) (rem (+ ans step-ans) modulus)))))))
+
+(defn parse-cases
+  "Parse t test cases from toks, or nil when the shape is wrong."
+  [toks]
+  (let [t (parse-num (first toks))]
+    (when (and t (not (neg? t)))
+      (loop [tc 0 p 1 out []]
         (if (>= tc t)
-          (print (str out))
-          (let [n (Integer/parseInt (aget ^objects toks p))
-                x-coords (long-array n)
-                pop (long-array n)]
-            (dotimes [i n]
-              (aset-long x-coords i (Long/parseLong (aget ^objects toks (+ p 1 i)))))
-            (dotimes [i n]
-              (aset-long pop i (Long/parseLong (aget ^objects toks (+ p 1 n i)))))
-            (let [sorted-x (long-array (java.util.Arrays/copyOf x-coords n))]
-              (java.util.Arrays/sort sorted-x)
-              (let [indices (int-array n)]
-                (dotimes [i n] (aset-int indices i i))
-                (let [sorted-indices (vec (sort-by (fn [^long i] (aget pop (int i))) (seq indices)))
-                      tree-count (long-array (inc n))
-                      tree-sum (long-array (inc n))
-                      update (fn [^longs bit ^long idx ^long val]
-                               (loop [i (int idx)]
-                                 (when (<= i n)
-                                   (aset-long bit i (rem (+ (aget bit i) val) mod))
-                                   (recur (unchecked-add-int i (bit-and i (- i)))))))
-                      query (fn [^longs bit ^long idx]
-                              (loop [i (int idx) sum (long 0)]
-                                (if (> i 0)
-                                  (recur (unchecked-subtract-int i (bit-and i (- i)))
-                                         (rem (+ sum (aget bit i)) mod))
-                                  sum)))]
-                  (loop [step (int 0) ans (long 0)]
-                    (if (< step n)
-                      (let [idx (int (nth sorted-indices step))
-                            xi (aget x-coords idx)
-                            pi (rem (aget pop idx) mod)
-                            rank (inc (java.util.Arrays/binarySearch sorted-x xi))
-                            cnt-l (query tree-count rank)
-                            sum-l (query tree-sum rank)
-                            tot-cnt (query tree-count n)
-                            tot-sum (query tree-sum n)
-                            cnt-r (rem (+ (- tot-cnt cnt-l) mod) mod)
-                            sum-r (rem (+ (- tot-sum sum-l) mod) mod)
-                            left-contrib (rem (+ (- (* cnt-l (rem xi mod)) sum-l) mod) mod)
-                            right-contrib (rem (+ (- sum-r (* cnt-r (rem xi mod))) mod) mod)
-                            step-ans (rem (* pi (rem (+ left-contrib right-contrib) mod)) mod)]
-                        (update tree-count rank 1)
-                        (update tree-sum rank xi)
-                        (recur (inc step) (rem (+ ans step-ans) mod)))
-                      (do
-                        (.append out ans)
-                        (.append out \newline)))))))
-            (recur (inc tc) (+ p 1 (* 2 n)))))))))
+          out
+          (let [n (when (< p (count toks)) (parse-num (nth toks p)))
+                have (- (count toks) (inc p))]
+            (if (or (nil? n) (neg? n) (< have (*' 2 n)))
+              nil
+              (let [xs (mapv parse-num (take n (drop (inc p) toks)))
+                    ps (mapv parse-num (take n (drop (+ p 1 n) toks)))]
+                (if (or (some nil? xs) (some nil? ps))
+                  nil
+                  (recur (inc tc) (+ p 1 (* 2 n)) (conj out [xs ps])))))))))))
+
+(defn -main
+  "Solve every test case and print one answer line each."
+  [input]
+  (let [cases (parse-cases (tokenize input))]
+    (if (nil? cases)
+      (fail "invalid input: expected t test cases of n, then n xs, then n pops")
+      (emit-lines (mapv (fn [[xs ps]] (str (case-answer xs ps))) cases)))))
+
+(let [input (slurp *in*)]
+  (when-not (clojure.string/blank? input)
+    (-main input)))
