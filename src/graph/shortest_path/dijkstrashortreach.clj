@@ -42,7 +42,9 @@
                         (and (== cur 922337203685477580) (> d 7))))
                 (recur (+ i 1) nn nums cur started neg true)
                 (recur (+ i 1) nn nums
-                       (if neg (- (* cur 10) d) (+ (* cur 10) d))
+                       ;; (long d): d is let-boxed; unboxing at the
+                       ;; use site keeps cur primitive every step.
+                       (if neg (- (* cur 10) (long d)) (+ (* cur 10) (long d)))
                        true neg bad)))
             (== code 45)
             (if (or started neg)
@@ -66,9 +68,9 @@
 
 (defn- ensure-idx
   "Grows the boxed-index vector in idxbox until it holds need
-   slots, doubling. Push sites call this first; with non-negative
-   weights the initial size always suffices and this only pays
-   one count box per push."
+   slots. Push sites call this first; with non-negative weights
+   the initial size always suffices and the probe allocates
+   nothing."
   [idxbox need]
   (let [idx @idxbox]
     ;; Probing with a not-found value avoids a count box; only a
@@ -103,7 +105,7 @@
 
 (defn- sift-down
   "Moves the entry at 0 down the flat heap hp with bound n
-   entries; idx holds boxed indices. Returns hp. The winning
+   entries; idxbox holds boxed indices. Returns hp. The winning
    child is selected by duplicating the two branches rather than
    binding it, since a let would box once per level."
   [hp idxbox n]
