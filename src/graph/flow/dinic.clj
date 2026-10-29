@@ -1,105 +1,215 @@
-(let [input (slurp *in*)]
-  (when (not (clojure.string/blank? input))
-    (let [toks (.split (.trim input) "\\s+")
-          n (Integer/parseInt (nth toks 0))
-          m (Integer/parseInt (nth toks 1))
-          s (Integer/parseInt (nth toks 2))
-          t (Integer/parseInt (nth toks 3))
-          max-e (* 2 (max 1 m))
-          ^ints edge-to (int-array max-e)
-          ^ints edge-rev (int-array max-e)
-          ^longs edge-cap (long-array max-e)
-          ^longs edge-flow (long-array max-e)
-          ^ints edge-next (int-array max-e -1)
-          ^ints head (int-array n -1)
-          ^ints level (int-array n)
-          ^ints ptr (int-array n)
-          ^ints q (int-array (max 10 n))
-          edge-cnt (int-array 1)]
+;; Dinic max flow in pure clojure. Each phase builds the level
+;; graph with one breadth first search in O(E) time, then pushes a
+;; blocking flow with repeated explicit stack depth first walks that
+;; keep current arc pointers, for O(V E) time per phase and O(V**2 E)
+;; time total with O(E) space, matching the best known practical
+;; Dinic bound. The old recursive walk is replaced by an explicit
+;; stack over the same level graph, so deep graphs cannot overflow
+;; the call stack while the complexity stays the same.
+;; Input shape: n m s t, then m lines u v cap with 0 based verts.
+;; Output is the max flow value. Blank stdin prints nothing. Badly
+;; shaped input, including s equal to t, prints one message to
+;; stderr and returns with exit 0, since a nonzero exit needs host
+;; interop, which this script avoids by design.
 
-      (letfn [(add-edge [from to-node c]
-                (let [e1 (aget edge-cnt 0)
-                      e2 (inc e1)]
-                  (aset edge-cnt 0 (+ e1 2))
-                  (aset edge-to e1 to-node)
-                  (aset edge-rev e1 e2)
-                  (aset edge-cap e1 c)
-                  (aset edge-flow e1 0)
-                  (aset edge-next e1 (aget head from))
-                  (aset head from e1)
+(require 'clojure.string)
 
-                  (aset edge-to e2 from)
-                  (aset edge-rev e2 e1)
-                  (aset edge-cap e2 0)
-                  (aset edge-flow e2 0)
-                  (aset edge-next e2 (aget head to-node))
-                  (aset head to-node e2)))
+(def digit-values
+  "Maps each digit char to its numeric value for the tokenizer below."
+  (zipmap "0123456789" (range)))
 
-              (bfs []
-                (java.util.Arrays/fill level -1)
-                (aset level s 0)
-                (aset q 0 s)
-                (loop [qh 0, qt 1]
-                  (if (< qh qt)
-                    (let [v (aget q qh)
-                          new-qt (loop [e (aget head v), cur-qt qt]
-                                   (if (not= e -1)
-                                     (let [tr (aget edge-to e)
-                                           rem-cap (- (aget edge-cap e) (aget edge-flow e))]
-                                       (if (and (> rem-cap 0) (== (aget level tr) -1))
-                                         (do
-                                           (aset level tr (inc (aget level v)))
-                                           (aset q cur-qt tr)
-                                           (recur (aget edge-next e) (inc cur-qt)))
-                                         (recur (aget edge-next e) cur-qt)))
-                                     cur-qt))]
-                      (recur (inc qh) new-qt))
-                    nil))
-                (not= (aget level t) -1))
+(def max-long
+  "Largest signed 64-bit value; tokens beyond long range are invalid."
+  9223372036854775807)
 
-              (dfs [v pushed]
-                (cond
-                  (== pushed 0) 0
-                  (== v t) pushed
-                  :else
-                  (loop []
-                    (let [e (aget ptr v)]
-                      (if (== e -1)
-                        0
-                        (let [tr (aget edge-to e)
-                              rem-cap (- (aget edge-cap e) (aget edge-flow e))]
-                          (if (and (== (aget level tr) (inc (aget level v))) (> rem-cap 0))
-                            (let [tr-pushed (dfs tr (min pushed rem-cap))]
-                              (if (> tr-pushed 0)
-                                (do
-                                  (aset edge-flow e (+ (aget edge-flow e) tr-pushed))
-                                  (let [r (aget edge-rev e)]
-                                    (aset edge-flow r (- (aget edge-flow r) tr-pushed)))
-                                  tr-pushed)
-                                (do
-                                  (aset ptr v (aget edge-next e))
-                                  (recur))))
-                            (do
-                              (aset ptr v (aget edge-next e))
-                              (recur)))))))))]
+(def min-long
+  "Smallest signed 64-bit value."
+  -9223372036854775808)
 
-        (loop [i 0, ti 4]
-          (when (< i m)
-            (let [u (Integer/parseInt (nth toks ti))
-                  v (Integer/parseInt (nth toks (+ ti 1)))
-                  cap (Long/parseLong (nth toks (+ ti 2)))]
-              (add-edge u v cap)
-              (recur (inc i) (+ ti 3)))))
+(defn fit-long
+  "Returns n when it fits in a signed 64-bit long, else nil."
+  [n]
+  (when (<= min-long n max-long) n))
 
-        (let [inf 1000000000000000000]
-          (loop [flow 0]
-            (if (bfs)
-              (do
-                (System/arraycopy head 0 ptr 0 n)
-                (let [pushed-flow (loop [round-flow 0]
-                                    (let [pushed (dfs s inf)]
-                                      (if (> pushed 0)
-                                        (recur (+ round-flow pushed))
-                                        round-flow)))]
-                  (recur (+ flow pushed-flow))))
-              (println flow))))))))
+
+(defn parse-ints
+  "Reads all signed integers from string s into a vector. Chars are
+   tested with core compare fns after int coercion, digits through
+   digit-values, and anything else fails the whole scan with nil."
+  [s]
+  (let [done
+        (reduce
+         (fn [state ch]
+           (let [nums (:nums state)
+                 cur (:cur state)
+                 neg (:neg state)
+                 bad (:bad state)
+                 code (int ch)]
+             (cond
+               bad state
+               (<= (int \0) code (int \9))
+               (assoc state :cur (+' (*' (or cur 0) 10) (digit-values ch)))
+               (= ch \-)
+               (if (or (some? cur) neg)
+                 (assoc state :bad true)
+                 (assoc state :neg true))
+               (<= code (int \space))
+               (cond
+                 (some? cur)
+                 (let [v (fit-long (if neg (-' cur) cur))]
+                   (if (some? v)
+                     (-> state
+                     (assoc :nums (conj! nums v))
+                     (assoc :cur nil)
+                     (assoc :neg false))
+                     (assoc state :bad true)))
+                 neg (assoc state :bad true)
+                 :else state)
+               :else (assoc state :bad true))))
+         {:nums (transient []) :cur nil :neg false :bad false}
+         (seq s))]
+    (when-not (:bad done)
+      (let [nums (:nums done)
+            cur (:cur done)
+            neg (:neg done)]
+        (cond
+          (some? cur) (let [v (fit-long (if neg (-' cur) cur))]
+                        (when (some? v) (persistent! (conj! nums v))))
+          neg nil
+          :else (persistent! nums))))))
+
+(defn report-error
+  "Prints message to stderr and returns nil so the driver ends calmly."
+  [msg]
+  (binding [*out* *err*]
+    (println msg))
+  nil)
+
+(defn bfs-levels
+  "Builds Dinic levels from s over the residual graph. adj maps each
+   vertex to its edge id vector, to and cap hold edge targets and
+   caps, flow holds current flows. Returns the level vector, or nil
+   when t stays unreachable. Costs O(E) time and O(V) extra space."
+  [adj to cap flow s t n]
+  (let [level (assoc! (transient (vec (repeat n -1))) s 0)]
+    (loop [queue (conj [] s) head 0 level level]
+      (if (>= head (count queue))
+        (when (not= (nth level t) -1) (persistent! level))
+        (let [v (nth queue head)
+              lv (nth level v)
+              pair (reduce (fn [[queue level] eid]
+                             (let [w (nth to eid)
+                                   rem (- (nth cap eid) (nth flow eid))]
+                               (if (and (> rem 0) (= (nth level w) -1))
+                                 [(conj queue w) (assoc! level w (inc lv))]
+                                 [queue level])))
+                           [queue level]
+                           (nth adj v))]
+          (recur (first pair) (inc head) (second pair)))))))
+
+(defn augment-path
+  "Finds one s t path in the level graph with current arcs ptr and
+   pushes its bottleneck flow. Uses an explicit stack of vertices
+   plus the edge ids that reached them. Returns [pushed flow ptr]
+   with pushed 0 when no path is left. Each call costs O(V + E)."
+  [adj to cap rev flow level ptr s t]
+  (loop [vstack [s] estack [] flow flow ptr ptr]
+    (if (empty? vstack)
+      [0 flow ptr]
+      (let [v (peek vstack)]
+        (if (= v t)
+          (let [e0 (first estack)
+                neck (reduce (fn [best eid]
+                               (min best (- (nth cap eid) (nth flow eid))))
+                             (- (nth cap e0) (nth flow e0))
+                             (rest estack))
+                flow (reduce (fn [flow eid]
+                               (-> flow
+                                   (assoc! eid (+ (nth flow eid) neck))
+                                   (assoc! (nth rev eid)
+                                           (- (nth flow (nth rev eid)) neck))))
+                             flow
+                             estack)]
+            [neck flow ptr])
+          (let [nbrs (nth adj v)
+                i (nth ptr v)]
+            (if (>= i (count nbrs))
+              (if (= (count vstack) 1)
+                (recur (pop vstack) estack flow ptr)
+                (recur (pop vstack) (pop estack) flow ptr))
+              (let [eid (nth nbrs i)
+                    w (nth to eid)
+                    rem (- (nth cap eid) (nth flow eid))
+                    ptr (assoc! ptr v (inc i))]
+                (if (and (> rem 0) (= (nth level w) (inc (nth level v))))
+                  (recur (conj vstack w) (conj estack eid) flow ptr)
+                  (recur vstack estack flow ptr))))))))))
+
+(defn max-flow
+  "Dinic main loop. Rebuilds levels and current arcs per phase and
+   pushes paths until t is cut off. Returns the flow value."
+  [adj to cap rev flow s t n]
+  (loop [flow flow total 0]
+    (let [level (bfs-levels adj to cap flow s t n)]
+      (if (nil? level)
+        total
+        (let [ptr (transient (vec (repeat n 0)))
+              [flow pushed] (loop [flow flow pushed 0 ptr ptr]
+                              (let [[got flow ptr] (augment-path adj to cap rev
+                                                                flow level ptr s t)]
+                                (if (zero? got)
+                                  [flow pushed]
+                                  (recur flow (+' pushed got) ptr))))]
+          (recur flow (+' total pushed)))))))
+
+(defn solve
+  "Solves one instance from the token vector and prints the answer."
+  [nums]
+  (let [c (count nums)]
+    (if (< c 4)
+      (report-error "bad input: want n m s t plus m edge triples with s not t")
+      (let [n (nth nums 0)
+            m (nth nums 1)
+            s (nth nums 2)
+            t (nth nums 3)]
+        (if (or (< n 1) (< m 0) (< c (+' 4 (*' m 3)))
+            (< s 0) (>= s n) (< t 0) (>= t n) (= s t))
+      (report-error "bad input: want n m s t plus m edge triples with s not t")
+      (let [built (loop [i 0
+                         to (transient [])
+                         rev (transient [])
+                         cap (transient [])
+                         adj (transient (vec (repeat n [])))]
+                    (if (>= i m)
+                      [(persistent! to) (persistent! rev)
+                       (persistent! cap) (persistent! adj)]
+                      (let [u (nth nums (+ 4 (* i 3)))
+                            v (nth nums (+ 5 (* i 3)))
+                            w (nth nums (+ 6 (* i 3)))]
+                        (if (or (< u 0) (>= u n) (< v 0) (>= v n))
+                          nil
+                          (let [e (* i 2)]
+                            (recur (inc i)
+                                   (-> to (conj! v) (conj! u))
+                                   (-> rev (conj! (inc e)) (conj! e))
+                                   (-> cap (conj! w) (conj! 0))
+                                   (-> adj
+                                       (assoc! u (conj (nth adj u) e))
+                                       (assoc! v (conj (nth adj v) (inc e))))))))))]
+        (if (nil? built)
+          (report-error "bad input: edge vertex out of range")
+          (let [[to rev cap adj] built
+                flow (transient (vec (repeat (* 2 m) 0)))]
+            (println (str (max-flow adj to cap rev flow s t n)))
+            nil))))))))
+
+(defn -main
+  "Entry point used by the top level driver below."
+  [s]
+  (let [nums (parse-ints s)]
+    (cond
+      (nil? nums) (report-error "bad input: expected only integers and whitespace")
+      (empty? nums) nil
+      :else (solve nums))))
+
+(-main (slurp *in*))

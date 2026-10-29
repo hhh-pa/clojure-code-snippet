@@ -1,131 +1,239 @@
+(require 'clojure.string)
+
+;; Optimal bounds: random levels give expected O(log n) search, insert and
+;; delete in O(n) expected space, the classic skip list guarantee.
+
+(def digit-values
+  "Map from each digit char to its numeric value."
+  (zipmap "0123456789" (range)))
+
+(def max-long
+  "Largest signed 64-bit value; tokens beyond long range are invalid."
+  9223372036854775807)
+
+(def min-long
+  "Smallest signed 64-bit value."
+  -9223372036854775808)
+
+(defn fit-long
+  "Returns n when it fits in a signed 64-bit long, else nil."
+  [n]
+  (when (<= min-long n max-long) n))
+
+
+(def whitespace-chars
+  "Chars treated as token separators on input."
+  #{\space \tab \newline \return})
+
+(def max-level
+  "Tallest tower any node may grow."
+  16)
+
+(defn tokenize
+  "Split s into whitespace separated tokens in O(n) time."
+  [s]
+  (loop [cs (seq s) cur [] toks []]
+    (if (nil? cs)
+      (if (seq cur) (conj toks (apply str cur)) toks)
+      (let [ch (first cs)]
+        (if (contains? whitespace-chars ch)
+          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
+          (recur (next cs) (conj cur ch) toks))))))
+
+(defn parse-num
+  "Parse tok as an integer, or nil when it is not one."
+  [tok]
+  (when (and (string? tok) (seq tok))
+    (let [cs (seq tok)
+          neg? (= (first cs) \-)
+          ds (if neg? (next cs) cs)]
+      (when (and (seq ds) (every? digit-values ds))
+        (let [v (reduce (fn [acc ch] (+' (*' acc 10) (digit-values ch))) 0 ds)]
+          (fit-long (if neg? (-' v) v)))))))
+
+(defn fail
+  "Report invalid input on stderr and return normally.
+   Note: the process still exits 0 since a nonzero status needs host calls."
+  [msg]
+  (binding [*out* *err*]
+    (println msg)))
+
+(defn emit-lines
+  "Print each line with a trailing newline, or nothing when there are none."
+  [lines]
+  (when (seq lines)
+    (print (str (clojure.string/join "\n" lines) "\n"))))
+
+(defn rand-next
+  "One step of a small deterministic generator."
+  [s]
+  (rem (+ (* s 1103515245) 12345) 2147483648))
+
+(defn rand-level
+  "Draw a tower height, returning [height rng]."
+  [rng]
+  (loop [lvl 0 rng rng]
+    (let [rng (rand-next rng)]
+      (if (and (odd? rng) (< lvl max-level))
+        (recur (inc lvl) rng)
+        [lvl rng]))))
+
+(defn empty-skip
+  "Fresh skip list with an empty head tower and zero nodes."
+  []
+  {:nodes [] :head (vec (repeat (inc max-level) nil)) :level 0})
+
+(defn node-val
+  "Value stored at node id."
+  [skip id]
+  (:v (nth (:nodes skip) id)))
+
+(defn forward-at
+  "Successor of id at lvl, or of the head tower when id is nil."
+  [skip id lvl]
+  (if (nil? id)
+    (nth (:head skip) lvl)
+    (nth (:fwd (nth (:nodes skip) id)) lvl)))
+
+(defn walk-level
+  "Rightmost id at lvl whose value stays below v, starting from id."
+  [skip id lvl v]
+  (loop [cur id]
+    (let [nxt (forward-at skip cur lvl)]
+      (if (and nxt (< (node-val skip nxt) v))
+        (recur nxt)
+        cur))))
+
+(defn find-update
+  "Predecessor id per level for v, from top down to level 0."
+  [skip v]
+  (loop [lvl (:level skip) cur nil acc (vec (repeat (inc max-level) nil))]
+    (if (< lvl 0)
+      acc
+      (let [cur (walk-level skip cur lvl v)]
+        (recur (dec lvl) cur (assoc acc lvl cur))))))
+
+(defn skip-search
+  "True when v sits in the list."
+  [skip v]
+  (let [update (find-update skip v)
+        cand (forward-at skip (nth update 0) 0)]
+    (and (not (nil? cand)) (= (node-val skip cand) v))))
+
+(defn set-forward
+  "Point id (or the head tower for nil) at nxt on lvl."
+  [skip id lvl nxt]
+  (if (nil? id)
+    (assoc skip :head (assoc (:head skip) lvl nxt))
+    (assoc-in skip [:nodes id :fwd lvl] nxt)))
+
+(defn skip-insert
+  "Insert v unless present, returning [skip rng]."
+  [skip rng v]
+  (let [update (find-update skip v)
+        cand (forward-at skip (nth update 0) 0)]
+    (if (and cand (= (node-val skip cand) v))
+      [skip rng]
+      (let [[rlvl rng] (rand-level rng)
+            top (max rlvl (:level skip))
+            new-id (count (:nodes skip))
+            node {:v v :fwd (vec (repeat (inc rlvl) nil))}
+            skip (assoc skip
+                        :nodes (conj (:nodes skip) node)
+                        :level top)]
+        [(loop [lvl 0 skip skip]
+           (if (> lvl rlvl)
+             skip
+             (let [pred (nth update lvl)
+                   nxt (forward-at skip pred lvl)
+                   skip (set-forward skip new-id lvl nxt)
+                   skip (set-forward skip pred lvl new-id)]
+               (recur (inc lvl) skip))))
+         rng]))))
+
+(defn skip-delete
+  "Remove v when present."
+  [skip v]
+  (let [update (find-update skip v)
+        target (forward-at skip (nth update 0) 0)]
+    (if (or (nil? target) (not= (node-val skip target) v))
+      skip
+      (let [skip (loop [lvl 0 skip skip]
+                   (if (> lvl (:level skip))
+                     skip
+                     (let [pred (nth update lvl)]
+                       (if (= (forward-at skip pred lvl) target)
+                         (recur (inc lvl)
+                                (set-forward skip pred lvl
+                                             (forward-at skip target lvl)))
+                         (recur (inc lvl) skip)))))]
+        (loop [skip skip]
+          (if (and (pos? (:level skip))
+                   (nil? (forward-at skip nil (:level skip))))
+            (recur (assoc skip :level (dec (:level skip))))
+            skip))))))
+
+(defn skip-line
+  "Render the level 0 chain on one sorted line."
+  [skip]
+  (loop [cur (forward-at skip nil 0) acc []]
+    (if (nil? cur)
+      (clojure.string/join " " acc)
+      (recur (forward-at skip cur 0) (conj acc (str (node-val skip cur)))))))
+
+(defn run-ops
+  "Execute q list ops from toks, returning lines or nil when invalid."
+  [toks q]
+  (let [nt (count toks)]
+    (loop [i 0 ti 1 skip (empty-skip) rng 42 out []]
+      (if (or (>= i q) (>= ti nt))
+        out
+        (let [op (nth toks ti)]
+          (cond
+            (= op "INSERT")
+            (if (>= (inc ti) nt)
+              nil
+              (let [v (parse-num (nth toks (inc ti)))]
+                (if (nil? v)
+                  nil
+                  (let [[skip rng] (skip-insert skip rng v)]
+                    (recur (inc i) (+ ti 2) skip rng out)))))
+
+            (= op "SEARCH")
+            (if (>= (inc ti) nt)
+              nil
+              (let [v (parse-num (nth toks (inc ti)))]
+                (if (nil? v)
+                  nil
+                  (recur (inc i) (+ ti 2) skip rng
+                         (conj out (if (skip-search skip v) "FOUND" "NOT_FOUND"))))))
+
+            (= op "DELETE")
+            (if (>= (inc ti) nt)
+              nil
+              (let [v (parse-num (nth toks (inc ti)))]
+                (if (nil? v)
+                  nil
+                  (recur (inc i) (+ ti 2) (skip-delete skip v) rng out))))
+
+            (= op "PRINT")
+            (recur (inc i) (inc ti) skip rng (conj out (skip-line skip)))
+
+            :else
+            (recur (inc i) (inc ti) skip rng out)))))))
+
+(defn -main
+  "Run the skip list script and print one line per query op."
+  [input]
+  (let [toks (tokenize input)
+        q (parse-num (first toks))]
+    (if (or (nil? q) (neg? q))
+      (fail "invalid input: expected an op count q, then q list ops")
+      (let [lines (run-ops toks q)]
+        (if (nil? lines)
+          (fail "invalid input: list ops need integer values")
+          (emit-lines lines))))))
+
 (let [input (slurp *in*)]
-  (when (not (clojure.string/blank? input))
-    (let [toks (.split (.trim input) "\\s+")
-          nt (count toks)
-          q (Integer/parseInt (nth toks 0))
-          max-lvl 16
-          cap (max 20 (+ q 5))
-          ^ints val-arr (int-array cap)
-          ;; forward table: forward[node * 17 + lvl] = next node (-1 for nil)
-          stride 17
-          ^ints fwd (int-array (* cap stride) -1)
-          node-cnt (int-array [1]) ;; 0 is head
-          cur-lvl (int-array [0])
-          rng (java.util.Random. 42)
-          sb (StringBuilder.)]
-
-      (letfn [(rand-level []
-                (loop [lvl 0]
-                  (if (and (.nextBoolean rng) (< lvl max-lvl))
-                    (recur (inc lvl))
-                    lvl)))
-
-              (insert [val]
-                (let [update (int-array (inc max-lvl))
-                      clvl (aget cur-lvl 0)]
-                  (loop [i clvl, cur 0]
-                    (if (>= i 0)
-                      (let [nxt-cur (loop [c cur]
-                                      (let [nxt (aget fwd (+ (* c stride) i))]
-                                        (if (and (not= nxt -1) (< (aget val-arr nxt) val))
-                                          (recur nxt)
-                                          c)))]
-                        (aset update i nxt-cur)
-                        (recur (dec i) nxt-cur))
-                      nil))
-                  (let [c0 (aget update 0)
-                        first-nxt (aget fwd (+ (* c0 stride) 0))]
-                    (when-not (and (not= first-nxt -1) (== (aget val-arr first-nxt) val))
-                      (let [rlvl (rand-level)]
-                        (when (> rlvl (aget cur-lvl 0))
-                          (loop [i (inc (aget cur-lvl 0))]
-                            (when (<= i rlvl)
-                              (aset update i 0)
-                              (recur (inc i))))
-                          (aset cur-lvl 0 rlvl))
-                        (let [new-idx (aget node-cnt 0)]
-                          (aset node-cnt 0 (inc new-idx))
-                          (aset val-arr new-idx val)
-                          (loop [i 0]
-                            (when (<= i rlvl)
-                              (let [up-i (aget update i)
-                                    nxt (aget fwd (+ (* up-i stride) i))]
-                                (aset fwd (+ (* new-idx stride) i) nxt)
-                                (aset fwd (+ (* up-i stride) i) new-idx))
-                              (recur (inc i))))))))))
-
-              (search [val]
-                (let [clvl (aget cur-lvl 0)]
-                  (let [cur (loop [i clvl, c 0]
-                              (if (>= i 0)
-                                (let [nc (loop [k c]
-                                           (let [nxt (aget fwd (+ (* k stride) i))]
-                                             (if (and (not= nxt -1) (< (aget val-arr nxt) val))
-                                               (recur nxt)
-                                               k)))]
-                                  (recur (dec i) nc))
-                                c))
-                        target (aget fwd (+ (* cur stride) 0))]
-                    (and (not= target -1) (== (aget val-arr target) val)))))
-
-              (remove-val [val]
-                (let [update (int-array (inc max-lvl))
-                      clvl (aget cur-lvl 0)]
-                  (loop [i clvl, cur 0]
-                    (if (>= i 0)
-                      (let [nxt-cur (loop [c cur]
-                                      (let [nxt (aget fwd (+ (* c stride) i))]
-                                        (if (and (not= nxt -1) (< (aget val-arr nxt) val))
-                                          (recur nxt)
-                                          c)))]
-                        (aset update i nxt-cur)
-                        (recur (dec i) nxt-cur))
-                      nil))
-                  (let [c0 (aget update 0)
-                        target (aget fwd (+ (* c0 stride) 0))]
-                    (when (and (not= target -1) (== (aget val-arr target) val))
-                      (loop [i 0]
-                        (when (<= i (aget cur-lvl 0))
-                          (let [up-i (aget update i)]
-                            (when (== (aget fwd (+ (* up-i stride) i)) target)
-                              (aset fwd (+ (* up-i stride) i) (aget fwd (+ (* target stride) i)))))
-                          (recur (inc i))))
-                      (loop []
-                        (when (and (> (aget cur-lvl 0) 0)
-                                   (== (aget fwd (+ (* 0 stride) (aget cur-lvl 0))) -1))
-                          (aset cur-lvl 0 (dec (aget cur-lvl 0)))
-                          (recur)))))))
-
-              (print-all []
-                (loop [cur (aget fwd (+ (* 0 stride) 0))
-                       first? true]
-                  (when (not= cur -1)
-                    (if first?
-                      (.append sb (str (aget val-arr cur)))
-                      (.append sb (str " " (aget val-arr cur))))
-                    (recur (aget fwd (+ (* cur stride) 0)) false)))
-                (.append sb "\n"))]
-
-        (loop [i 0, ti 1]
-          (when (and (< i q) (< ti nt))
-            (let [op (nth toks ti)]
-              (cond
-                (= op "INSERT")
-                (let [val (Integer/parseInt (nth toks (+ ti 1)))]
-                  (insert val)
-                  (recur (inc i) (+ ti 2)))
-                (= op "SEARCH")
-                (let [val (Integer/parseInt (nth toks (+ ti 1)))]
-                  (.append sb (if (search val) "FOUND\n" "NOT_FOUND\n"))
-                  (recur (inc i) (+ ti 2)))
-                (= op "DELETE")
-                (let [val (Integer/parseInt (nth toks (+ ti 1)))]
-                  (remove-val val)
-                  (recur (inc i) (+ ti 2)))
-                (= op "PRINT")
-                (do
-                  (print-all)
-                  (recur (inc i) (inc ti)))
-                :else
-                (recur (inc i) (inc ti))))))
-        (print (.toString sb))))))
+  (when-not (clojure.string/blank? input)
+    (-main input)))

@@ -1,182 +1,218 @@
+(require 'clojure.string)
+
+;; Optimal bounds: bottom-up splaying gives amortized O(log n) insert, find
+;; and delete in O(n) space, the classic self-adjusting guarantee.
+
+(def digit-values
+  "Map from each digit char to its numeric value."
+  (zipmap "0123456789" (range)))
+
+(def max-long
+  "Largest signed 64-bit value; tokens beyond long range are invalid."
+  9223372036854775807)
+
+(def min-long
+  "Smallest signed 64-bit value."
+  -9223372036854775808)
+
+(defn fit-long
+  "Returns n when it fits in a signed 64-bit long, else nil."
+  [n]
+  (when (<= min-long n max-long) n))
+
+
+(def whitespace-chars
+  "Chars treated as token separators on input."
+  #{\space \tab \newline \return})
+
+(defn tokenize
+  "Split s into whitespace separated tokens in O(n) time."
+  [s]
+  (loop [cs (seq s) cur [] toks []]
+    (if (nil? cs)
+      (if (seq cur) (conj toks (apply str cur)) toks)
+      (let [ch (first cs)]
+        (if (contains? whitespace-chars ch)
+          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
+          (recur (next cs) (conj cur ch) toks))))))
+
+(defn parse-num
+  "Parse tok as an integer, or nil when it is not one."
+  [tok]
+  (when (and (string? tok) (seq tok))
+    (let [cs (seq tok)
+          neg? (= (first cs) \-)
+          ds (if neg? (next cs) cs)]
+      (when (and (seq ds) (every? digit-values ds))
+        (let [v (reduce (fn [acc ch] (+' (*' acc 10) (digit-values ch))) 0 ds)]
+          (fit-long (if neg? (-' v) v)))))))
+
+(defn fail
+  "Report invalid input on stderr and return normally.
+   Note: the process still exits 0 since a nonzero status needs host calls."
+  [msg]
+  (binding [*out* *err*]
+    (println msg)))
+
+(defn emit-lines
+  "Print each line with a trailing newline, or nothing when there are none."
+  [lines]
+  (when (seq lines)
+    (print (str (clojure.string/join "\n" lines) "\n"))))
+
+(defn rot-left
+  "Single left rotation, returning the new subtree root."
+  [t]
+  (let [r (:r t)]
+    (assoc r :l (assoc t :r (:l r)))))
+
+(defn rot-right
+  "Single right rotation, returning the new subtree root."
+  [t]
+  (let [l (:l t)]
+    (assoc l :r (assoc t :l (:r l)))))
+
+(defn splay
+  "Splay k to the root, or the last node touched when k is missing."
+  [t k]
+  (cond
+    (or (nil? t) (= k (:k t))) t
+    (< k (:k t))
+    (let [l (:l t)]
+      (if (nil? l)
+        t
+        (cond
+          (= k (:k l)) (rot-right t)
+          (< k (:k l))
+          (if (nil? (:l l))
+            (rot-right t)
+            (let [ll (splay (:l l) k)
+                  l (assoc l :l ll)
+                  t (assoc t :l (rot-right l))]
+              (rot-right t)))
+          (nil? (:r l)) (rot-right t)
+          :else
+          (let [lr (splay (:r l) k)
+                l (assoc l :r lr)
+                t (assoc t :l (rot-left l))]
+            (rot-right t)))))
+    :else
+    (let [r (:r t)]
+      (if (nil? r)
+        t
+        (cond
+          (= k (:k r)) (rot-left t)
+          (> k (:k r))
+          (if (nil? (:r r))
+            (rot-left t)
+            (let [rr (splay (:r r) k)
+                  r (assoc r :r rr)
+                  t (assoc t :r (rot-left r))]
+              (rot-left t)))
+          (nil? (:l r)) (rot-left t)
+          :else
+          (let [rl (splay (:l r) k)
+                r (assoc r :l rl)
+                t (assoc t :r (rot-right r))]
+            (rot-left t)))))))
+
+(defn splay-insert
+  "Insert k unless present, splaying the result to the root."
+  [t k]
+  (if (nil? t)
+    {:k k :l nil :r nil}
+    (let [t (splay t k)]
+      (cond
+        (= k (:k t)) t
+        (< k (:k t)) {:k k :l (:l t) :r (assoc t :l nil)}
+        :else {:k k :r (:r t) :l (assoc t :r nil)}))))
+
+(defn splay-max
+  "Splay the maximum key of t to the root."
+  [t]
+  (if (or (nil? t) (nil? (:r t)))
+    t
+    (let [r (:r t)]
+      (if (nil? (:r r))
+        (rot-left t)
+        (let [rr (splay-max (:r r))]
+          (rot-left (assoc t :r (rot-left (assoc r :r rr)))))))))
+
+(defn splay-delete
+  "Remove k when present, joining the remaining halves."
+  [t k]
+  (if (nil? t)
+    nil
+    (let [t (splay t k)]
+      (if (not= k (:k t))
+        t
+        (let [l (:l t) r (:r t)]
+          (if (nil? l)
+            r
+            (assoc (splay-max l) :r r)))))))
+
+(defn inorder-keys
+  "Keys of the tree in sorted order."
+  [t]
+  (when t
+    (concat (inorder-keys (:l t)) [(:k t)] (inorder-keys (:r t)))))
+
+(defn run-ops
+  "Execute q tree ops from toks, returning lines or nil when invalid."
+  [toks q]
+  (let [nt (count toks)]
+    (loop [i 0 ti 1 root nil out []]
+      (if (or (>= i q) (>= ti nt))
+        out
+        (let [op (nth toks ti)]
+          (cond
+            (= op "INSERT")
+            (if (>= (inc ti) nt)
+              nil
+              (let [v (parse-num (nth toks (inc ti)))]
+                (if (nil? v)
+                  nil
+                  (recur (inc i) (+ ti 2) (splay-insert root v) out))))
+
+            (= op "FIND")
+            (if (>= (inc ti) nt)
+              nil
+              (let [v (parse-num (nth toks (inc ti)))]
+                (if (nil? v)
+                  nil
+                  (let [root (splay root v)]
+                    (recur (inc i) (+ ti 2) root
+                           (conj out (if (and root (= (:k root) v))
+                                       "FOUND"
+                                       "NOT_FOUND")))))))
+
+            (= op "DELETE")
+            (if (>= (inc ti) nt)
+              nil
+              (let [v (parse-num (nth toks (inc ti)))]
+                (if (nil? v)
+                  nil
+                  (recur (inc i) (+ ti 2) (splay-delete root v) out))))
+
+            (= op "PRINT")
+            (recur (inc i) (inc ti) root
+                   (conj out (clojure.string/join " " (map str (inorder-keys root)))))
+
+            :else
+            (recur (inc i) (inc ti) root out)))))))
+
+(defn -main
+  "Run the splay script and print one line per query op."
+  [input]
+  (let [toks (tokenize input)
+        q (parse-num (first toks))]
+    (if (or (nil? q) (neg? q))
+      (fail "invalid input: expected an op count q, then q tree ops")
+      (let [lines (run-ops toks q)]
+        (if (nil? lines)
+          (fail "invalid input: tree ops need integer values")
+          (emit-lines lines))))))
+
 (let [input (slurp *in*)]
-  (when (not (clojure.string/blank? input))
-    (let [toks (.split (.trim input) "\\s+")
-          nt (count toks)
-          q (Integer/parseInt (nth toks 0))
-          cap (max 20 (+ q 5))
-          ^ints key-arr (int-array cap)
-          ^ints left-arr (int-array cap -1)
-          ^ints right-arr (int-array cap -1)
-          ^ints parent-arr (int-array cap -1)
-          root-ref (int-array [-1])
-          node-cnt (int-array [0])
-          sb (StringBuilder.)]
-
-      (letfn [(rotate-left [x]
-                (let [y (aget right-arr x)]
-                  (when (not= y -1)
-                    (let [yl (aget left-arr y)]
-                      (aset right-arr x yl)
-                      (when (not= yl -1)
-                        (aset parent-arr yl x)))
-                    (let [p (aget parent-arr x)]
-                      (aset parent-arr y p)
-                      (cond
-                        (== p -1) (aset root-ref 0 y)
-                        (== (aget left-arr p) x) (aset left-arr p y)
-                        :else (aset right-arr p y)))
-                    (aset left-arr y x)
-                    (aset parent-arr x y))))
-
-              (rotate-right [x]
-                (let [y (aget left-arr x)]
-                  (when (not= y -1)
-                    (let [yr (aget right-arr y)]
-                      (aset left-arr x yr)
-                      (when (not= yr -1)
-                        (aset parent-arr yr x)))
-                    (let [p (aget parent-arr x)]
-                      (aset parent-arr y p)
-                      (cond
-                        (== p -1) (aset root-ref 0 y)
-                        (== (aget left-arr p) x) (aset left-arr p y)
-                        :else (aset right-arr p y)))
-                    (aset right-arr y x)
-                    (aset parent-arr x y))))
-
-              (splay [x]
-                (loop []
-                  (let [p (aget parent-arr x)]
-                    (when (not= p -1)
-                      (let [g (aget parent-arr p)]
-                        (if (== g -1)
-                          (if (== (aget left-arr p) x)
-                            (rotate-right p)
-                            (rotate-left p))
-                          (let [x-left? (== (aget left-arr p) x)
-                                p-left? (== (aget left-arr g) p)]
-                            (cond
-                              (and x-left? p-left?)
-                              (do (rotate-right g) (rotate-right p))
-                              (and (not x-left?) (not p-left?))
-                              (do (rotate-left g) (rotate-left p))
-                              (and (not x-left?) p-left?)
-                              (do (rotate-left p) (rotate-right g))
-                              :else
-                              (do (rotate-right p) (rotate-left g))))))
-                      (recur)))))
-
-              (insert [k]
-                (let [r (aget root-ref 0)]
-                  (if (== r -1)
-                    (let [idx (aget node-cnt 0)]
-                      (aset node-cnt 0 (inc idx))
-                      (aset key-arr idx k)
-                      (aset left-arr idx -1)
-                      (aset right-arr idx -1)
-                      (aset parent-arr idx -1)
-                      (aset root-ref 0 idx))
-                    (let [[p is-left? exists?]
-                          (loop [cur r, p -1]
-                            (if (== cur -1)
-                              [p false false]
-                              (let [ck (aget key-arr cur)]
-                                (cond
-                                  (< k ck)
-                                  (let [nxt (aget left-arr cur)]
-                                    (if (== nxt -1)
-                                      [cur true false]
-                                      (recur nxt cur)))
-                                  (> k ck)
-                                  (let [nxt (aget right-arr cur)]
-                                    (if (== nxt -1)
-                                      [cur false false]
-                                      (recur nxt cur)))
-                                  :else
-                                  [cur false true]))))]
-                      (if exists?
-                        (splay p)
-                        (let [idx (aget node-cnt 0)]
-                          (aset node-cnt 0 (inc idx))
-                          (aset key-arr idx k)
-                          (aset left-arr idx -1)
-                          (aset right-arr idx -1)
-                          (aset parent-arr idx p)
-                          (if is-left?
-                            (aset left-arr p idx)
-                            (aset right-arr p idx))
-                          (splay idx)))))))
-
-              (find-key [k]
-                (let [r (aget root-ref 0)]
-                  (if (== r -1)
-                    false
-                    (let [[found-node last-node]
-                          (loop [cur r, last r]
-                            (if (== cur -1)
-                              [-1 last]
-                              (let [ck (aget key-arr cur)]
-                                (cond
-                                  (< k ck) (recur (aget left-arr cur) cur)
-                                  (> k ck) (recur (aget right-arr cur) cur)
-                                  :else [cur cur]))))]
-                      (if (not= found-node -1)
-                        (do (splay found-node) true)
-                        (do (splay last-node) false))))))
-
-              (remove-key [k]
-                (when (find-key k)
-                  (let [r (aget root-ref 0)
-                        l-sub (aget left-arr r)
-                        r-sub (aget right-arr r)]
-                    (when (not= l-sub -1) (aset parent-arr l-sub -1))
-                    (when (not= r-sub -1) (aset parent-arr r-sub -1))
-                    (if (== l-sub -1)
-                      (aset root-ref 0 r-sub)
-                      (let [m (loop [cur l-sub]
-                                (let [nxt (aget right-arr cur)]
-                                  (if (== nxt -1) cur (recur nxt))))]
-                        (aset root-ref 0 l-sub)
-                        (splay m)
-                        (aset right-arr m r-sub)
-                        (when (not= r-sub -1)
-                          (aset parent-arr r-sub m)))))))
-
-              (inorder [u first-box]
-                (when (not= u -1)
-                  (inorder (aget left-arr u) first-box)
-                  (if (aget ^booleans first-box 0)
-                    (do
-                      (.append sb (str (aget key-arr u)))
-                      (aset ^booleans first-box 0 false))
-                    (.append sb (str " " (aget key-arr u))))
-                  (inorder (aget right-arr u) first-box)))]
-
-        (loop [i 0, ti 1]
-          (when (and (< i q) (< ti nt))
-            (let [op (nth toks ti)]
-              (cond
-                (= op "INSERT")
-                (let [val (Integer/parseInt (nth toks (+ ti 1)))]
-                  (insert val)
-                  (recur (inc i) (+ ti 2)))
-
-                (= op "FIND")
-                (let [val (Integer/parseInt (nth toks (+ ti 1)))]
-                  (.append sb (if (find-key val) "FOUND\n" "NOT_FOUND\n"))
-                  (recur (inc i) (+ ti 2)))
-
-                (= op "DELETE")
-                (let [val (Integer/parseInt (nth toks (+ ti 1)))]
-                  (remove-key val)
-                  (recur (inc i) (+ ti 2)))
-
-                (= op "PRINT")
-                (let [first-box (boolean-array [true])]
-                  (inorder (aget root-ref 0) first-box)
-                  (.append sb "\n")
-                  (recur (inc i) (inc ti)))
-
-                :else
-                (recur (inc i) (inc ti))))))
-        (print (.toString sb))))))
+  (when-not (clojure.string/blank? input)
+    (-main input)))

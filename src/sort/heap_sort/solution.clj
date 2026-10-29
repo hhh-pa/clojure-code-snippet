@@ -1,49 +1,133 @@
-(require '[clojure.string :as str])
+;; heap-sort: pure Clojure heapsort.
+;;
+;; Build a max heap in linear time, then repeatedly move the maximum
+;; to the end and restore the heap. O(n log n) time in all cases and
+;; O(1) extra space beyond the working vector, which a transient
+;; keeps updateable in place. Not stable. Pure Clojure with no host
+;; interop: one transient vector, loop and recur. Input and output
+;; match the shared sort driver contract: stdin holds n followed by
+;; values, stdout is [v1,v2,...].
 
-(defn heap-sort [^longs a]
-  (let [n (alength a)
-        swap (fn [i j]
-               (let [t (aget a i)]
-                 (aset a i (aget a j))
-                 (aset a j t)))]
-    (letfn [(sift [root end]
-              (loop [r root]
-                (let [l (inc (* 2 r))]
-                  (when (<= l end)
-                    (let [r2 (inc l)
-                          c (if (and (<= r2 end) (> (aget a r2) (aget a l))) r2 l)]
-                      (when (> (aget a c) (aget a r))
-                        (swap r c)
-                        (recur c)))))))]
-      (loop [i (quot (- n 2) 2)]
-        (when (>= i 0)
-          (sift i (dec n))
-          (recur (dec i))))
-      (loop [e (dec n)]
-        (when (pos? e)
-          (swap 0 e)
-          (sift 0 (dec e))
-          (recur (dec e)))))))
+(def digit-values
+  "Digit character to numeric value."
+  (zipmap "0123456789" (range)))
 
-(let [s (slurp *in*)]
-  (when (not (str/blank? s))
-    (let [toks (.split (.trim s) "\\s+")
-          nt (alength toks)
-          vals (long-array nt)]
-      (loop [i 0]
-        (when (< i nt)
-          (aset vals i (Long/parseLong (aget toks i)))
-          (recur (inc i))))
-      (let [n (aget vals 0)
-            k (max 0 (min n (dec nt)))
-            arr (long-array k)]
-        (System/arraycopy vals 1 arr 0 (int k))
-        (heap-sort arr)
-        (let [sb (StringBuilder. "[")]
-          (loop [i 0]
-            (when (< i k)
-              (when (pos? i) (.append sb ","))
-              (.append sb (aget arr i))
-              (recur (inc i))))
-          (.append sb "]")
-          (print (.toString sb)))))))
+(def separators
+  "Whitespace characters that separate input tokens."
+  #{\space \tab \newline \return \formfeed \u000B})
+
+(defn tokenize
+  "Split s on whitespace into a vector of token strings."
+  [s]
+  (let [done (reduce (fn [{:keys [tokens current]} ch]
+                       (if (contains? separators ch)
+                         (if (empty? current)
+                           {:tokens tokens :current []}
+                           {:tokens (conj tokens (apply str current))
+                            :current []})
+                         {:tokens tokens :current (conj current ch)}))
+                     {:tokens [] :current []}
+                     s)]
+    (if (empty? (:current done))
+      (:tokens done)
+      (conj (:tokens done) (apply str (:current done))))))
+
+(def min-long
+  "Most negative long value: 1 shifted into the sign bit."
+  (bit-shift-left 1 63))
+
+(def max-long
+  "Largest long value: every bit below the sign bit set."
+  (bit-not min-long))
+
+(defn parse-token
+  "Parse tok as a decimal long integer. An optional leading minus or
+   plus sign is accepted. Returns nil when tok is malformed or falls
+   outside the long range; the bounds check runs before each
+   multiply and add step so no step can overflow."
+  [tok]
+  (let [chs (seq tok)]
+    (when (seq chs)
+      (let [head (first chs)
+            neg? (= head \-)
+            rest-chs (if (or neg? (= head \+)) (rest chs) chs)]
+        (when (seq rest-chs)
+          (if neg?
+            (reduce (fn [acc ch]
+                      (when (some? acc)
+                        (let [d (get digit-values ch)]
+                          (when (and (some? d)
+                                     (>= acc (quot (+ min-long d) 10)))
+                            (- (* acc 10) d)))))
+                    0 rest-chs)
+            (reduce (fn [acc ch]
+                      (when (some? acc)
+                        (let [d (get digit-values ch)]
+                          (when (and (some? d)
+                                     (<= acc (quot (- max-long d) 10)))
+                            (+ (* acc 10) d)))))
+                    0 rest-chs)))))))
+
+(defn format-sorted
+  "Render xs as [v1,v2,...] with no spaces or trailing newline."
+  [xs]
+  (str "[" (apply str (interpose "," (map str xs))) "]"))
+
+(defn heap-sort
+  "Heapsort of xs. O(n log n) time worst case, O(1) extra space.
+   A linear heap build plus n logarithmic sift-down steps."
+  [xs]
+  (let [v (vec xs)
+        n (count v)]
+    (if (<= n 1)
+      v
+      (let [a (transient v)]
+        (letfn [(sift [root end]
+                  (loop [r root]
+                    (let [l (inc (* 2 r))]
+                      (when (<= l end)
+                        (let [r2 (inc l)
+                              c (if (and (<= r2 end)
+                                         (> (nth a r2) (nth a l)))
+                                  r2 l)]
+                          (when (> (nth a c) (nth a r))
+                            (let [t (nth a r)]
+                              (assoc! a r (nth a c))
+                              (assoc! a c t))
+                            (recur c)))))))]
+          (loop [i (quot (- n 2) 2)]
+            (when (>= i 0)
+              (sift i (dec n))
+              (recur (dec i))))
+          (loop [e (dec n)]
+            (when (pos? e)
+              (let [t (nth a 0)]
+                (assoc! a 0 (nth a e))
+                (assoc! a e t))
+              (sift 0 (dec e))
+              (recur (dec e))))
+          (persistent! a))))))
+
+(defn -main
+  "Read n followed by values from input and print the sorted values
+   as [v1,v2,...]. Only the first n values are used; extra tokens are
+   ignored and missing values shorten the sort, matching the original
+   driver. Blank input prints nothing. Malformed input prints a
+   message to stderr and returns normally."
+  [input]
+  (let [toks (tokenize input)]
+    (when (seq toks)
+      (let [nums (mapv parse-token toks)]
+        (if (some nil? nums)
+          (binding [*out* *err*]
+            (println "error: expected n followed by integers"))
+          (let [avail (max 0 (dec (count nums)))
+                k (min (max (first nums) 0) avail)]
+            (->> (rest nums)
+                 (take k)
+                 (vec)
+                 (heap-sort)
+                 (format-sorted)
+                 (print))))))))
+
+(-main (slurp *in*))

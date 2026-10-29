@@ -56,6 +56,9 @@ jobs:
       - name: Run Clojure snippet tests
         run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
 
+      - name: Run SSA DF regression test
+        run: python3 tests/ssa_df_regression.py
+
   perf:
     needs: test
     runs-on: ubuntu-latest

@@ -1,49 +1,148 @@
-(require '[clojure.string :as str])
+;; bucket-sort: pure Clojure bucket sort.
+;;
+;; Distribute the values into one ordered bucket per element, sort
+;; each bucket, and concatenate the buckets in order. Buckets stay
+;; tiny on uniform input, so the average time is O(n); oversized
+;; buckets fall back to a linearithmic sort, which keeps the worst
+;; case at O(n log n). Space is O(n). Pure Clojure with no host
+;; interop: persistent vectors, loop and recur, reduce where it fits.
+;; Input and output match the shared sort driver contract: stdin
+;; holds n followed by values, stdout is [v1,v2,...].
 
-(defn bucket-sort [^longs a]
-  (let [n (alength a)]
-    (when (pos? n)
-      (let [mn (loop [i 1 m (aget a 0)]
-                 (if (< i n) (recur (inc i) (min m (aget a i))) m))
-            mx (loop [i 1 m (aget a 0)]
-                 (if (< i n) (recur (inc i) (max m (aget a i))) m))]
-        (when (not= mn mx)
-          (let [nb (min n 8)
-                buckets (vec (repeatedly nb (fn [] (java.util.ArrayList.))))
-                span (inc (- mx mn))]
-            (loop [i 0]
-              (when (< i n)
-                (let [v (aget a i)
-                      idx (int (quot (* (- v mn) nb) span))]
-                  (.add ^java.util.ArrayList (nth buckets idx) v)
-                  (recur (inc i)))))
-            (let [k (atom 0)]
-              (doseq [b (range nb)]
-                (let [^java.util.ArrayList lst (nth buckets b)]
-                  (java.util.Collections/sort lst)
-                  (dotimes [j (.size lst)]
-                    (aset a @k (long (.get lst j)))
-                    (swap! k inc)))))))))))
+(def digit-values
+  "Digit character to numeric value."
+  (zipmap "0123456789" (range)))
 
-(let [s (slurp *in*)]
-  (when (not (str/blank? s))
-    (let [toks (.split (.trim s) "\\s+")
-          nt (alength toks)
-          vals (long-array nt)]
-      (loop [i 0]
-        (when (< i nt)
-          (aset vals i (Long/parseLong (aget toks i)))
-          (recur (inc i))))
-      (let [n (aget vals 0)
-            k (max 0 (min n (dec nt)))
-            arr (long-array k)]
-        (System/arraycopy vals 1 arr 0 (int k))
-        (bucket-sort arr)
-        (let [sb (StringBuilder. "[")]
-          (loop [i 0]
-            (when (< i k)
-              (when (pos? i) (.append sb ","))
-              (.append sb (aget arr i))
-              (recur (inc i))))
-          (.append sb "]")
-          (print (.toString sb)))))))
+(def separators
+  "Whitespace characters that separate input tokens."
+  #{\space \tab \newline \return \formfeed \u000B})
+
+(defn tokenize
+  "Split s on whitespace into a vector of token strings."
+  [s]
+  (let [done (reduce (fn [{:keys [tokens current]} ch]
+                       (if (contains? separators ch)
+                         (if (empty? current)
+                           {:tokens tokens :current []}
+                           {:tokens (conj tokens (apply str current))
+                            :current []})
+                         {:tokens tokens :current (conj current ch)}))
+                     {:tokens [] :current []}
+                     s)]
+    (if (empty? (:current done))
+      (:tokens done)
+      (conj (:tokens done) (apply str (:current done))))))
+
+(def min-long
+  "Most negative long value: 1 shifted into the sign bit."
+  (bit-shift-left 1 63))
+
+(def max-long
+  "Largest long value: every bit below the sign bit set."
+  (bit-not min-long))
+
+(defn parse-token
+  "Parse tok as a decimal long integer. An optional leading minus or
+   plus sign is accepted. Returns nil when tok is malformed or falls
+   outside the long range; the bounds check runs before each
+   multiply and add step so no step can overflow."
+  [tok]
+  (let [chs (seq tok)]
+    (when (seq chs)
+      (let [head (first chs)
+            neg? (= head \-)
+            rest-chs (if (or neg? (= head \+)) (rest chs) chs)]
+        (when (seq rest-chs)
+          (if neg?
+            (reduce (fn [acc ch]
+                      (when (some? acc)
+                        (let [d (get digit-values ch)]
+                          (when (and (some? d)
+                                     (>= acc (quot (+ min-long d) 10)))
+                            (- (* acc 10) d)))))
+                    0 rest-chs)
+            (reduce (fn [acc ch]
+                      (when (some? acc)
+                        (let [d (get digit-values ch)]
+                          (when (and (some? d)
+                                     (<= acc (quot (- max-long d) 10)))
+                            (+ (* acc 10) d)))))
+                    0 rest-chs)))))))
+
+(defn format-sorted
+  "Render xs as [v1,v2,...] with no spaces or trailing newline."
+  [xs]
+  (str "[" (apply str (interpose "," (map str xs))) "]"))
+
+(defn insertion-small
+  "Insertion sort of one bucket. Stable; O(m squared) worst and O(m)
+   best for a bucket of m values, which is constant work for the
+   tiny buckets this sort produces on uniform input."
+  [bucket]
+  (reduce (fn [out v]
+            (let [pos (count (take-while (fn [u] (<= u v)) out))]
+              (into (conj (subvec out 0 pos) v) (subvec out pos))))
+          []
+          bucket))
+
+(def big-bucket
+  "Buckets above this size use the fallback sorter. Any constant
+   keeps the average case linear while the fallback keeps the
+   worst case at O(n log n)."
+  32)
+
+(defn sort-bucket
+  "Sort one bucket: insertion for the usual tiny bucket, a
+   linearithmic sort for a degenerate oversized one."
+  [bucket]
+  (if (<= (count bucket) big-bucket)
+    (insertion-small bucket)
+    (vec (sort bucket))))
+
+(defn bucket-sort
+  "Bucket sort of xs. O(n) average time on uniform input, O(n log n)
+   worst case, O(n) space. Values spread over one bucket per element
+   by exact proportional index math, so even a range spanning the
+   whole long domain distributes correctly."
+  [xs]
+  (let [v (vec xs)
+        n (count v)]
+    (if (<= n 1)
+      v
+      (let [mn (reduce min v)
+            mx (reduce max v)]
+        (if (= mn mx)
+          v
+          (let [lo (bigint mn)
+                span (inc (- (bigint mx) lo))
+                buckets (reduce (fn [bs x]
+                                  (let [off (- (bigint x) lo)
+                                        idx (long (quot (* off n) span))]
+                                    (assoc bs idx (conj (nth bs idx) x))))
+                                (vec (repeat n []))
+                                v)]
+            (into [] (mapcat sort-bucket) buckets)))))))
+
+(defn -main
+  "Read n followed by values from input and print the sorted values
+   as [v1,v2,...]. Only the first n values are used; extra tokens are
+   ignored and missing values shorten the sort, matching the original
+   driver. Blank input prints nothing. Malformed input prints a
+   message to stderr and returns normally."
+  [input]
+  (let [toks (tokenize input)]
+    (when (seq toks)
+      (let [nums (mapv parse-token toks)]
+        (if (some nil? nums)
+          (binding [*out* *err*]
+            (println "error: expected n followed by integers"))
+          (let [avail (max 0 (dec (count nums)))
+                k (min (max (first nums) 0) avail)]
+            (->> (rest nums)
+                 (take k)
+                 (vec)
+                 (bucket-sort)
+                 (format-sorted)
+                 (print))))))))
+
+(-main (slurp *in*))

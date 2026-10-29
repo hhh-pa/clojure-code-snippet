@@ -1,134 +1,202 @@
-(let [s (slurp *in*)]
-  (when-not (clojure.string/blank? s)
-    (let [toks (java.util.Scanner. ^String s)
-          text (.next toks)
-          n (.length text)
-          tree-children (java.util.ArrayList.)
-          tree-suffix-link (java.util.ArrayList.)
-          tree-start (java.util.ArrayList.)
-          tree-end (java.util.ArrayList.)
-          tree-is-leaf (java.util.ArrayList.)
-          leaf-end (volatile! -1)
-          root 0
-          active-node (volatile! 0)
-          active-edge (volatile! -1)
-          active-length (volatile! 0)
-          remaining-suffix-count (volatile! 0)
-          new-node (fn [start end is-leaf]
-                     (.add tree-children (java.util.HashMap.))
-                     (.add tree-suffix-link root)
-                     (.add tree-start (int start))
-                     (.add tree-end (int end))
-                     (.add tree-is-leaf (boolean is-leaf))
-                     (dec (.size tree-children)))
-          get-end (fn [n-idx]
-                    (if (.get tree-is-leaf (int n-idx))
-                      @leaf-end
-                      (int (.get tree-end (int n-idx)))))
-          edge-length (fn [n-idx]
-                        (if (= (int n-idx) root)
-                          0
-                          (inc (- (get-end n-idx) (int (.get tree-start (int n-idx)))))))
-          walk-down (fn [curr-node]
-                      (let [elen (edge-length curr-node)]
-                        (if (>= @active-length elen)
-                          (do
-                            (vswap! active-edge + elen)
-                            (vswap! active-length - elen)
-                            (vreset! active-node curr-node)
-                            true)
-                          false)))]
-      (new-node 0 -1 false)
-      (dotimes [pos n]
-        (vreset! leaf-end pos)
-        (vswap! remaining-suffix-count inc)
-        (let [last-new-node (volatile! -1)]
-          (loop []
-            (when (pos? @remaining-suffix-count)
-              (when (zero? @active-length)
-                (vreset! active-edge pos))
-              (let [cur-char (.charAt text @active-edge)
-                    children ^java.util.HashMap (.get tree-children @active-node)
-                    next-node (.get children cur-char)]
-                (if (nil? next-node)
+;; Ukkonen online suffix tree with distinct substring count and
+;; substring queries.
+;; Input: text token, then an optional query count with that many
+;; pattern tokens. Output: node count, distinct substring count,
+;; then YES or NO per query.
+;; Linear time construction in the text length with linear space,
+;; linear time per query in the pattern length, which is optimal.
+;; Pure clojure with no host interop.
+(require '[clojure.string :as str])
+
+(def digits
+  "Digit chars mapped to their numeric values."
+  (zipmap "0123456789" (range 10)))
+
+(defn- blank-char?
+  "True for the whitespace chars that split tokens."
+  [c]
+  (or (= c \space) (= c \tab) (= c \newline) (= c \return) (= c \formfeed)))
+
+(defn- tokenize
+  "Splits s on whitespace; returns a vector of token strings."
+  [s]
+  (loop [cs (seq s) cur [] toks []]
+    (if (nil? cs)
+      (if (seq cur) (conj toks (apply str cur)) toks)
+      (let [c (first cs)]
+        (if (blank-char? c)
+          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
+          (recur (next cs) (conj cur c) toks))))))
+
+(defn- parse-int
+  "Reads token tok as a decimal integer inside lo to hi, else nil."
+  [tok lo hi]
+  (when (and (string? tok) (seq tok))
+    (let [cs (seq tok)
+          lead (first cs)
+          signed (or (= lead \-) (= lead \+))
+          ds (if signed (next cs) cs)]
+      (when (seq ds)
+        (let [mag (reduce (fn [acc c]
+                            (let [d (get digits c)]
+                              (if (or (nil? acc) (nil? d))
+                                nil
+                                (+' (*' acc 10) d))))
+                          0 ds)]
+          (when (some? mag)
+            (let [v (if (= lead \-) (- mag) mag)]
+              (when (and (<= lo v) (<= v hi)) v))))))))
+
+(defn- report
+  "Prints msg on stderr."
+  [msg]
+  (binding [*out* *err*] (println msg)))
+
+(defn- node-end
+  "End index of node, resolving open leaves to leaf-end."
+  [node leaf-end]
+  (if (:leaf node) leaf-end (:end node)))
+
+(defn- edge-len
+  "Length of the edge into node u with leaves open to leaf-end."
+  [nodes u leaf-end]
+  (if (zero? u)
+    0
+    (let [nd (nth nodes u)]
+      (inc (- (node-end nd leaf-end) (:start nd))))))
+
+(defn- add-node
+  "Appends a node and returns [nodes new-index]."
+  [nodes start end leaf?]
+  [(conj nodes {:link 0 :start start :end end :leaf leaf? :next {}})
+   (count nodes)])
+
+(defn- follow-link
+  "Active point step after an extension, following suffix links."
+  [nodes active edge alen pos rem]
+  (cond
+    (and (zero? active) (pos? alen)) [active (inc (- pos rem)) (dec alen)]
+    (zero? active) [active edge alen]
+    :else [(:link (nth nodes active)) edge alen]))
+
+(defn- build-tree
+  "Suffix tree nodes for char vector t with the online method."
+  [t]
+  (let [n (count t)]
+    (loop [pos 0
+           nodes [{:link 0 :start 0 :end -1 :leaf false :next {}}]
+           active 0 edge 0 alen 0 rem 0]
+      (if (>= pos n)
+        nodes
+        (let [[nodes active edge alen rem]
+              (loop [nodes nodes active active edge edge
+                     alen alen rem (inc rem) last-new -1]
+                (if (zero? rem)
+                  [nodes active edge alen rem]
+                  (let [edge (if (zero? alen) pos edge)
+                        cur-char (nth t edge)
+                        nxt (get (:next (nth nodes active)) cur-char)]
+                    (if (nil? nxt)
+                      (let [[nodes leaf] (add-node nodes pos -1 true)
+                            nodes (assoc-in nodes [active :next cur-char] leaf)
+                            nodes (if (not= last-new -1)
+                                    (assoc-in nodes [last-new :link] active)
+                                    nodes)
+                            rem (dec rem)
+                            [active edge alen]
+                            (follow-link nodes active edge alen pos rem)]
+                        (recur nodes active edge alen rem -1))
+                      (let [elen (edge-len nodes nxt pos)]
+                        (if (>= alen elen)
+                          (recur nodes nxt (+ edge elen) (- alen elen)
+                                 rem last-new)
+                          (let [epos (+ (:start (nth nodes nxt)) alen)]
+                            (if (= (nth t epos) (nth t pos))
+                              [(if (and (not= last-new -1) (not (zero? active)))
+                                 (assoc-in nodes [last-new :link] active)
+                                 nodes)
+                               active edge (inc alen) rem]
+                              (let [split-end (+ (:start (nth nodes nxt)) alen -1)
+                                    [nodes split]
+                                    (add-node nodes (:start (nth nodes nxt))
+                                              split-end false)
+                                    [nodes leaf] (add-node nodes pos -1 true)
+                                    nodes (-> nodes
+                                              (assoc-in [active :next cur-char] split)
+                                              (assoc-in [split :next (nth t pos)] leaf)
+                                              (update-in [nxt :start] + alen)
+                                              (assoc-in [split :next (nth t epos)] nxt))
+                                    nodes (if (not= last-new -1)
+                                            (assoc-in nodes [last-new :link] split)
+                                            nodes)
+                                    rem (dec rem)
+                                    [active edge alen]
+                                    (follow-link nodes active edge alen pos rem)]
+                                (recur nodes active edge alen rem split))))))))))]
+          (recur (inc pos) nodes active edge alen rem))))))
+
+(defn- count-distinct
+  "Count of distinct substrings by summing edge lengths."
+  [nodes leaf-end]
+  (loop [stack [0] acc 0]
+    (if (empty? stack)
+      acc
+      (let [u (peek stack)
+            kids (vals (:next (nth nodes u)))]
+        (recur (into (pop stack) kids)
+               (reduce + acc (map #(edge-len nodes % leaf-end) kids)))))))
+
+(defn- find-pattern
+  "True when char vector pat occurs in the tree text."
+  [nodes t pat leaf-end]
+  (let [m (count pat)]
+    (loop [cur 0 idx 0]
+      (if (>= idx m)
+        true
+        (let [nxt (get (:next (nth nodes cur)) (nth pat idx))]
+          (if (nil? nxt)
+            false
+            (let [start (:start (nth nodes nxt))
+                  len (edge-len nodes nxt leaf-end)
+                  res (loop [k 0 j idx]
+                        (cond
+                          (or (>= k len) (>= j m)) (- j idx)
+                          (= (nth t (+ start k)) (nth pat j))
+                          (recur (inc k) (inc j))
+                          :else -1))]
+              (if (= res -1)
+                false
+                (recur nxt (+ idx res))))))))))
+
+(defn -main
+  "Parses data and prints tree stats plus query answers.
+  Malformed input prints a message on stderr and returns normally,
+  leaving the exit code at zero since nonzero exit needs host calls."
+  [data]
+  (when-not (str/blank? data)
+    (try
+      (let [toks (tokenize data)
+            t (vec (first toks))
+            nodes (build-tree t)
+            leaf-end (dec (count t))
+            head [(str "Nodes: " (count nodes))
+                  (str "Distinct substrings: " (count-distinct nodes leaf-end))]
+            qr (next toks)]
+        (if (nil? qr)
+          (print (str (str/join "\n" head) "\n"))
+          (let [q (parse-int (first qr) -2147483648 2147483647)]
+            (if (nil? q)
+              (print (str (str/join "\n" head) "\n"))
+              (let [want (max 0 q)
+                    pats (take want (rest qr))]
+                (if (< (count pats) want)
                   (do
-                    (let [leaf (new-node pos -1 true)]
-                      (.put children cur-char leaf)
-                      (when (not= @last-new-node -1)
-                        (.set tree-suffix-link @last-new-node @active-node)
-                        (vreset! last-new-node -1)))
-                    (vswap! remaining-suffix-count dec)
-                    (if (and (= @active-node root) (pos? @active-length))
-                      (do
-                        (vswap! active-length dec)
-                        (vreset! active-edge (+ (- pos @remaining-suffix-count) 1)))
-                      (when (not= @active-node root)
-                        (vreset! active-node (.get tree-suffix-link @active-node))))
-                    (recur))
-                  (if (walk-down next-node)
-                    (recur)
-                    (let [edge-char-pos (+ (int (.get tree-start (int next-node))) @active-length)]
-                      (if (= (.charAt text edge-char-pos) (.charAt text pos))
-                        (do
-                          (when (and (not= @last-new-node -1) (not= @active-node root))
-                            (.set tree-suffix-link @last-new-node @active-node)
-                            (vreset! last-new-node -1))
-                          (vswap! active-length inc))
-                        (do
-                          (let [split-end (dec (+ (int (.get tree-start (int next-node))) @active-length))
-                                split (new-node (.get tree-start (int next-node)) split-end false)
-                                split-children ^java.util.HashMap (.get tree-children split)
-                                leaf (new-node pos -1 true)]
-                            (.put children cur-char split)
-                            (.put split-children (.charAt text pos) leaf)
-                            (.set tree-start (int next-node) (+ (int (.get tree-start (int next-node))) @active-length))
-                            (.put split-children (.charAt text edge-char-pos) next-node)
-                            (when (not= @last-new-node -1)
-                              (.set tree-suffix-link @last-new-node split))
-                            (vreset! last-new-node split))
-                          (vswap! remaining-suffix-count dec)
-                          (if (and (= @active-node root) (pos? @active-length))
-                            (do
-                              (vswap! active-length dec)
-                              (vreset! active-edge (+ (- pos @remaining-suffix-count) 1)))
-                            (when (not= @active-node root)
-                              (vreset! active-node (.get tree-suffix-link @active-node))))
-                          (recur)))))))))))
-      (let [count-distinct (fn count-fn [u]
-                             (let [children ^java.util.HashMap (.get tree-children (int u))]
-                               (reduce (fn [acc v]
-                                         (let [len (inc (- (get-end v) (int (.get tree-start (int v)))))]
-                                           (+ acc len (count-fn v))))
-                                       0
-                                       (.values children))))
-            find-pattern (fn [^String pat]
-                           (let [m (.length pat)]
-                             (loop [cur root idx 0]
-                               (if (< idx m)
-                                 (let [c (.charAt pat idx)
-                                       children ^java.util.HashMap (.get tree-children (int cur))
-                                       nxt (.get children c)]
-                                   (if (nil? nxt)
-                                     false
-                                     (let [start (int (.get tree-start (int nxt)))
-                                           end (get-end nxt)
-                                           len (inc (- end start))
-                                           match-len (loop [k 0 cur-idx idx]
-                                                       (if (and (< k len) (< cur-idx m))
-                                                         (if (= (.charAt text (+ start k)) (.charAt pat cur-idx))
-                                                           (recur (inc k) (inc cur-idx))
-                                                           -1)
-                                                         (- cur-idx idx)))]
-                                       (if (= match-len -1)
-                                         false
-                                         (recur (int nxt) (+ idx match-len))))))
-                                 true))))]
-        (println (str "Nodes: " (.size tree-children)))
-        (println (str "Distinct substrings: " (count-distinct root)))
-        (when (.hasNextInt toks)
-          (let [q (.nextInt toks)]
-            (dotimes [_ q]
-              (let [pat (.next toks)]
-                (if (find-pattern pat)
-                  (println "YES")
-                  (println "NO"))))))))))
+                    (print (str (str/join "\n" head) "\n"))
+                    (report "error: expected one pattern per query"))
+                  (let [tails (map #(if (find-pattern nodes t (vec %) leaf-end)
+                                      "YES" "NO")
+                                   pats)]
+                    (print (str (str/join "\n" (concat head tails)) "\n")))))))))
+      (catch Exception _ (report "error: invalid input")))))
+
+(let [data (slurp *in*)] (-main data))
