@@ -6,7 +6,7 @@
 #
 # With no passphrase file, a fresh 64-char passphrase is generated and
 # printed ONCE (save it, then set it as the RESOURCES_PASSPHRASE secret:
-#   gh secret set RESOURCES_PASSPHRASE --repo m-hu/clojure-code-snippet
+#   gh secret set RESOURCES_PASSPHRASE --repo hhh-pa/clojure-code-snippet
 # pasting the value when prompted).
 # With a passphrase file, the bundle is re-encrypted under the existing
 # secret value (use after resource/shared changes, no rotation needed).
