@@ -1,95 +1,169 @@
-(let [s (slurp *in*)]
-  (when-not (clojure.string/blank? s)
-    (let [n (int (count s))
-          data (loop [i (int 0) c (int 0) ^ints a (int-array 1024)]
-                 (if (>= i n)
-                   (java.util.Arrays/copyOf a c)
-                   (let [ch (int (.charAt ^String s i))]
-                     (if (and (>= ch 48) (<= ch 57))
-                       (let [r (loop [j (int i) v (int 0)]
-                                 (if (< j n)
-                                   (let [d (int (.charAt ^String s j))]
-                                     (if (and (>= d 48) (<= d 57))
-                                       (recur (unchecked-inc-int j)
-                                              (unchecked-add-int
-                                               (unchecked-multiply-int v (int 10))
-                                               (unchecked-subtract-int d (int 48))))
-                                       [j v]))
-                                   [j v]))
-                             j (int (nth r 0)) v (int (nth r 1))
-                             a (if (>= c (alength a))
-                                 (java.util.Arrays/copyOf a (unchecked-multiply-int (alength a) (int 2)))
-                                 a)]
-                         (aset-int a c v)
-                         (recur j (unchecked-inc-int c) a))
-                       (recur (unchecked-inc-int i) c a)))))
-          ^ints d data
-          nd (alength d)]
-      (when (>= nd 1)
-        (let [t (aget d 0)
-              out (StringBuilder.)]
-          (loop [tc (int 0) pos (int 1)]
-            (when (< tc t)
-              (let [nn (aget d pos) mm (aget d (unchecked-inc-int pos))
-                    base (unchecked-add-int pos (int 2))
-                    deg (int-array nn)]
-                ;; degree count (undirected => +1 each side)
-                (dotimes [k mm]
-                  (let [x (unchecked-dec-int (aget d (unchecked-add-int base (unchecked-multiply-int k (int 3)))))
-                        y (unchecked-dec-int (aget d (unchecked-add-int base (unchecked-inc-int (unchecked-multiply-int k (int 3))))))]
-                    (aset-int deg x (unchecked-inc-int (aget deg x)))
-                    (aset-int deg y (unchecked-inc-int (aget deg y)))))
-                ;; CSR offsets
-                (let [off (int-array (unchecked-inc-int nn))]
-                  (dotimes [i nn]
-                    (aset-int off (unchecked-inc-int i)
-                              (unchecked-add-int (aget off i) (aget deg i))))
-                  (let [tot (aget off nn)
-                        tos (int-array tot) wts (int-array tot)
-                        cur (java.util.Arrays/copyOf ^ints off (unchecked-inc-int nn))]
-                    (dotimes [k mm]
-                      (let [x (unchecked-dec-int (aget d (unchecked-add-int base (unchecked-multiply-int k (int 3)))))
-                            y (unchecked-dec-int (aget d (unchecked-add-int base (unchecked-inc-int (unchecked-multiply-int k (int 3))))))
-                            r (aget d (unchecked-add-int base (+ 2 (unchecked-multiply-int k (int 3)))))]
-                        ;; NOTE: re-read cur[y] after writing x's side so that
-                        ;; self-loops (x == y) consume two slots, not one
-                        (let [px (aget ^ints cur x)]
-                          (aset-int tos px y) (aset-int wts px r)
-                          (aset-int cur x (unchecked-inc-int px)))
-                        (let [py (aget ^ints cur y)]
-                          (aset-int tos py x) (aset-int wts py r)
-                          (aset-int cur y (unchecked-inc-int py)))))
-                    ;; dijkstra with stale-entry skipping (same distances as the
-                    ;; reference's set-based decrease-key version)
-                    (let [src (unchecked-dec-int (aget d (unchecked-add-int base (unchecked-multiply-int mm (int 3)))))
-                          dist (int-array nn)]
-                      (java.util.Arrays/fill ^ints dist (int -1))
-                      (aset-int dist src 0)
-                      (let [pq (java.util.PriorityQueue.)]
-                        (.add ^java.util.PriorityQueue pq (long src))
-                        (loop []
-                          (when-not (.isEmpty ^java.util.PriorityQueue pq)
-                            (let [top (long (.poll ^java.util.PriorityQueue pq))
-                                  cd (int (bit-shift-right top 32))
-                                  v (int (bit-and top 4294967295))]
-                              (when (= cd (aget ^ints dist v))
-                                (let [e0 (aget ^ints off v) e1 (aget ^ints off (unchecked-inc-int v))]
-                                  (loop [e (int e0)]
-                                    (when (< e e1)
-                                      (let [to (aget ^ints tos e)
-                                            ndv (unchecked-add-int cd (aget ^ints wts e))
-                                            old (aget ^ints dist to)]
-                                        (when (or (= old -1) (< ndv old))
-                                          (aset-int dist to ndv)
-                                          (.add ^java.util.PriorityQueue pq
-                                                (bit-or (bit-shift-left (long ndv) 32) (long to)))))
-                                      (recur (unchecked-inc-int e)))))))
-                            (recur))))
-                      (dotimes [i nn]
-                        (when (not= i src)
-                          (.append ^StringBuilder out (int (aget ^ints dist i)))
-                          (.append ^StringBuilder out \space)))
-                      (.append ^StringBuilder out \newline))))
-                (recur (unchecked-inc-int tc)
-                       (unchecked-add-int base (unchecked-add-int (unchecked-multiply-int mm (int 3)) (int 1)))))))
-          (print (.toString ^StringBuilder out)))))))
+;; Dijkstra shortest reach over many cases in pure clojure. A
+;; sorted set of [dist vertex] pairs acts as the heap with O(log V)
+;; updates and stale entries skipped on the way out, giving O(E log
+;; V) time and O(V + E) space per case, the best known practical
+;; bound for non negative weights. Output keeps the old shape with
+;; minus one for unreachable verts and one line per case.
+;; Input shape: case count t, then per case n m, m lines x y r with
+;; 1 based verts, and a source. Blank stdin prints nothing. Badly
+;; shaped input prints one message to stderr and returns with exit
+;; 0, since a nonzero exit needs host interop, avoided by design.
+
+(require 'clojure.string)
+
+(def digit-values
+  "Maps each digit char to its numeric value for the tokenizer below."
+  (zipmap "0123456789" (range)))
+
+(def max-long
+  "Largest signed 64-bit value; tokens beyond long range are invalid."
+  9223372036854775807)
+
+(def min-long
+  "Smallest signed 64-bit value."
+  -9223372036854775808)
+
+(defn fit-long
+  "Returns n when it fits in a signed 64-bit long, else nil."
+  [n]
+  (when (<= min-long n max-long) n))
+
+
+(defn parse-ints
+  "Reads all signed integers from string s into a vector. Chars are
+   tested with core compare fns after int coercion, digits through
+   digit-values, and anything else fails the whole scan with nil."
+  [s]
+  (let [done
+        (reduce
+         (fn [state ch]
+           (let [nums (:nums state)
+                 cur (:cur state)
+                 neg (:neg state)
+                 bad (:bad state)
+                 code (int ch)]
+             (cond
+               bad state
+               (<= (int \0) code (int \9))
+               (assoc state :cur (+' (*' (or cur 0) 10) (digit-values ch)))
+               (= ch \-)
+               (if (or (some? cur) neg)
+                 (assoc state :bad true)
+                 (assoc state :neg true))
+               (<= code (int \space))
+               (cond
+                 (some? cur)
+                 (let [v (fit-long (if neg (-' cur) cur))]
+                   (if (some? v)
+                     (-> state
+                     (assoc :nums (conj! nums v))
+                     (assoc :cur nil)
+                     (assoc :neg false))
+                     (assoc state :bad true)))
+                 neg (assoc state :bad true)
+                 :else state)
+               :else (assoc state :bad true))))
+         {:nums (transient []) :cur nil :neg false :bad false}
+         (seq s))]
+    (when-not (:bad done)
+      (let [nums (:nums done)
+            cur (:cur done)
+            neg (:neg done)]
+        (cond
+          (some? cur) (let [v (fit-long (if neg (-' cur) cur))]
+                        (when (some? v) (persistent! (conj! nums v))))
+          neg nil
+          :else (persistent! nums))))))
+
+(defn report-error
+  "Prints message to stderr and returns nil so the driver ends calmly."
+  [msg]
+  (binding [*out* *err*]
+    (println msg))
+  nil)
+
+(defn dijkstra-line
+  "Runs one case from token position p and returns the pair of next
+   position and output line, or nil when the shape is wrong."
+  [nums p]
+  (let [c (count nums)]
+    (when (>= (- c p) 2)
+      (let [n (nth nums p)
+            m (nth nums (inc p))]
+        (when (and (>= n 1) (>= m 0) (>= (- c p) (+' 3 (*' m 3))))
+          (let [adj (loop [i 0 adj (transient (vec (repeat n [])))]
+                      (if (>= i m)
+                        (persistent! adj)
+                        (let [x (nth nums (+ p 2 (* i 3)))
+                              y (nth nums (+ p 3 (* i 3)))
+                              r (nth nums (+ p 4 (* i 3)))]
+                          (if (or (< x 1) (> x n) (< y 1) (> y n))
+                            nil
+                            (let [a (dec x) b (dec y)]
+                              (recur (inc i)
+                                     (-> adj
+                                         (assoc! a (conj (nth adj a) [b r]))
+                                         (assoc! b (conj (nth adj b)
+                                                         [a r])))))))))]
+            (when (some? adj)
+              (let [src (nth nums (+ p 2 (* m 3)))]
+                (when (and (>= src 1) (<= src n))
+                  (let [s (dec src)
+                        dist (assoc! (transient (vec (repeat n -1))) s 0)
+                        dist (loop [pq (sorted-set [0 s]) dist dist]
+                               (if (empty? pq)
+                                 dist
+                                 (let [[cd v] (first pq)
+                                       pq (disj pq [cd v])]
+                                   (if (= cd (nth dist v))
+                                     (let [[pq dist]
+                                           (loop [es (nth adj v)
+                                                  pq pq dist dist]
+                                             (if (empty? es)
+                                               [pq dist]
+                                               (let [[to w] (first es)
+                                                     ndv (+' cd w)
+                                                     old (nth dist to)]
+                                                 (if (or (= old -1) (< ndv old))
+                                                   (recur (rest es)
+                                                          (conj pq [ndv to])
+                                                          (assoc! dist to ndv))
+                                                   (recur (rest es)
+                                                          pq dist)))))]
+                                       (recur pq dist))
+                                     (recur pq dist)))))]
+                    [(+ p 3 (* m 3))
+                     (str (apply str (map (fn [i] (str (nth dist i) " "))
+                                              (remove #(= % s) (range n))))
+                          "\n")]))))))))))
+
+(defn solve
+  "Solves all cases from the token vector and prints the answers."
+  [nums]
+  (let [t (nth nums 0)]
+    (if (< t 0)
+      (report-error "bad input: case count must not be negative")
+      (if (zero? t)
+        nil
+        (let [text (loop [tc 0 p 1 acc ""]
+                     (if (>= tc t)
+                       acc
+                       (let [one (dijkstra-line nums p)]
+                         (if (nil? one)
+                           nil
+                           (recur (inc tc) (first one)
+                                  (str acc (second one)))))))]
+          (if (nil? text)
+            (report-error "bad input: case shape wrong or vertex out of range")
+            (do (print text) nil)))))))
+
+(defn -main
+  "Entry point used by the top level driver below."
+  [s]
+  (let [nums (parse-ints s)]
+    (cond
+      (nil? nums) (report-error "bad input: expected only integers and whitespace")
+      (empty? nums) nil
+      :else (solve nums))))
+
+(-main (slurp *in*))
