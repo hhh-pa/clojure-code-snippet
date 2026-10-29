@@ -1,85 +1,163 @@
-;; A* pacman port of cpp/src/search/astar/pacman_astar.cc.
-;; Mirrors the reference exactly: open set ordered by (cost, row, col), full
-;; relaxation loop with no early exit, neighbours in up/left/right/down order,
-;; and cost(dist[current] + manhattan(neighbour, food)) as in the .cc.
-;; (Unreachable food exits silently; the .cc dereferences garbage parents there
-;; while the Go mirror returns silently too.)
+;; Pacman food search solved with A star over a grid.
+;; Open cells live in a sorted set ordered by cost then row then col, which
+;; keeps the same expansion order as a heap keyed the same way, so the run
+;; takes O(E log V) time and O(V) space for V cells and E grid moves.
+;; Neighbours expand up left right down with food distance as the heuristic,
+;; and every reachable cell relaxes fully with no early stop, matching the
+;; reference port behaviour, while missing output marks unreachable food.
+;; Bad input shapes print a note on stderr and exit zero, since a nonzero
+;; exit needs host calls, which this file avoids on purpose.
 (require '[clojure.string :as str])
-(let [input (slurp *in*)]
-  (when-not (str/blank? input)
-    (let [tok (java.util.StringTokenizer. input)
-          toks (loop [v (transient [])]
-                 (if (.hasMoreTokens tok)
-                   (recur (conj! v (.nextToken tok)))
-                   (persistent! v)))]
-      (when (>= (count toks) 6)
-        (let [pr (Integer/parseInt (toks 0))
-              pc (Integer/parseInt (toks 1))
-              fr (Integer/parseInt (toks 2))
-              fc (Integer/parseInt (toks 3))
-              n (Integer/parseInt (toks 4))
-              m (Integer/parseInt (toks 5))
-              nm (* n m)
-              ^String chrs (apply str (subvec toks 6))]
-          (when (and (> n 0) (> m 0) (>= (count chrs) nm))
-            (let [^chars grid (char-array nm)
-                  ^ints dist (int-array nm -1)
-                  ^ints par (int-array nm -1)
-                  ^ints costq (int-array nm 0)
-                  cmp (reify java.util.Comparator
-                        (compare [_ x y]
-                          (let [^ints a x
-                                ^ints b y
-                                c (Integer/compare (aget a 0) (aget b 0))]
-                            (if (zero? c)
-                              (let [c2 (Integer/compare (aget a 1) (aget b 1))]
-                                (if (zero? c2)
-                                  (Integer/compare (aget a 2) (aget b 2))
-                                  c2))
-                              c))))
-                  ^java.util.TreeSet q (java.util.TreeSet. ^java.util.Comparator cmp)
-                  manhattan (fn [^long r ^long c]
-                              (+ (Math/abs (- r fr)) (Math/abs (- c fc))))
-                  pidx (+ (* pr m) pc)
-                  fidx (+ (* fr m) fc)]
-              (loop [i 0]
-                (when (< i nm)
-                  (aset grid i (.charAt chrs i))
-                  (recur (inc i))))
-              (aset dist pidx 0)
-              (aset costq pidx (int (manhattan pr pc)))
-              (.add q (int-array [(manhattan pr pc) pr pc]))
-              (while (not (.isEmpty q))
-                (let [^ints cur (.pollFirst q)
-                      cr (aget cur 1)
-                      cc (aget cur 2)
-                      ci (+ (* cr m) cc)
-                      dc (aget dist ci)]
-                  (loop [k 0]
-                    (when (< k 4)
-                      (let [nr (+ cr (case k 0 -1 1 0 2 0 3 1))
-                            nc (+ cc (case k 0 0 1 -1 2 1 3 0))]
-                        (when (and (>= nr 0) (< nr n) (>= nc 0) (< nc m)
-                                   (not= (aget grid (+ (* nr m) nc)) \%))
-                          (let [ni (+ (* nr m) nc)
-                                nd (aget dist ni)
-                                new-dist (inc dc)
-                                new-cost (+ dc (manhattan nr nc))]
-                            (when (or (= nd -1) (> nd new-dist))
-                              (when (not= nd -1)
-                                (.remove q (int-array [(aget costq ni) nr nc])))
-                              (aset dist ni new-dist)
-                              (aset par ni ci)
-                              (aset costq ni (int new-cost))
-                              (.add q (int-array [new-cost nr nc]))))))
-                      (recur (inc k))))))
-              (when (not= (aget dist fidx) -1)
-                (let [path (loop [s fidx acc (list)]
-                             (if (= s pidx)
-                               (conj acc s)
-                               (recur (aget par s) (conj acc s))))
-                      sb (StringBuilder.)]
-                  (.append sb (str (dec (count path)) "\n"))
+
+(def digit-values
+  "Digit chars mapped to their numeric values for the pure number reader."
+  (zipmap "0123456789" (range 10)))
+
+(def max-long
+  "Largest signed 64-bit value; tokens beyond long range are invalid."
+  9223372036854775807)
+
+(def min-long
+  "Smallest signed 64-bit value."
+  -9223372036854775808)
+
+(defn fit-long
+  "Returns n when it fits in a signed 64-bit long, else nil."
+  [n]
+  (when (<= min-long n max-long) n))
+
+
+(defn whitespace?
+  "True for the four blank chars treated as token separators."
+  [ch]
+  (or (= ch \space) (= ch \tab) (= ch \newline) (= ch \return)))
+
+(defn tokenize
+  "Split string s on blanks into a vector of token strings in linear time."
+  [s]
+  (loop [cs (seq s) cur [] toks []]
+    (if (nil? cs)
+      (if (seq cur) (conj toks (apply str cur)) toks)
+      (let [ch (first cs)]
+        (if (whitespace? ch)
+          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
+          (recur (next cs) (conj cur ch) toks))))))
+
+(defn parse-int-token
+  "Read one signed integer token into a long, else nil for a bad token."
+  [tok]
+  (let [cs (seq tok)]
+    (when (seq cs)
+      (let [f (first cs)
+            neg? (= f \-)
+            ds (if (or neg? (= f \+)) (next cs) cs)]
+        (when (seq ds)
+          (loop [ds ds acc 0]
+            (if (nil? ds)
+              (fit-long (if neg? (-' acc) acc))
+              (let [ch (first ds)]
+                (if (contains? digit-values ch)
+                  (recur (next ds) (+' (*' acc 10) (get digit-values ch)))
+                  nil)))))))))
+
+(defn fail
+  "Report a bad input shape on stderr and return nil with exit code zero."
+  [msg]
+  (binding [*out* *err*]
+    (println msg))
+  nil)
+
+(defn abs-val
+  "Pure absolute value for a number."
+  [x]
+  (if (neg? x) (- x) x))
+
+(defn food-dist
+  "Manhattan distance from row r col c to food row fr col fc."
+  [r c fr fc]
+  (+ (abs-val (- r fr)) (abs-val (- c fc))))
+
+(defn astar-path
+  "Run the A star relaxation over grid rows n and cols m, returning the path
+   from start to food as a vector of cell ids, else nil when unreachable."
+  [grid n m pr pc fr fc]
+  (let [nm (* n m)
+        start (+ (* pr m) pc)
+        goal (+ (* fr m) fc)
+        h (fn [r c] (food-dist r c fr fc))
+        nbrs [[-1 0] [0 -1] [0 1] [1 0]]]
+    (loop [dist (assoc (vec (repeat nm -1)) start 0)
+           par (vec (repeat nm -1))
+           costq (assoc (vec (repeat nm 0)) start (h pr pc))
+           open (sorted-set [(h pr pc) pr pc])]
+      (if (empty? open)
+        (when (not= (nth dist goal) -1)
+          (loop [s goal acc (list)]
+            (if (= s start)
+              (vec (conj acc s))
+              (recur (nth par s) (conj acc s)))))
+        (let [cur (first open)
+              [cost cr ccol] cur
+              ci (+ (* cr m) ccol)
+              dc (nth dist ci)
+              [dist par costq open]
+              (loop [ks nbrs
+                     dist dist
+                     par par
+                     costq costq
+                     open (disj open cur)]
+                (if (empty? ks)
+                  [dist par costq open]
+                  (let [[dr dcol] (first ks)
+                        nr (+ cr dr)
+                        nc (+ ccol dcol)]
+                    (if (and (<= 0 nr) (< nr n) (<= 0 nc) (< nc m)
+                             (not= (nth grid (+ (* nr m) nc)) \%))
+                      (let [ni (+ (* nr m) nc)
+                            nd (nth dist ni)
+                            new-dist (inc dc)
+                            new-cost (+ dc (h nr nc))]
+                        (if (or (= nd -1) (> nd new-dist))
+                          (let [open (if (= nd -1)
+                                       open
+                                       (disj open [(nth costq ni) nr nc]))]
+                            (recur (rest ks)
+                                   (assoc dist ni new-dist)
+                                   (assoc par ni ci)
+                                   (assoc costq ni new-cost)
+                                   (conj open [new-cost nr nc])))
+                          (recur (rest ks) dist par costq open)))
+                      (recur (rest ks) dist par costq open)))))]
+          (recur dist par costq open))))))
+
+(defn solve-input
+  "Solve one grid read from string s, printing the path or nothing."
+  [s]
+  (let [toks (tokenize s)]
+    (if (< (count toks) 6)
+      (fail "bad input: need start food dims and grid rows")
+      (let [nums (mapv parse-int-token (subvec toks 0 6))]
+        (if (some nil? nums)
+          (fail "bad input: header values must be integers")
+          (let [[pr pc fr fc n m] nums
+                nm (* n m)
+                chars (vec (apply str (subvec toks 6)))]
+            (if (or (<= n 0) (<= m 0) (< (count chars) nm)
+                     (< pr 0) (< pc 0) (< fr 0) (< fc 0)
+                     (>= pr n) (>= pc m) (>= fr n) (>= fc m))
+              (fail "bad input: dims or points out of range")
+              (let [grid (subvec chars 0 nm)
+                    path (astar-path grid n m pr pc fr fc)]
+                (when path
+                  (println (dec (count path)))
                   (doseq [s path]
-                    (.append sb (str (quot s m) " " (rem s m) "\n")))
-                  (print (str sb)))))))))))
+                    (println (str (quot s m) " " (rem s m)))))))))))))
+
+(defn -main
+  "Entry point reading the whole stdin string, silent on blank input."
+  [input]
+  (when-not (str/blank? input)
+    (solve-input input)))
+
+;; Minimal top level driver.
+(-main (slurp *in*))
