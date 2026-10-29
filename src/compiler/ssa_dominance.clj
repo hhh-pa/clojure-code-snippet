@@ -1,17 +1,19 @@
 (ns compiler.ssa-dominance
   "SSA dominance: immediate dominators (Cooper-Harvey-Kennedy), dominance
-   frontiers (Cytron et al.) and phi-placement worklist.
+   frontiers and phi-placement worklist.
 
    Time: O(n + m) DFS for reverse postorder plus CHK fixpoint (each pass
    O(m); converges in about 2 passes typically, O(n*m) worst) versus the
-   original bitset dataflow (quadratic per iteration, cubic worst). DF via
-   Cytron runner walks (output-sensitive, quadratic worst) versus the
-   original cubic double loop. Phi worklist O(|defs| * |DF|).
+   original bitset dataflow (quadratic per iteration, cubic worst). DF
+   keeps the original's exact single ordered up-pass (quadratic worst):
+   textbook Cytron runners would be output-sensitive but compute
+   different frontiers than the original on some loopy graphs, breaking
+   the byte-identity stdout contract. Phi worklist O(|defs| * |DF|).
    Space: O(n + m). CHK is
    the standard practical-optimal dominator algorithm (faster than
    Lengauer-Tarjan on real graphs despite a weaker worst case). When
-   unreachable nodes exist, an exact pure bitset fallback preserves the
-   original output byte for byte."
+   unreachable nodes exist, an exact pure bitset fallback for the idoms
+   preserves the original output byte for byte."
   (:refer-clojure :exclude [parse-long])
   (:require [clojure.string :as str]
             [clojure.set :as set]))
@@ -113,25 +115,35 @@
           (recur idom)
           idom)))))
 
-(defn compute-df
-  "Cytron dominance frontiers for all nodes 1..n. Returns vector (n+1) of
-   sorted-sets. `idom` maps reachable nodes (root->root for the
-   intersect routine); here the root counts as having no idom, matching
-   the original (whose root idom is 0) so entry self-loops are kept."
-  [pred idom n root]
-  (let [up (fn [node] (when-not (= node root) (get idom node)))
-        df (vec (repeat (inc n) (sorted-set)))]
-    (reduce (fn [df y]
-              (let [idom-y (up y)]
-                (reduce (fn [df x]
-                          (loop [df df
-                                 runner x]
-                            (if (or (nil? runner) (= runner idom-y))
-                              df
-                              (recur (update df runner conj y)
-                                     (up runner)))))
-                        df (nth pred y))))
-            df (range 1 (inc n)))))
+(defn naive-df
+  "Dominance frontiers exactly as the original computes them: a local
+   edge pass, then ONE up-propagation sweep in ascending node order.
+   That single ordered sweep is order-dependent and under-computes
+   versus textbook Cytron DF on some loopy graphs (e.g. a defined loop
+   header missing from its own frontier) -- but the stdout contract is
+   byte-identity with the original, so this quirk is replicated, not
+   fixed. `idomv` is the (n+1) idom vector (root->0). Returns vector
+   (n+1) of sorted-sets."
+  [succ idomv n]
+  (let [df1 (reduce (fn [df x]
+                      (reduce (fn [df2 y]
+                                (if (not= (nth idomv y) x)
+                                  (update df2 x conj y)
+                                  df2))
+                              df (nth succ x)))
+                    (vec (repeat (inc n) (sorted-set)))
+                    (range 1 (inc n)))]
+    (reduce (fn [df x]
+              (reduce (fn [df2 z]
+                        (if (= (nth idomv z) x)
+                          (reduce (fn [df3 y]
+                                    (if (not= (nth idomv y) x)
+                                      (update df3 x conj y)
+                                      df3))
+                                  df2 (seq (nth df2 z)))
+                          df2))
+                      df (range 1 (inc n))))
+            df1 (range 1 (inc n)))))
 
 (defn queue-from
   "Pure FIFO queue as [items read-index]; O(1) amortized ops."
@@ -218,26 +230,8 @@
                             iv (seq dom-i))))
                 (vec (repeat (inc n) 0))
                 (range 2 (inc n)))
-        df1 (reduce (fn [df x]
-                      (reduce (fn [df2 y]
-                                (if (not= (nth idomv y) x)
-                                  (update df2 x conj y)
-                                  df2))
-                              df (nth succ x)))
-                    (vec (repeat (inc n) (sorted-set)))
-                    (range 1 (inc n)))
-        df2 (reduce (fn [df x]
-                      (reduce (fn [df2 z]
-                                (if (= (nth idomv z) x)
-                                  (reduce (fn [df3 y]
-                                            (if (not= (nth idomv y) x)
-                                              (update df3 x conj y)
-                                              df3))
-                                          df2 (seq (nth df2 z)))
-                                  df2))
-                              df (range 1 (inc n))))
-                    df1 (range 1 (inc n)))]
-    [idomv df2]))
+        df (naive-df succ idomv n)]
+    [idomv df]))
 
 (defn phi-placement
   "Iterated dominance frontier of `defs`. Returns sorted-set."
@@ -322,10 +316,15 @@
                             (if connected?
                               (let [[rpo rpo-num] (reverse-postorder succ 1 n)
                                     idom (compute-idom succ pred 1 n rpo rpo-num)
-                                    idomv (reduce (fn [v [k val]]
-                                                    (assoc v k val))
-                                                  (vec (repeat (inc n) 0)) idom)]
-                                [idomv (compute-df pred idom n 1)])
+                                    ;; CHK maps root->root internally; the
+                                    ;; original leaves idom[1] as 0, which
+                                    ;; the DF comparisons depend on.
+                                    idomv (assoc (reduce (fn [v [k val]]
+                                                           (assoc v k val))
+                                                         (vec (repeat (inc n) 0))
+                                                         idom)
+                                                 1 0)]
+                                [idomv (naive-df succ idomv n)])
                               (bitset-idom-df succ pred n))
                             phi (phi-placement df defs)]
                         (println (str/join " "
