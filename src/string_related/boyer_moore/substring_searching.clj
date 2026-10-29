@@ -12,21 +12,14 @@
   "Digit chars mapped to their numeric values."
   (zipmap "0123456789" (range 10)))
 
-(defn- blank-char?
-  "True for the whitespace chars that split tokens."
-  [c]
-  (or (= c \space) (= c \tab) (= c \newline) (= c \return) (= c \formfeed)))
-
 (defn- tokenize
-  "Splits s on whitespace; returns a vector of token strings."
+  "Splits s on whitespace; returns a vector of token strings.
+   Uses clojure.string/split rather than a per-char loop: a 60MB text
+   token would otherwise allocate gigabytes of transient vectors under
+   a non-collecting heap. The explicit class matches space, tab,
+   newline, return and formfeed exactly (no vertical tab, unlike \\s)."
   [s]
-  (loop [cs (seq s) cur [] toks []]
-    (if (nil? cs)
-      (if (seq cur) (conj toks (apply str cur)) toks)
-      (let [c (first cs)]
-        (if (blank-char? c)
-          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
-          (recur (next cs) (conj cur c) toks))))))
+  (vec (remove str/blank? (str/split s #"[ \t\n\r\f]+"))))
 
 (defn- parse-int
   "Reads token tok as a decimal integer inside lo to hi, else nil."
@@ -93,28 +86,36 @@
             (range (- m 1)))))
 
 (defn- bm-contains?
-  "True when char vector pat occurs in char vector text."
+  "True when string pat occurs in string text. Strings are indexed
+   directly (count/nth are O(1)) instead of copying to char vectors.
+   The search is one loop (j = alignment, i = pattern index under
+   comparison) whose numbers are all primitive loop vars -- boxed
+   lets cannot hold primitives, so n/m are unboxed once into the
+   loop. Only inlined primops (+ - < >) appear and the shift is
+   recomputed in each if-branch rather than let-bound (a let slot
+   would box once per alignment), so a comparison allocates nothing
+   (verified under a non-collecting heap). No host hints are used."
   [text pat]
-  (let [n (count text)
-        m (count pat)]
+  (let [n0 (count text)
+        m0 (count pat)]
     (cond
-      (zero? m) true
-      (< n m) false
+      (zero? m0) true
+      (< n0 m0) false
       :else
-      (let [last-at (reduce (fn [mp j] (assoc mp (nth pat j) j)) {} (range m))
-            gs (good-suffix-shifts pat m)]
-        (loop [j 0]
+      (let [last-at (reduce (fn [mp j] (assoc mp (nth pat j) j)) {} (range m0))
+            gs (good-suffix-shifts pat m0)]
+        (loop [j (long 0) i (long (dec m0)) n (long n0) m (long m0)]
           (if (> (+ j m) n)
             false
-            (let [i (loop [i (dec m)]
-                      (if (or (neg? i) (not= (nth pat i) (nth text (+ i j))))
-                        i
-                        (recur (dec i))))]
-              (if (neg? i)
-                true
-                (recur (+ j (max (nth gs i)
-                                 (- i (get last-at (nth text (+ i j)) -1)))))))))))))
-
+            (if (< i 0)
+              true
+              (if (= (nth pat i) (nth text (+ i j)))
+                (recur j (- i 1) n m)
+                (recur (+ j (if (> (long (nth gs i))
+                                         (- i (long (get last-at (nth text (+ i j)) -1))))
+                                      (long (nth gs i))
+                                      (- i (long (get last-at (nth text (+ i j)) -1)))))
+                       (- m 1) n m)))))))))
 (defn -main
   "Parses data and prints YES or NO per query pair.
   Malformed input prints a message on stderr and returns normally,
@@ -127,7 +128,7 @@
         (if (or (nil? t) (< (count toks) (inc' (*' 2 t))))
           (report "error: expected a count followed by that many text pattern pairs")
           (let [out (map (fn [[text pat]]
-                           (if (bm-contains? (vec text) (vec pat)) "YES" "NO"))
+                           (if (bm-contains? text pat) "YES" "NO"))
                          (partition 2 (take (* 2 t) (rest toks))))]
             (when (seq out)
               (print (str (str/join "\n" out) "\n"))))))
