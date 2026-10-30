@@ -179,7 +179,6 @@ def run_slope_all(measure_case, time_bin, use_perf, template, classpath,
     import generators  # tools-local; lazy so measure.py has no new top imports
 
     tasks = []  # (name, label, stem, script, gen)
-    tmpdirs = []
     keep = None
     if shard is not None:
         index, total = shard
@@ -197,65 +196,78 @@ def run_slope_all(measure_case, time_bin, use_perf, template, classpath,
     complexity = {}
     if not tasks:
         return complexity
-    scale_jobs = []  # (name, n, input_path, output_path)
-    for name, label, stem, script, gen in tasks:
-        tmpdir = tempfile.mkdtemp(prefix="slope-")
-        tmpdirs.append(tmpdir)
-        for idx, n in enumerate(gen.scales):
-            data_in, data_out, fit_n = gen.generate(n, seed=1000 + idx)
-            in_path = os.path.join(tmpdir, "{}-{}.in".format(stem, idx))
-            out_path = os.path.join(tmpdir, "{}-{}.expected".format(stem, idx))
-            with open(in_path, "wb") as fd:
-                fd.write(data_in)
-            with open(out_path, "wb") as fd:
-                fd.write(data_out)
-            scale_jobs.append((name, label, stem, script, fit_n, in_path, out_path))
-    per_scale = {}
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        futures = {
-            # alloc_repeat=0: slope scales are timing-only probes; the
-            # fit reads cpu medians, so skip EpsilonGC alloc runs.
-            pool.submit(measure_case, time_bin, use_perf, template,
-                        classpath, label, stem, script,
-                        "slope_n_{}".format(fit_n), in_path, out_path,
-                        repeat, 0, timeout): (name, fit_n)
-            for name, label, stem, script, fit_n, in_path, out_path in scale_jobs
-        }
-        for future in as_completed(futures):
-            name, fit_n = futures[future]
-            per_scale.setdefault(name, []).append((fit_n, future.result()))
-    for name, label, stem, script, gen in tasks:
-        scales = sorted(per_scale.get(name, []), key=lambda pair: pair[0])
-        entry = {"scales": [n for n, _ in scales], "points": [],
-                 "ok": False, "fit": None, "error": None}
-        failed = [res for _, res in scales if not res["ok"]]
-        if failed:
-            entry["error"] = failed[0]["error"]
-        else:
-            medians = []
-            for fit_n, res in scales:
-                cpu = res["summary"]["cpu_s"]
-                entry["points"].append(
-                    {"n": fit_n, "cpu_median": cpu["median"],
-                     "cpu_min": cpu["min"], "cpu_max": cpu["max"]})
-                medians.append(cpu["median"])
-            fit = fit_power_law([n for n, _ in scales], medians)
-            entry["fit"] = fit
-            entry["ok"] = fit.get("ok", False)
-            if not fit.get("ok"):
-                entry["error"] = "slope fit skipped: {} ({})".format(
-                    fit["reason"], fit["detail"])
-        complexity[name] = entry
-    for tmpdir in tmpdirs:
-        for fname in os.listdir(tmpdir):
-            try:
-                os.unlink(os.path.join(tmpdir, fname))
-            except OSError:
-                pass
+    def _clean(tmpdir):
+        try:
+            for fname in os.listdir(tmpdir):
+                try:
+                    os.unlink(os.path.join(tmpdir, fname))
+                except OSError:
+                    pass
+        except OSError:
+            return
         try:
             os.rmdir(tmpdir)
         except OSError:
             pass
+
+    # One benchmark at a time: generate its scales, measure them,
+    # fit, then delete its files before moving on. Peak disk stays
+    # near one benchmark (~4GB for a full 90-benchmark sweep would
+    # otherwise sit on disk until the very end).
+    for name, label, stem, script, gen in tasks:
+        tmpdir = tempfile.mkdtemp(prefix="slope-")
+        try:
+            scale_jobs = []  # (fit_n, input_path, output_path)
+            for idx, n in enumerate(gen.scales):
+                data_in, data_out, fit_n = gen.generate(n, seed=1000 + idx)
+                in_path = os.path.join(tmpdir, "{}-{}.in".format(stem, idx))
+                out_path = os.path.join(tmpdir, "{}-{}.expected".format(
+                    stem, idx))
+                with open(in_path, "wb") as fd:
+                    fd.write(data_in)
+                with open(out_path, "wb") as fd:
+                    fd.write(data_out)
+                scale_jobs.append((fit_n, in_path, out_path))
+            per_scale = []
+            with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+                futures = {
+                    # alloc_repeat=0: slope scales are timing-only
+                    # probes; the fit reads cpu medians, so skip
+                    # EpsilonGC alloc runs.
+                    pool.submit(measure_case, time_bin, use_perf,
+                                template, classpath, label, stem, script,
+                                "slope_n_{}".format(fit_n), in_path,
+                                out_path, repeat, 0, timeout): fit_n
+                    for fit_n, in_path, out_path in scale_jobs
+                }
+                for future in as_completed(futures):
+                    per_scale.append((futures[future], future.result()))
+            scales = sorted(per_scale, key=lambda pair: pair[0])
+            entry = {"scales": [n for n, _ in scales], "points": [],
+                     "ok": False, "fit": None, "error": None,
+                     "scale_failed": False}
+            failed = [res for _, res in scales if not res["ok"]]
+            if failed:
+                entry["error"] = failed[0]["error"]
+                entry["scale_failed"] = True
+            else:
+                medians = []
+                for fit_n, res in scales:
+                    cpu = res["summary"]["cpu_s"]
+                    entry["points"].append(
+                        {"n": fit_n, "cpu_median": cpu["median"],
+                         "cpu_min": cpu["min"], "cpu_max": cpu["max"]})
+                    medians.append(cpu["median"])
+                fit = fit_power_law([n for n, _ in scales], medians)
+                entry["fit"] = fit
+                entry["ok"] = fit.get("ok", False)
+                if not fit.get("ok"):
+                    entry["error"] = "slope fit skipped: {} ({})".format(
+                        fit["reason"], fit["detail"])
+            complexity[name] = entry
+        finally:
+            # Crash safety: a failed sweep must not orphan gigabytes.
+            _clean(tmpdir)
     return complexity
 
 
@@ -364,6 +376,7 @@ def run_checks():
               sorted(got) == sorted(tiny) and all(
                   got[name]["ok"]
                   and abs(got[name]["fit"]["slope"] - 2.0) < 0.05
+                  and got[name]["scale_failed"] is False
                   for name in got),
               repr({k: (v["ok"], (v["fit"] or {}).get("slope"))
                     for k, v in got.items()}))
@@ -387,7 +400,9 @@ def run_checks():
                             groups, None, 1, 0, 1)
         check("slope-runner-error",
               sorted(got) == sorted(tiny) and all(
-                  not v["ok"] and v["error"] for v in got.values()),
+                  not v["ok"] and v["error"]
+                  and v["scale_failed"] is True
+                  for v in got.values()),
               repr(got))
     finally:
         generators.GENERATORS = real_registry
