@@ -6,8 +6,9 @@ Goal: a framework that runs covered benchmarks at scaled input
 sizes, fits the complexity exponent, and tracks it in Bencher as
 the measure `complexity_exponent` (informational, no threshold) —
 the machine-independent algorithm signature for the coming
-native-code comparison. Scope: framework + 2 pilot benchmarks
-with input generators (prove the pattern, don't boil the ocean).
+native-code comparison. Scope: framework + input generators for
+every benchmark whose contract admits a slope ladder (92 of 102;
+the 10 skips are listed below with reasons).
 
 Acceptance criteria:
 
@@ -17,10 +18,15 @@ Acceptance criteria:
   [1.95, 2.05], n log n over an 8x range in [1.0, 1.15],
   R^2 ~= 1 on clean data, and graceful skips (flat data,
   tiny n-range, too few points, non-positive values).
-- Local end-to-end on both pilots: measured exponents match
-  the known complexity class of each pilot algorithm
-  (expected vs measured stated in the PR; small deviations OK
-  with explanation).
+- Local end-to-end on every covered benchmark: each slope
+  scale is correctness-diffed like a regular case, and a scale
+  failure (timeout/mismatch/crash) fails the run — only fit
+  skips (flat/poor-fit/tiny-range/...) stay informational.
+  Measured exponents match the known complexity class of each
+  algorithm family (spot-checked per area in the PR; deviations
+  OK with explanation, e.g. JIT amortization reading
+  sublinear on linear work, or an input family exercising a
+  better-than-worst case).
 - BMF emits `complexity_exponent` ONLY for covered benchmarks
   with a successful fit (sparse — zero report-size impact on
   all other benchmarks). No threshold is configured for it
@@ -35,11 +41,11 @@ Acceptance criteria:
 
 ### Pilot choice (with feasibility reasoning)
 
-Pilots: `sort/insertion_sort/solution` (expected exponent 2.0)
-and `sort/quick_sort/solution` (expected exponent 1.0-1.15,
+First pilots: `sort/insertion_sort/solution` (expected exponent
+2.0) and `sort/quick_sort/solution` (expected exponent 1.0-1.15,
 i.e. n log n seen through a power-law fit over an 8x range).
 
-Why these two:
+Why these two first:
 
 - Same stdin/stdout contract, verified by reading all three
   sort drivers: stdin is `n` followed by n longs, stdout is
@@ -52,16 +58,51 @@ Why these two:
   order of a generated permutation), so scaled runs keep full
   correctness checking through the existing `measure_case`
   diff path — no trust-me timing-only runs.
-- Rejected `string_function_calculation`: its stdin contract
-  (single token string) is simple, but producing expected
-  outputs at scale in Python needs a suffix automaton of its
-  own — too much machinery for a pilot. Rejected
-  `sort/merge_sort` as the second pilot: same class as
-  quick_sort, so the pair would prove less.
+
+### Full coverage (92 of 102) and the 10 skips
+
+Every benchmark got a contract survey (stdin grammar, stdout
+shape, scale knobs, determinism, reference feasibility) and,
+where feasible, a generator + calibrated 4-scale ladder (8x
+span, top scale aimed at 5-60 s local solve cpu). Two reference
+strategies, in preference order:
+
+- Construction-known answers: inputs whose correct output is
+  trivially derivable (a complete graph has all distances 1, a
+  unary string has n distinct substrings, a semiprime's factors
+  are known). Required for superlinear subjects, where a
+  Python port would be slower than the solution itself.
+- Exact ports: a Python reimplementation of the solution's
+  logic, verified diff-clean against the real JVM solution at
+  every scale (ports that could not be made byte-exact were
+  rejected in favor of a skip).
+
+The 10 benchmarks with no ladder, by reason:
+
+- No scale knob: `search/iddfs/minimum_depth_of_binary_tree`
+  (O(1) closed form), `search/backtracking/sudoku` and
+  `search/dancing_links/sudoku` (fixed 9x9; counting puzzles
+  would measure replication, not the solver).
+- Sub-logarithmic signal: `search/binary_search/winter_challenge`
+  (O(log n) reads as flat) and
+  `string_related/automata/count_strings` (no polynomial knob:
+  length is logarithmic, DFA size exponential).
+- Reference-cost ceiling: `math/fft/fft`, `math/strassen/strassen`
+  (a correct Python reference is asymptotically slower than the
+  subject, so the subject is instant at every reference-feasible
+  scale), `computational_geometry/triangulation/delaunay`,
+  `computational_geometry/voronoi/fortune_voronoi` (JVM flat
+  ~3 s from n=10 to n=200 while the O(n^4) reference already
+  needs 21 s at n=200).
+- Tolerance-only output: `math/simplex/simplex` (2-decimal
+  float verdict needs an epsilon check; the harness diffs
+  bytes).
 
 ### Calibration (why the fit models the startup floor)
 
-Measured on this machine (JVM cpu_s = user+sys):
+Measured pre-PR-29 (kept for the floor-bias argument; the
+pure-Clojure rewrite changed the constants — see the ladder
+note above). JVM cpu_s = user+sys:
 
 | run | cpu (s) |
 | --- | ---: |
@@ -84,13 +125,20 @@ exponent). The fit must therefore model the floor explicitly
 collapses to ~milliseconds and both methods agree, so the
 same framework ports to the native comparison unchanged.
 
-Pilot scales (solve signal comfortably above floor noise,
-total cost ~3 min CPU per CI run — see Part 2):
+Pilot scales (solve signal comfortably above floor noise):
 
-- insertion_sort: n = 20k / 40k / 80k / 160k
-  (expected totals ~2.4 / 3.7 / 8.4 / 29 s cpu).
+- insertion_sort: n = 5k / 10k / 20k / 40k
+  (the pure-Clojure PR-29 rewrite is ~20x slower per op than
+  the version below, scaling ~n^2.3: 20k->8 s, 40k->33 s,
+  80k->167 s wall, 120k past the 300 s timeout).
 - quick_sort: n = 1M / 2M / 4M / 8M
   (expected totals ~3.1 / 3.9 / 4.9 / 7 s cpu).
+
+Every other ladder follows the same rule (top scale 5-60 s
+local solve, 8x span, fit on the true work scale — path cells
+for astar corridors, max N for rho-factoring, k for CRT folds)
+and is recorded with its rationale in
+`tools/generators/__init__.py` plus per-module docstrings.
 
 ## Part 2 — design
 
@@ -119,32 +167,63 @@ Pure-stdlib power-law fit plus the slope-runner:
   `--only` and `--shard`), writes generated input/expected
   files to a temp dir, reuses `measure_case` per scale
   (correctness-checked like any other case), fits per-scale
-  cpu_s medians, cleans up. Returns a `complexity` dict for
-  the full report: per benchmark the fit result plus
-  per-scale n/median/min/max for transparency.
+  cpu_s medians, deletes that benchmark's files before moving
+  on (peak disk stays near one benchmark; a `finally` keeps a
+  crashed sweep from orphaning gigabytes). Returns a
+  `complexity` dict for the full report: per benchmark the
+  fit result plus per-scale n/median/min/max for transparency.
+  A benchmark whose scales fail records `scale_failed: true`,
+  which the measure hook turns into a run failure (see below);
+  a benchmark whose fit is rejected records a skip reason and
+  stays informational.
 
 Fit input: per-scale median cpu_s across `--slope-repeat`
-runs (default 3). cpu_time is the existing primary metric
+runs (default 3; CI passes 1 — with 92 covered benchmarks x 4
+scales, repeat 3 would triple CI time for little fit gain,
+and the R^2 >= 0.8 gate already rejects noise-dominated
+fits). cpu_time is the existing primary metric
 and the most load-independent per-point signal; wall time is
 too noisy on shared runners and perf counters are null on
 hosted runners — documented here so the choice is explicit.
 
 ### Input generators: `tools/generators/` package
 
-- `tools/generators/sort_arrays.py`: `SortArrayGenerator`
-  for the shared sort stdin contract. `generate(n, seed)`
-  returns `(input_bytes, expected_bytes, n)`: input is
-  `n` plus a fixed-seed shuffle of `range(n)`
-  (memory-conscious `array('l')` buffer — 8M-element inputs
-  stay under ~100 MB); expected is `[0,1,...,n-1]`.
-  Average-case inputs: random permutation gives insertion
-  sort Theta(n^2) and quicksort Theta(n log n).
-- `tools/generators/__init__.py`: `GENERATORS` registry
-  mapping benchmark name to generator + scales:
-  `sort/insertion_sort/solution` -> 20k/40k/80k/160k,
-  `sort/quick_sort/solution` -> 1M/2M/4M/8M.
-  Adding a benchmark is one registry line when its stdin
-  contract already has a generator.
+One module per area, each generator a class with
+`__init__(self, scales)` and
+`generate(n, seed=1000) -> (input_bytes, expected_bytes, fit_n)` —
+a pure deterministic function of `(n, seed)`, stdlib only:
+
+- `sort_arrays.py`: `SortArrayGenerator` for the shared sort
+  stdin contract (`n` plus a fixed-seed shuffle of `range(n)`,
+  memory-conscious `array('l')` buffer; expected
+  `[0,1,...,n-1]`) serving all ten sorts, plus
+  `QuickselectGenerator` (same stdin, rank-`n//2` stdout).
+- `search.py`: astar (forced snake-corridor path), bfs, dfs,
+  pairs (exact two-pointer port).
+- `dp_math.py`: coin_change, edit_distance, both knapsacks
+  (note the swapped header order), lcs (tie-break-exact
+  Hirschberg port), lis, max_subarray, crt (truncating-division
+  port, fit on k), miller_rabin_pollard (construction-known
+  semiprimes, fit on max N).
+- `graph.py`: 17 generators, all construction-known (complete
+  graphs, line graphs, directed cycles, unique matchings,
+  diagonal/zero-cost matrices, disjoint 3-cycles, empty edge
+  sets).
+- `string_related.py`: 14 generators, all construction-known
+  (zero-match scans, all-mismatch alignments, unary strings).
+- `data_structure.py`: 12 generators, exact ports (AVL/BST,
+  b-tree multiset, union-find, bug-compatible fenwick sweep,
+  lazy-deletion fib heap, two-heap median with trunc-division,
+  segtrees, set-script refs).
+- `compiler.py`: 12 generators (Catalan CYK counts, minimal
+  mod-k DFA, quirk-exact Earley/GVN/linear-scan/LL(1)/LR/
+  Pratt/Chaitin/SSA ports, regex fullmatch, subset counts).
+- `geo_dist.py`: 6 geometry (exact-decimal coordinates dodge
+  float-format boundaries) + 7 distributed sims (integer-exact).
+- `__init__.py`: `GENERATORS` registry mapping BMF benchmark
+  name to generator + scales. Adding a benchmark is one
+  registry line when its stdin contract already has a
+  generator.
 
 ### Thin hook in `tools/measure.py` (mergeability)
 
@@ -159,7 +238,11 @@ imports inside the hook so there is zero top-of-file churn:
 - After the main loop: `complexity = run_slope_all(...)`
   (one call; slope honors `--only`/`--shard` so CI shards
   stay balanced and the `jq -s add` fan-in stays exact —
-  slope entries ride in the pilot's own BMF entry).
+  slope entries ride in the benchmark's own BMF entry).
+  Entries with `scale_failed` are appended to `failures`,
+  so a broken ladder (or a timeout) fails the run exactly
+  like a broken regular case; fit skips never touch
+  `failures`.
 - `build_bmf(results, complexity=None)`: merges
   `complexity_exponent` (`value` = slope, `lower/upper` =
   LOO band) into covered benchmarks' entries, creating the
@@ -189,7 +272,13 @@ else unchanged).
 
 ### CI cost
 
-Scaled runs happen only for covered benchmarks: 2 pilots x
-4 scales x 3 repeats = 24 extra JVM runs, ~3 min CPU total
-(~2 min wall at `--jobs 2`, spread over the shards owning
-the pilots). No new dependencies, no new jobs.
+Scaled runs happen only for covered benchmarks: 92 covered x
+4 scales x 1 repeat (`--slope-repeat 1`) = 368 extra JVM runs
+plus generator-side reference compute (all references stay
+under ~60 s; most under ~10 s). Measured locally: 3528 s of
+scale cpu in total (~59 min), i.e. ~7-8 min wall per shard at
+`--jobs 2` — the dominant cost of the perf job, accepted for
+full complexity coverage. No new dependencies, no new jobs.
+The merged step summary (one per Action run) carries the
+`cxp (p)` complexity column next to cpu/memory, so the
+aggregated report is the place to watch exponents.
