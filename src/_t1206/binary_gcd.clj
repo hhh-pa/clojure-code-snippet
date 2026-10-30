@@ -1,4 +1,34 @@
-(ns binary-gcd (:require [clojure.string :as str]))
+;; binary_gcd: binary GCD via Stein's shift-only algorithm. O(log max(a,b)).
+;; Pure Clojure with canonical input parsing.
+
+(def digit-values
+  (zipmap "0123456789" (range)))
+
+(def separators
+  #{\space \tab \newline \return \formfeed \u000B})
+
+(defn tokenize [s]
+  (let [done (reduce (fn [{:keys [tokens current]} ch]
+                       (if (contains? separators ch)
+                         (if (empty? current) {:tokens tokens :current []}
+                             {:tokens (conj tokens (apply str current)) :current []})
+                         {:tokens tokens :current (conj current ch)}))
+                     {:tokens [] :current []} s)]
+    (if (empty? (:current done)) (:tokens done)
+        (conj (:tokens done) (apply str (:current done))))))
+
+(def min-long (bit-shift-left 1 63))
+(def max-long (bit-not min-long))
+
+(defn parse-token [tok]
+  (let [chs (seq tok)]
+    (when (seq chs)
+      (let [head (first chs) neg? (= head \-) rest-chs (if (or neg? (= head \+)) (rest chs) chs)]
+        (when (seq rest-chs)
+          (if neg?
+            (reduce (fn [acc ch] (when (some? acc) (let [d (get digit-values ch)] (when (and (some? d) (>= acc (quot (+ min-long d) 10))) (- (* acc 10) d))))) 0 rest-chs)
+            (reduce (fn [acc ch] (when (some? acc) (let [d (get digit-values ch)] (when (and (some? d) (<= acc (quot (- max-long d) 10))) (+ (* acc 10) d))))) 0 rest-chs))))))))
+
 (defn bgcd [a b]
   (cond (zero? a) (Math/abs b) (zero? b) (Math/abs a)
         :else (let [a (Math/abs a) b (Math/abs b)
@@ -20,8 +50,8 @@
                         (> a b) (recur b (- a b) shift)
                         (= a b) (bit-shift-left a shift)
                         :else (recur a (- b a) shift))))))
-(defn -main []
-  (let [toks (str/split (str/trim (slurp *in*)) #"\s+")
+(defn -main [input]
+  (let [toks (tokenize input #"\s+")
         vals (mapv #(Long/parseLong %) toks)]
     (cond (= 2 (count vals)) (println (bgcd2 (nth vals 0) (nth vals 1)))
           :else (let [t (first vals)]
@@ -29,3 +59,4 @@
                     (doseq [i (range t)] (println (bgcd2 (nth vals (+ 1 (* 2 i))) (nth vals (+ 2 (* 2 i))))))
                     (doseq [[a b] (partition 2 vals)] (println (bgcd2 a b))))))))
 (-main)
+
