@@ -1,0 +1,30 @@
+(require '[clojure.string :as str])
+(defn fmt [s & xs] (String/format java.util.Locale/US s (to-array xs)))
+(defn erf [x]
+  (let [a1 0.254829592 a2 -0.284496736 a3 1.421413741 a4 -1.453152027 a5 1.061405429 p 0.3275911
+        sign (if (< x 0) -1.0 1.0) ax (Math/abs (double x)) t (/ 1.0 (+ 1.0 (* p ax)))
+        poly (+ (* (+ (* (+ (* (+ (* a5 t) a4) t) a3) t) a2) t) a1)
+        y (- 1.0 (* poly t (Math/exp (- (* ax ax)))))]
+    (* sign y)))
+(defn ncdf [x] (* 0.5 (+ 1.0 (erf (/ x (Math/sqrt 2))))))
+(defn -main [input]
+  (when-not (str/blank? input)
+    (let [toks (str/split (str/trim input) #"\s+")
+          n (Integer/parseInt (nth toks 0))
+          rets (mapv #(Double/parseDouble %) (subvec (vec toks) 1 (+ 1 n)))
+          rf (Double/parseDouble (nth toks (+ 1 n)))
+          sr-bench (if (> (count toks) (+ 2 n)) (Double/parseDouble (nth toks (+ 2 n))) 0.0)
+          mu (/ (reduce + rets) n) em (- mu rf)
+          vv (/ (reduce + (map #(let [d (- % mu)] (* d d)) rets)) (- n 1)) sd (Math/sqrt vv)
+          sr (if (zero? sd) 0.0 (* (/ em sd) (Math/sqrt 252.0)))
+          m2 (/ (reduce + (map #(let [d (- % mu)] (* d d)) rets)) n)
+          m3 (/ (reduce + (map #(Math/pow (- % mu) 3) rets)) n)
+          m4 (/ (reduce + (map #(Math/pow (- % mu) 4) rets)) n)
+          skew (if (zero? m2) 0.0 (/ m3 (Math/pow m2 1.5)))
+          kurt (if (zero? m2) 0.0 (/ m4 (* m2 m2)))
+          numer (* (- sr sr-bench) (Math/sqrt (- n 1)))
+          denom2-raw (+ 1.0 (- (* skew sr)) (* (/ (- kurt 1.0) 4.0) sr sr))
+          denom2 (if (< denom2-raw 0) 1.0 denom2-raw)
+          psr (ncdf (/ numer (Math/sqrt denom2)))]
+      (println (fmt "%.4f" sr)) (println (fmt "%.4f" psr)))))
+(-main (slurp *in*))
