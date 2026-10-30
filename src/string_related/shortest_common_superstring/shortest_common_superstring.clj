@@ -11,7 +11,7 @@
         (if (<= (count strs) 1) (println (first strs))
           (let [pairs (for [i (range (count strs)) j (range (count strs)) :when (not= i j)] [i j])
                 scored (map (fn [[i j]] [i j (overlap (nth strs i) (nth strs j))]) pairs)
-                [bi bj bov] (apply max-key #(nth % 2) scored)
+                [bi bj bov] (reduce (fn [best cur] (if (> (nth cur 2) (nth best 2)) cur best)) scored)
                 merged (str (nth strs bi) (subs (nth strs bj) bov))
                 next (conj (vec (keep-indexed (fn [k s] (when (and (not= k bi) (not= k bj)) s)) strs)) merged)]
             (recur next)))))))

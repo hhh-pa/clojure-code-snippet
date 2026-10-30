@@ -10,7 +10,7 @@
       (let [fv (loop [val init ph 0]
                  (if (>= ph (inc f)) val
                      (let [king (mod ph n)
-                           nval (mapv (fn [i] (if (nth faulty i) (nth val i) (let [cnt (frequencies (keep-indexed (fn [j v] (when-not (nth faulty j) v)) val)) [maj mc] (apply max-key second (seq cnt))] (if (>= mc (- n f)) maj (if (not (nth faulty king)) (nth val king) (nth val i))))))) (range n))]
+                           nval (mapv (fn [i] (if (nth faulty i) (nth val i) (let [cnt (frequencies (keep-indexed (fn [j v] (when-not (nth faulty j) v)) val)) [maj mc] (apply max-key second (seq cnt))] (if (>= mc (- n f)) maj (if (not (nth faulty king)) (nth val king) (nth val i)))))) (range n))]
                        (recur nval (inc ph)))))]
         (doseq [i (range n) :when (not (nth faulty i))] (println (str "P" i ": " (nth fv i))))))))
 
