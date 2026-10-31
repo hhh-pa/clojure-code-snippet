@@ -691,11 +691,48 @@ def print_table(results, failures, missing):
         ok, len(failures) - len(missing), len(missing)))
 
 
+def slope_file_lines(complexity):
+    """Markdown bullet lines for a complexity dict (T20 follow-up).
+
+    Shared by the measure and merge paths so the slope detail block
+    renders identically in per-shard and merged step summaries.
+    Returns [] when there is nothing to report (keeps no-slope
+    output byte-comparable).
+    """
+    lines = []
+    if not complexity:
+        return lines
+    lines.extend(["", "**Complexity exponents (T20):**", ""])
+    for name in sorted(complexity):
+        entry = complexity[name]
+        fit = entry.get("fit") or {}
+        if entry.get("ok") and fit.get("ok"):
+            lines.append("- {}: p = {:.3f} [{:.3f}, {:.3f}], "
+                         "R^2 = {:.4f}".format(
+                             name, fit["slope"], fit["lower"],
+                             fit["upper"], fit["r_squared"]))
+        else:
+            lines.append("- {}: skipped ({})".format(
+                name, entry.get("error")))
+    return lines
+
+
 def append_summary(path, report, bmf):
     host = report["host"]
     runtime = report["runtime"]
     results = report["results"]
     ok = sum(1 for r in results if r["ok"])
+    # Complexity column only when some benchmark actually reports
+    # an exponent: without --slope (or with all fits skipped) the
+    # table stays byte-identical to before.
+    show_cxp = any("complexity_exponent" in (m or {})
+                   for m in (bmf or {}).values())
+    header = ("| snippet | cases | cpu total (s) | peak RSS (MB) | "
+              "alloc total (MB) | instructions | wall total (s) |")
+    sep = "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"
+    if show_cxp:
+        header = header[:-2] + " | cxp (p) |"
+        sep = sep[:-2] + " | ---: |"
     lines = [
         "## Perf measurement (`tools/measure.py`)",
         "",
@@ -713,8 +750,8 @@ def append_summary(path, report, bmf):
         "bytes, median instructions (load-independent); wall time is "
         "secondary. Compare same-machine ratios only.",
         "",
-        "| snippet | cases | cpu total (s) | peak RSS (MB) | alloc total (MB) | instructions | wall total (s) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        header,
+        sep,
     ]
     per_snippet_cases = {}
     per_snippet_wall = {}
@@ -739,10 +776,15 @@ def append_summary(path, report, bmf):
         alloc = m.get("allocated_bytes")
         alloc_mb = ("{:.1f}".format(alloc["value"] / 1048576)
                     if alloc else "n/a")
-        lines.append("| {} | {} | {:.3f} | {:.1f} | {} | {} | {:.3f} |".format(
+        row = ("| {} | {} | {:.3f} | {:.1f} | {} | {} | {:.3f} |".format(
             name, per_snippet_cases.get(name, 0),
             m["cpu_time"]["value"], m["peak_memory"]["value"] / 1048576,
             alloc_mb, insn, per_snippet_wall.get(name, 0.0)))
+        if show_cxp:
+            cxp = (m.get("complexity_exponent") or {}).get("value")
+            row = row[:-2] + " | {} |".format(
+                "{:.2f}".format(cxp) if cxp is not None else "n/a")
+        lines.append(row)
     lines.append("")
     try:
         with open(path, "a") as fd:
@@ -992,6 +1034,60 @@ def self_test():
                 os.unlink(path)
             except OSError:
                 pass
+    # ---- Summary table complexity column + shared slope block. ----
+    cx_bmf = {
+        "a/s": {"cpu_time": {"value": 1.0},
+                "peak_memory": {"value": 1048576.0},
+                "allocated_bytes": {"value": 2097152.0},
+                "complexity_exponent": {"value": 2.0}},
+        "b/s": {"cpu_time": {"value": 2.0},
+                "peak_memory": {"value": 1048576.0,
+                                "lower_value": 1.0, "upper_value": 3.0}},
+    }
+    cx_rep = {"timestamp_utc": "t", "host": {"cpu_model": "c"},
+              "runtime": {"name": "jvm", "perf_used": False,
+                          "java_version": "j"},
+              "config": {"repeat": 1, "jobs": 1},
+              "results": [], "failures": [], "missing": []}
+    fd, cx_path = tempfile.mkstemp(prefix="cxp-summary-")
+    os.close(fd)
+    try:
+        append_summary(cx_path, cx_rep, cx_bmf)
+        with open(cx_path) as handle:
+            cx_text = handle.read()
+        check("summary-cxp-column",
+              "| cxp (p) |" in cx_text
+              and "| a/s | 0 | 1.000 | 1.0 | 2.0 | n/a | 0.000 | 2.00 |"
+              in cx_text
+              and "| b/s | 0 | 2.000 | 1.0 | n/a | n/a | 0.000 | n/a |"
+              in cx_text,
+              cx_text)
+        os.unlink(cx_path)
+        append_summary(cx_path, cx_rep,
+                       {k: {m: v for m, v in meas.items()
+                             if m != "complexity_exponent"}
+                        for k, meas in cx_bmf.items()})
+        with open(cx_path) as handle:
+            cx_text = handle.read()
+        check("summary-no-cxp-column", "| cxp (p) |" not in cx_text,
+              cx_text)
+    finally:
+        try:
+            os.unlink(cx_path)
+        except OSError:
+            pass
+    cx_block = slope_file_lines({
+        "a/s": {"ok": True,
+                "fit": {"ok": True, "slope": 1.5, "lower": 1.4,
+                        "upper": 1.6, "r_squared": 0.99}},
+        "b/s": {"ok": False, "fit": {"ok": False}, "error": "boom"}})
+    check("summary-slope-block",
+          cx_block[1] == "**Complexity exponents (T20):**"
+          and cx_block[3] == "- a/s: p = 1.500 [1.400, 1.600], "
+          "R^2 = 0.9900"
+          and cx_block[4] == "- b/s: skipped (boom)"
+          and slope_file_lines({}) == [],
+          repr(cx_block))
     # ---- T20 hook: slope-fit checks (no JVM/time/perf needed). ----
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import slope as slope_mod
@@ -1063,6 +1159,15 @@ def main(argv=None):
             write_json(args.bmf_output, bmf)
         if args.summary_file:
             append_summary(args.summary_file, report, bmf)
+            block = slope_file_lines(report.get("complexity") or {})
+            if block:
+                try:
+                    with open(args.summary_file, "a") as fd:
+                        fd.write("\n".join(block) + "\n")
+                except OSError as exc:
+                    raise SystemExit(
+                        "cannot append summary to {}: {}".format(
+                            args.summary_file, exc))
         print("merge: {} results, {} benchmarks, {} failures".format(
             len(report["results"]), len(bmf), len(report["failures"])))
         return 1 if report["failures"] else 0
@@ -1158,6 +1263,14 @@ def main(argv=None):
             measure_case, time_bin, use_perf, args.command_template,
             classpath, slope_scripts, args.only, slope_groups, shard,
             args.slope_repeat, args.timeout, args.jobs)
+        # Scale failures (timeout/mismatch/crash) fail the run like
+        # regular case failures; fit skips (flat/poor-fit/...)
+        # stay informational, recorded in the entry only.
+        for name in sorted(complexity):
+            entry = complexity[name]
+            if entry.get("scale_failed"):
+                failures.append("slope {}: {}".format(
+                    name, entry.get("error")))
         for name in sorted(complexity):
             entry = complexity[name]
             fit = entry.get("fit") or {}
@@ -1208,26 +1321,17 @@ def main(argv=None):
         write_json(args.bmf_output, bmf)
     if args.summary_file:
         append_summary(args.summary_file, report, bmf)
-    # ---- T20 hook: slope lines in the step summary (own block so
-    # append_summary stays untouched for mergeability). ----
-    if args.summary_file and complexity:
-        try:
-            with open(args.summary_file, "a") as fd:
-                fd.write("\n**Complexity exponents (T20):**\n\n")
-                for name in sorted(complexity):
-                    entry = complexity[name]
-                    fit = entry.get("fit") or {}
-                    if entry.get("ok") and fit.get("ok"):
-                        fd.write("- {}: p = {:.3f} [{:.3f}, {:.3f}], "
-                                 "R^2 = {:.4f}\n".format(
-                                     name, fit["slope"], fit["lower"],
-                                     fit["upper"], fit["r_squared"]))
-                    else:
-                        fd.write("- {}: skipped ({})\n".format(
-                            name, entry.get("error")))
-        except OSError as exc:
-            raise SystemExit("cannot append summary to {}: {}".format(
-                args.summary_file, exc))
+    # ---- T20 hook: slope lines in the step summary (own block;
+    # shared helper also serves the merge path). ----
+    if args.summary_file:
+        block = slope_file_lines(complexity)
+        if block:
+            try:
+                with open(args.summary_file, "a") as fd:
+                    fd.write("\n".join(block) + "\n")
+            except OSError as exc:
+                raise SystemExit("cannot append summary to {}: {}".format(
+                    args.summary_file, exc))
     print_table(results, failures, missing)
     return 1 if failures else 0
 
