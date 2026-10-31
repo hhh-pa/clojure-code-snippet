@@ -93,7 +93,8 @@ packages are cached between runs.
 generator (`tools/generators`) with [CodSpeed](https://codspeed.io), on
 pushes to `master`, pull requests, and manual dispatch. Benchmarks are
 declared in `codspeed.yml` and run end to end (JVM startup included) by
-the CodSpeed CLI with the walltime instrument on CodSpeed macro runners.
+the CodSpeed CLI with the walltime instrument (GitHub-hosted runner for
+now; switch to CodSpeed macro runners for lower variance once enabled).
 Each benchmark feeds one snippet the smallest calibrated scale of its
 generator (fixed seed), so no secret or encrypted bundle is needed.
 

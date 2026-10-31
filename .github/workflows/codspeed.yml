@@ -8,15 +8,24 @@ on:
   # performance analysis in order to generate initial data.
   workflow_dispatch:
 
+concurrency:
+  group: codspeed-${{ github.ref }}
+  cancel-in-progress: true
+
 # Benchmarks are defined in codspeed.yml and run end to end with the
-# CodSpeed CLI (walltime instrument) on CodSpeed macro runners. Inputs come
-# from the deterministic slope generators (bench/codspeed_bench.py), so no
-# secret is needed.
+# CodSpeed CLI (walltime instrument). Inputs come from the deterministic
+# slope generators (bench/codspeed_bench.py), so no secret is needed.
+#
+# CodSpeed macro runners are not available to this repository yet, so the
+# job uses a GitHub-hosted runner (higher walltime variance). Once they are
+# enabled for the organization (and public repositories are allowed in the
+# runner group), switch `runs-on` to `codspeed-macro`. See
+# https://codspeed.io/docs/integrations/ci/github-actions/macro-runners
 
 jobs:
   benchmarks:
     name: Run benchmarks
-    runs-on: codspeed-macro
+    runs-on: ubuntu-latest
     permissions:
       contents: read # required for actions/checkout
       id-token: write # required for OIDC authentication with CodSpeed
