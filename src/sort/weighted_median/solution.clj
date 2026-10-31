@@ -28,7 +28,7 @@
         (when (seq rest-chs)
           (if neg?
             (reduce (fn [acc ch] (when (some? acc) (let [d (get digit-values ch)] (when (and (some? d) (>= acc (quot (+ min-long d) 10))) (- (* acc 10) d))))) 0 rest-chs)
-            (reduce (fn [acc ch] (when (some? acc) (let [d (get digit-values ch)] (when (and (some? d) (<= acc (quot (- max-long d) 10))) (+ (* acc 10) d))))) 0 rest-chs))))))))
+            (reduce (fn [acc ch] (when (some? acc) (let [d (get digit-values ch)] (when (and (some? d) (<= acc (quot (- max-long d) 10))) (+ (* acc 10) d))))) 0 rest-chs)))))))
 
 (defn weighted-median
   "Weighted median: sum_{x_i < p} w_i < 0.5 and sum_{x_i > p} w_i <= 0.5."
@@ -51,13 +51,17 @@
             (>= (+ w-left w-less) 0.5) (recur less w-left)
             :else (recur greater (+ w-left w-less w-eq))))))))
 
+(defn parse-number [tok]
+  (try (Long/parseLong tok)
+       (catch Exception _ (try (Double/parseDouble tok) (catch Exception _ nil)))))
+
 (defn -main [input]
   (let [toks (tokenize input)]
     (when (seq toks)
-      (let [nums (mapv parse-token toks)]
+      (let [nums (mapv parse-number toks)]
         (if (some nil? nums)
-          (binding [*out* *err*] (println "error: expected integers"))
-          (let [n (first nums)]
+          (binding [*out* *err*] (println "error: expected numbers"))
+          (let [n (long (first nums))]
             (if (zero? n)
               (println 0)
               (let [vals (take n (rest nums))
