@@ -14,7 +14,10 @@ Layout expected under --resources DIR:
 
 Usage:
     python3 tests/run_tests.py --resources tests/resources \
-        [--jobs N] [--timeout 120] [--only substring]
+        [--jobs N] [--timeout 120] [--only substring] [--shard I/N]
+
+Shard I/N runs only the deterministic slice of the sorted task list
+(task index mod N == I-1), so CI can split the suite across jobs.
 
 The Clojure classpath comes from --cp or $CLOJURE_CP; when neither is set,
 sibling spec.alpha / core.specs.alpha jars next to a jar named by
@@ -109,7 +112,17 @@ def main(argv=None):
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--only", default="", help="substring filter on area/problem")
+    parser.add_argument("--shard", default="", help="shard slice I/N (1-based I)")
     args = parser.parse_args(argv)
+    shard_index, shard_total = 0, 1
+    if args.shard:
+        try:
+            picked, total = args.shard.split("/")
+            shard_index, shard_total = int(picked) - 1, int(total)
+        except ValueError:
+            raise SystemExit("bad --shard {!r}: want I/N".format(args.shard))
+        if not 0 <= shard_index < shard_total:
+            raise SystemExit("bad --shard {!r}: want 1 <= I <= N".format(args.shard))
 
     classpath = resolve_classpath(args.cp)
     tasks = []
@@ -124,8 +137,19 @@ def main(argv=None):
         for case_name, inp, outp in cases:
             tasks.append((label, case_name, script, inp, outp))
 
+    tasks = sorted(tasks)
+    if shard_total > 1:
+        tasks = [task for index, task in enumerate(tasks) if index % shard_total == shard_index]
+    total = len(tasks)
+    print("clojure tests: {} cases{} ({} problems)".format(
+        total,
+        " [shard {}/{}]".format(shard_index + 1, shard_total) if shard_total > 1 else "",
+        len({label for label, _, _, _, _ in tasks}),
+    ), flush=True)
+
     failures = []
     passed = 0
+    done = 0
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {
             pool.submit(run_case, classpath, script, case, inp, outp, args.timeout): (label, case)
@@ -134,10 +158,13 @@ def main(argv=None):
         for future in as_completed(futures):
             label, case = futures[future]
             error = future.result()
+            done += 1
             if error is None:
                 passed += 1
+                print("PASS {}/{} [{}/{}]".format(label, case, done, total), flush=True)
             else:
                 failures.append("{}/{}: {}".format(label, case, error))
+                print("FAIL {}/{} [{}/{}]: {}".format(label, case, done, total, error), flush=True)
 
     for label in missing:
         failures.append("{}: no resources found".format(label))
