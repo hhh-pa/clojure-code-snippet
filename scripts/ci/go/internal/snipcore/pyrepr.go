@@ -1,4 +1,4 @@
-package main
+package snipcore
 
 import (
 	"fmt"
@@ -7,12 +7,12 @@ import (
 	"unicode/utf8"
 )
 
-// pyRepr formats text the way Python's repr() formats str: single
+// PyRepr formats text the way Python's repr() formats str: single
 // quotes unless the text contains a quote but no double quote, with
 // short escapes for whitespace and \x/\u/\U escapes for the rest.
 // Only failure diagnostics use it, so mismatch lines diff cleanly
 // against the Python tools.
-func pyRepr(text string) string {
+func PyRepr(text string) string {
 	quote := "'"
 	if strings.Contains(text, "'") && !strings.Contains(text, `"`) {
 		quote = `"`

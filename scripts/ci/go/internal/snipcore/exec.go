@@ -2,7 +2,6 @@ package snipcore
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"os/exec"
 	"time"
@@ -19,20 +18,31 @@ func (e *TimeoutError) Error() string {
 }
 
 // Run executes argv with stdin bytes on stdin, capturing stdout and
-// stderr, killing the process after timeoutSecs. It returns stdout,
-// stderr, and either nil, *TimeoutError, or *exec.ExitError.
+// stderr, killing the whole process group after timeoutSecs (so
+// perf/time/valgrind grandchildren never outlive a timeout). It
+// returns stdout, stderr, and either nil, *TimeoutError, or
+// *exec.ExitError.
+//
+// The group kill fires from the deadline timer itself rather than
+// after Wait: grandchildren inherit the capture pipes, and Wait
+// blocks for pipe EOF, so killing after Wait would hang until the
+// grandchildren exit on their own.
 func Run(argv []string, stdin []byte, timeoutSecs int) (stdout, stderr []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSecs)*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	setProcessGroup(cmd)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
+	timer := time.AfterFunc(time.Duration(timeoutSecs)*time.Second, func() {
+		if cmd.Process != nil {
+			KillProcessGroup(cmd.Process.Pid)
+		}
+	})
 	runErr := cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
+	if !timer.Stop() {
 		return nil, nil, &TimeoutError{Seconds: timeoutSecs}
 	}
 	return outBuf.Bytes(), errBuf.Bytes(), runErr

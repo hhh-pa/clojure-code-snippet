@@ -9,6 +9,7 @@ package aot
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,13 +60,13 @@ func Transform(scriptPath, label, stem string) (*TransformResult, error) {
 	src := string(raw)
 	forms, err := cljread.Split(src)
 	if err != nil {
-		return nil, fmt.Errorf("aot %s: %w", label, err)
+		return nil, err
 	}
 	if definesMain(forms) {
 		src = rewriteSymbol(src, "-main", "script-main")
 		forms, err = cljread.Split(src)
 		if err != nil {
-			return nil, fmt.Errorf("aot %s: %w", label, err)
+			return nil, err
 		}
 	}
 	var nsForm string
@@ -75,14 +76,14 @@ func Transform(scriptPath, label, stem string) (*TransformResult, error) {
 		switch {
 		case head == "ns":
 			if nsForm != "" {
-				return nil, fmt.Errorf("aot %s: multiple ns forms", label)
+				return nil, errors.New("multiple ns forms")
 			}
 			if strings.Contains(form, "gen-class") {
-				return nil, fmt.Errorf("aot %s: ns form already has gen-class", label)
+				return nil, errors.New("ns form already has gen-class")
 			}
 			nsForm = form
 		case head == "in-ns":
-			return nil, fmt.Errorf("aot %s: in-ns is not AOT-safe", label)
+			return nil, errors.New("in-ns is not AOT-safe")
 		case defHeads[head]:
 			kept = append(kept, form)
 		default:
@@ -93,7 +94,7 @@ func Transform(scriptPath, label, stem string) (*TransformResult, error) {
 	if nsForm != "" {
 		ns = nsName(nsForm)
 		if ns == "" {
-			return nil, fmt.Errorf("aot %s: cannot parse ns name", label)
+			return nil, errors.New("cannot parse ns name")
 		}
 		head = injectGenClass(nsForm)
 	} else {
@@ -420,12 +421,12 @@ func Compile(root, cacheDir, classpath, javaVersion, label, stem, scriptPath str
 		nil, timeout)
 	if err != nil {
 		if _, ok := err.(*snipcore.TimeoutError); ok {
-			return nil, fmt.Errorf("aot %s: compile TIMEOUT (>%ds)", label, timeout)
+			return nil, fmt.Errorf("compile TIMEOUT (>%ds)", timeout)
 		}
-		return nil, fmt.Errorf("aot %s: compile exit %d: %s", label, snipcore.ExitCode(err), lastLine(stderr))
+		return nil, fmt.Errorf("compile exit %d: %s", snipcore.ExitCode(err), lastLine(stderr))
 	}
 	if _, err := os.Stat(filepath.Join(classes, classFile(tr.Class))); err != nil {
-		return nil, fmt.Errorf("aot %s: no class file after compile: %s", label, lastLine(stderr))
+		return nil, fmt.Errorf("no class file after compile: %s", lastLine(stderr))
 	}
 	if err := os.WriteFile(marker, []byte(wantMarker), 0o644); err != nil {
 		return nil, err

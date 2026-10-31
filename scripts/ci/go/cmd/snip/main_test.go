@@ -5,27 +5,6 @@ import (
 	"testing"
 )
 
-func TestPyRepr(t *testing.T) {
-	cases := map[string]string{
-		"hi":                      "'hi'",
-		"a\nb\tc\rd\\e":           "'a\\nb\\tc\\rd\\\\e'",
-		"it's":                    `"it's"`,
-		`say "hi"`:                `'say "hi"'`,
-		`both'and"`:               `'both\'and"'`,
-		"":                        "''",
-		"café \x00\x1f\x7f\u0080": "'café \\x00\\x1f\\x7f\\x80'",
-		"tab\there":               "'tab\\there'",
-		"\x0b\x0c":                "'\\x0b\\x0c'",
-		"Ā":                       "'Ā'",
-		"\U0001f600":              "'\U0001f600'",
-	}
-	for in, want := range cases {
-		if got := pyRepr(in); got != want {
-			t.Fatalf("pyRepr(%q) = %s, want %s", in, got, want)
-		}
-	}
-}
-
 func TestParseFlags(t *testing.T) {
 	var s, cp string
 	jobs := 4

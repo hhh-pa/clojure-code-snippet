@@ -10,6 +10,7 @@ package pyjson
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -134,6 +135,37 @@ func (n Num) MarshalJSON() ([]byte, error) {
 		return []byte(strconv.FormatInt(n.I, 10)), nil
 	}
 	return []byte(FloatRepr(n.F)), nil
+}
+
+// UnmarshalJSON restores a number, keeping bare-digit literals
+// integral and parsing the rest as float64 (including the JSON
+// Infinity/NaN tokens Python emits).
+func (n *Num) UnmarshalJSON(raw []byte) error {
+	text := strings.TrimSpace(string(raw))
+	if text == "Infinity" || text == "+Infinity" {
+		*n = FloatNum(math.Inf(1))
+		return nil
+	}
+	if text == "-Infinity" {
+		*n = FloatNum(math.Inf(-1))
+		return nil
+	}
+	if text == "NaN" {
+		*n = FloatNum(math.NaN())
+		return nil
+	}
+	if !strings.ContainsAny(text, ".eEnN") {
+		if v, err := strconv.ParseInt(text, 10, 64); err == nil {
+			*n = IntNum(v)
+			return nil
+		}
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return err
+	}
+	*n = FloatNum(f)
+	return nil
 }
 
 // FloatRepr formats f exactly like Python repr(float): shortest

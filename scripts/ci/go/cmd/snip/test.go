@@ -180,7 +180,7 @@ func runTestCase(classpath string, task testTask, timeout int) string {
 		return fmt.Sprintf("TIMEOUT (>%ds)", timeout)
 	}
 	if err != nil {
-		return fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), lastLine(stderr))
+		return fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
 	}
 	expected, err := os.ReadFile(task.outp)
 	if err != nil {
@@ -189,29 +189,11 @@ func runTestCase(classpath string, task testTask, timeout int) string {
 	normGot := snipcore.Normalize(stdout)
 	normWant := snipcore.Normalize(expected)
 	if string(normGot) != string(normWant) {
-		got := truncateChars(strings.ToValidUTF8(string(normGot), ""), 200)
-		want := truncateChars(strings.ToValidUTF8(string(normWant), ""), 200)
-		return "output mismatch: expected " + pyRepr(want) + " got " + pyRepr(got)
+		got := snipcore.TruncateChars(strings.ToValidUTF8(string(normGot), ""), 200)
+		want := snipcore.TruncateChars(strings.ToValidUTF8(string(normWant), ""), 200)
+		return "output mismatch: expected " + snipcore.PyRepr(want) + " got " + snipcore.PyRepr(got)
 	}
 	return ""
-}
-
-// lastLine ports the Python `tail[-1] if tail else "no stderr"` idiom.
-func lastLine(stderr []byte) string {
-	text := strings.TrimSpace(string(stderr))
-	if text == "" {
-		return "no stderr"
-	}
-	lines := strings.Split(text, "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
-}
-
-func truncateChars(text string, max int) string {
-	runes := []rune(text)
-	if len(runes) > max {
-		return string(runes[:max])
-	}
-	return text
 }
 
 func sortedStrings(in []string) []string {

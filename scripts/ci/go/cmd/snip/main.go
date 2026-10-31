@@ -34,8 +34,7 @@ func dispatch(argv []string) int {
 	case "ssa":
 		return runSSA(argv[1:])
 	case "measure":
-		fmt.Fprintln(os.Stderr, "snip measure: not implemented yet")
-		return 2
+		return runMeasure(argv[1:])
 	case "bundle":
 		return runBundle(argv[1:])
 	default:

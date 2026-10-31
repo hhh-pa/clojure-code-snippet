@@ -2,10 +2,14 @@ package snipcore
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalize(t *testing.T) {
@@ -184,5 +188,82 @@ func TestRun(t *testing.T) {
 	var timeout *TimeoutError
 	if err == nil || !errors.As(err, &timeout) || timeout.Seconds != 1 {
 		t.Fatalf("timeout: %v", err)
+	}
+}
+
+func TestRunKillsGrandchildren(t *testing.T) {
+	if _, err := os.Stat("/proc"); err != nil {
+		t.Skip("needs /proc to hunt grandchildren")
+	}
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("needs sleep")
+	}
+	// A shell that spawns a background sleeper and waits: the
+	// sleeper is a grandchild in the same process group and must
+	// die with the timeout (the Python tools leak it). The
+	// symlink gives the sleeper a cmdline unique to this test
+	// run so stray same-named sleepers cannot pollute the hunt.
+	marker := fmt.Sprintf("snip-probe-%d", os.Getpid())
+	link := filepath.Join(t.TempDir(), marker)
+	if err := os.Symlink(sleepBin, link); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = Run([]string{"sh", "-c", link + " 61 & wait"}, nil, 1)
+	var timeout *TimeoutError
+	if err == nil || !errors.As(err, &timeout) {
+		t.Fatalf("timeout: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if !procHasCmdline(marker) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("grandchild sleep survived the timeout")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func procHasCmdline(needle string) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
+		if strings.Contains(cmdline, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPyRepr(t *testing.T) {
+	cases := map[string]string{
+		"hi":                      "'hi'",
+		"a\nb\tc\rd\\e":           "'a\\nb\\tc\\rd\\\\e'",
+		"it's":                    `"it's"`,
+		`say "hi"`:                `'say "hi"'`,
+		`both'and"`:               `'both\'and"'`,
+		"":                        "''",
+		"café \x00\x1f\x7f\u0080": "'café \\x00\\x1f\\x7f\\x80'",
+		"tab\there":               "'tab\\there'",
+		"\x0b\x0c":                "'\\x0b\\x0c'",
+		"Ā":                       "'Ā'",
+		"\U0001f600":              "'\U0001f600'",
+	}
+	for in, want := range cases {
+		if got := PyRepr(in); got != want {
+			t.Fatalf("PyRepr(%q) = %s, want %s", in, got, want)
+		}
 	}
 }

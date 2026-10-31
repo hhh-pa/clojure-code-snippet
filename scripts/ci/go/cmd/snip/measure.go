@@ -1,0 +1,380 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/measure"
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/pyjson"
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/slope"
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/snipcore"
+)
+
+const measureUsage = `Load-independent performance measurement for the Clojure snippet repo.
+
+Runs every src/**/*.clj script against the shared test cases and records
+cpu_s, maxrss_kb, allocated_bytes, instructions/cycles, plus (under the
+new flags) callgrind instruction counts and AOT-compiled runs.
+
+Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
+                   [--only SUBSTR] [--output F] [--bmf-output F]
+                   [--summary-file F] [--time-bin BIN] [--no-perf]
+                   [--runtime NAME] [--command-template T] [--shard K/N]
+                   [--alloc-repeat N | --no-alloc] [--slope]
+                   [--callgrind] [--callgrind-repeat N] [--aot]
+                   [--aot-cache DIR]
+
+       snip measure --merge INPUT... [--output F] [--bmf-output F]
+                   [--summary-file F]
+
+       snip measure --self-test
+`
+
+func runMeasure(argv []string) int {
+	root := snipcore.RepoRoot()
+	resources := filepath.Join(root, "tests", "resources")
+	var cp, only, output, bmfOutput, summaryFile, timeBin, shard, aotCache string
+	runtimeName := "jvm"
+	template := measure.DefaultCommandTemplate
+	jobs := 1
+	timeout := 120
+	repeat := 5
+	allocRepeat := measure.AllocRepeatDefault
+	slopeRepeat := 3
+	callgrindRepeat := measure.CallgrindRepeatDefault
+	perf := true
+	alloc := true
+	merge := false
+	slopeFlag := false
+	slopeOnly := false
+	selfTest := false
+	aotFlag := false
+	callgrind := false
+	positionals, err := parseFlags("measure", argv, flagSpec{
+		Strs: map[string]*string{
+			"resources": &resources, "cp": &cp, "only": &only,
+			"output": &output, "bmf-output": &bmfOutput,
+			"summary-file": &summaryFile, "time-bin": &timeBin,
+			"runtime": &runtimeName, "command-template": &template,
+			"shard": &shard, "aot-cache": &aotCache,
+		},
+		Ints: map[string]*int{
+			"jobs": &jobs, "timeout": &timeout, "repeat": &repeat,
+			"alloc-repeat": &allocRepeat, "slope-repeat": &slopeRepeat,
+			"callgrind-repeat": &callgrindRepeat,
+		},
+		Bools: map[string]*bool{
+			"perf": &perf, "alloc": &alloc, "merge": &merge,
+			"slope": &slopeFlag, "slope-only": &slopeOnly,
+			"self-test": &selfTest, "aot": &aotFlag,
+			"callgrind": &callgrind,
+		},
+	})
+	if err != nil {
+		if errors.Is(err, errHelp) {
+			fmt.Print(measureUsage)
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if selfTest {
+		return measure.SelfTest(os.Stdout)
+	}
+	if merge {
+		return runMerge(positionals, output, bmfOutput, summaryFile)
+	}
+	if repeat < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --repeat must be >= 1")
+		return 2
+	}
+	if allocRepeat < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --alloc-repeat must be >= 1")
+		return 2
+	}
+	if jobs < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --jobs must be >= 1")
+		return 2
+	}
+	if slopeOnly {
+		slopeFlag = true
+	}
+	if slopeRepeat < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --slope-repeat must be >= 1")
+		return 2
+	}
+	if callgrindRepeat < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --callgrind-repeat must be >= 1")
+		return 2
+	}
+	var shardParsed *[2]int
+	if shard != "" {
+		idx, total, err := snipcore.ParseMeasureShard(shard)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "snip measure:", err)
+			return 2
+		}
+		shardParsed = &[2]int{idx, total}
+	}
+	if aotFlag && template != measure.DefaultCommandTemplate {
+		fmt.Fprintln(os.Stderr, "snip measure: cannot combine --aot with --command-template")
+		return 2
+	}
+	if slopeFlag {
+		fmt.Fprintln(os.Stderr, "snip measure: --slope is not available in this build (generators port pending)")
+		return 1
+	}
+
+	timeBinPath, err := measure.ResolveTimeBin(timeBin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	usePerf := perf && measure.PerfUsable()
+	if perf && !usePerf {
+		fmt.Fprintln(os.Stderr, "warning: perf counters unavailable; instructions/cycles will be null")
+	}
+	useCallgrind := callgrind && measure.CallgrindUsable()
+	if callgrind && !useCallgrind {
+		fmt.Fprintln(os.Stderr, "warning: valgrind unavailable; callgrind_instructions will be null")
+	}
+	classpath, err := snipcore.ResolveClasspath(root, cp)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	found, err := snipcore.Discover(root, resources)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	type task struct {
+		label, stem, caseName, script, inp, outp string
+	}
+	var tasks []task
+	missing := []string{}
+	for _, entry := range found {
+		label := entry.Label
+		if only != "" && !strings.Contains(label, only) {
+			continue
+		}
+		if len(entry.Cases) == 0 {
+			missing = append(missing, label)
+			continue
+		}
+		for _, c := range entry.Cases {
+			tasks = append(tasks, task{label, entry.Stem, c.Name, entry.Script, c.Input, c.Output})
+		}
+	}
+	if shardParsed != nil {
+		tasks = measure.SelectShard(tasks, func(t task) (string, string) {
+			return t.label, t.stem
+		}, shardParsed[0], shardParsed[1])
+	}
+	if slopeOnly {
+		tasks = nil
+		missing = nil
+	}
+	effectiveAlloc := 0
+	if alloc {
+		effectiveAlloc = allocRepeat
+	}
+	if effectiveAlloc > 0 && len(tasks) > 0 && !aotFlag {
+		t0 := tasks[0]
+		if !measure.AllocSupported(template, classpath, t0.script, t0.stem) {
+			fmt.Fprintln(os.Stderr, "warning: allocation measurement needs a java command template; skipping (BMF will omit allocated_bytes)")
+			effectiveAlloc = 0
+		}
+	}
+	effectiveCg := 0
+	if useCallgrind {
+		effectiveCg = callgrindRepeat
+	}
+	if effectiveCg > 0 && len(tasks) > 0 && !aotFlag {
+		t0 := tasks[0]
+		if !measure.AllocSupported(template, classpath, t0.script, t0.stem) {
+			fmt.Fprintln(os.Stderr, "warning: callgrind measurement needs a java command template; skipping (callgrind_instructions will be null)")
+			effectiveCg = 0
+		}
+	}
+	var aotCacheObj *measure.AOTCache
+	if aotFlag {
+		java := "unknown"
+		if v := measure.JavaVersion(); v != nil {
+			java = *v
+		}
+		aotCacheObj = &measure.AOTCache{
+			Root: root, CacheDir: aotCache, Classpath: classpath,
+			Java: java, Timeout: timeout,
+		}
+	}
+
+	results := make([]measure.CaseResult, len(tasks))
+	work := make(chan int)
+	var workers sync.WaitGroup
+	for w := 0; w < jobs; w++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range work {
+				t := tasks[i]
+				results[i] = measure.MeasureCase(measure.CaseOpts{
+					TimeBin: timeBinPath, UsePerf: usePerf, Template: template,
+					Classpath: classpath, Label: t.label, Stem: t.stem,
+					Script: t.script, Case: t.caseName, InputPath: t.inp,
+					OutputPath: t.outp, Repeat: repeat,
+					AllocRepeat: effectiveAlloc, CallgrindRepeat: effectiveCg,
+					Timeout: timeout, Root: root, AOT: aotCacheObj,
+				})
+			}
+		}()
+	}
+	go func() {
+		for i := range tasks {
+			work <- i
+		}
+		close(work)
+	}()
+	workers.Wait()
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Label != results[j].Label {
+			return results[i].Label < results[j].Label
+		}
+		if results[i].Stem != results[j].Stem {
+			return results[i].Stem < results[j].Stem
+		}
+		return results[i].Case < results[j].Case
+	})
+	failures := []string{}
+	for _, r := range results {
+		if !r.Ok && r.Error != nil {
+			failures = append(failures, *r.Error)
+		}
+	}
+	sort.Strings(failures)
+	for _, label := range missing {
+		failures = append(failures, label+": no resources found")
+	}
+	complexity := map[string]slope.Entry{}
+
+	bmf := measure.BuildBMF(results, complexity)
+	report := measure.Report{
+		Tool: "snip measure", Version: measure.ToolVersion,
+		TimestampUTC: time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00"),
+		Host:         measure.HostInfo(),
+		Runtime: measure.Runtime{
+			Name: runtimeName, CommandTemplate: template,
+			JavaVersion: measure.JavaVersion(), Classpath: classpath,
+			TimeBin: timeBinPath, PerfUsed: usePerf, CallgrindUsed: effectiveCg > 0,
+		},
+		Config: measure.Config{
+			Repeat: repeat, Jobs: jobs, Timeout: timeout, Only: only,
+			Shard: strOrNil(shard), AllocRepeat: &effectiveAlloc,
+			Slope: slopeFlag, SlopeRepeat: slopeRepeat,
+			CallgrindRepeat: effectiveCg, Aot: aotFlag,
+		},
+		Results: results, Failures: failures, Missing: missing,
+		Complexity: complexity,
+	}
+	if output != "" {
+		if err := writeJSON(output, report); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if bmfOutput != "" {
+		if err := writeJSON(bmfOutput, bmf); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if summaryFile != "" {
+		if err := measure.AppendSummary(summaryFile, report, bmf); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if block := measure.SlopeFileLines(complexity); len(block) > 0 {
+			fd, err := os.OpenFile(summaryFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			fd.WriteString(strings.Join(block, "\n") + "\n")
+			fd.Close()
+		}
+	}
+	measure.PrintTable(os.Stdout, results, failures, missing)
+	if len(failures) > 0 {
+		return 1
+	}
+	return 0
+}
+
+func strOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func runMerge(inputs []string, output, bmfOutput, summaryFile string) int {
+	if len(inputs) == 0 {
+		fmt.Fprintln(os.Stderr, "snip measure: --merge needs at least one input report")
+		return 2
+	}
+	report, bmf, err := measure.MergeReports(inputs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if output != "" {
+		if err := writeJSON(output, report); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if bmfOutput != "" {
+		if err := writeJSON(bmfOutput, bmf); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if summaryFile != "" {
+		if err := measure.AppendSummary(summaryFile, report, bmf); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if block := measure.SlopeFileLines(report.Complexity); len(block) > 0 {
+			fd, err := os.OpenFile(summaryFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "snip measure:", err)
+				return 1
+			}
+			fd.WriteString(strings.Join(block, "\n") + "\n")
+			fd.Close()
+		}
+	}
+	fmt.Printf("merge: %d results, %d benchmarks, %d failures\n",
+		len(report.Results), len(bmf), len(report.Failures))
+	if len(report.Failures) > 0 {
+		return 1
+	}
+	return 0
+}
+
+func writeJSON(path string, v any) error {
+	raw, err := pyjson.MarshalIndent2(v)
+	if err != nil {
+		return fmt.Errorf("cannot write %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		return fmt.Errorf("cannot write %s: %v", path, err)
+	}
+	return nil
+}

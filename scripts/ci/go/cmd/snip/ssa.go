@@ -99,12 +99,12 @@ func runSSACase(classpath, script string, c ssaCase, timeout int) string {
 		return fmt.Sprintf("TIMEOUT (>%ds)", timeout)
 	}
 	if err != nil {
-		return fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), lastLine(stderr))
+		return fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
 	}
 	if string(snipcore.Normalize(stdout)) != string(snipcore.Normalize([]byte(c.expected))) {
 		return "output mismatch: expected " +
-			pyRepr(truncateChars(c.expected, 160)) + " got " +
-			pyRepr(truncateChars(strings.ToValidUTF8(string(stdout), ""), 160))
+			snipcore.PyRepr(snipcore.TruncateChars(c.expected, 160)) + " got " +
+			snipcore.PyRepr(snipcore.TruncateChars(strings.ToValidUTF8(string(stdout), ""), 160))
 	}
 	return ""
 }
