@@ -50,6 +50,9 @@ Acceptance criteria:
   (probed: 6,201,082,869 vs 6,201,117,587 across runs, 0.0006%
   wobble, ~90 s per small case on this machine); missing valgrind
   degrades to null with a warning, exactly like `perf` today.
+  Verified end to end: `snip measure --callgrind` on bubble_sort
+  reports 6,204,377,129 / 6,203,575,053 Ir with BMF
+  `callgrind_instructions` and the `cg_insn` summary column.
 - Memory stays on JVM-native signals: whole-process peak RSS
   (start-to-finish) plus EpsilonGC total allocation. Valgrind
   DHAT/Massif are explicitly NOT used for Java heap: HotSpot
@@ -62,7 +65,9 @@ Acceptance criteria:
   cache miss) and measures the `java <MainClass>` run with the
   identical harness (time/perf/alloc/callgrind) and identical
   stdout-diff correctness gate. AOT stdout must equal script-mode
-  stdout on every measured case.
+  stdout on every measured case. Verified end to end: `--aot`
+  populates `.ci/aot-cache/<hash>/classes`, records `config.aot`,
+  and reports cpu/insn/alloc below the JIT run on bubble_sort.
 - New composite action `.github/actions/snip-tools` mirrors
   `profile-runner` exactly (actions/cache on the binary dir keyed
   by OS + source hash, setup-go + `CGO_ENABLED=0 go build` on miss
