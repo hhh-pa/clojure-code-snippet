@@ -75,7 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Require all shards green
-        run: exit ${{ needs.test-shard.result == 'success' && 0 || 1 }}
+        run: |
+          if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
 
   perf:
     needs: test
