@@ -1,0 +1,7 @@
+GRAMMAR IS LL1
+r0 r0 r1
+SYNTAX ERROR
+r0 r0 r1
+r0 r0 r1
+r0 r0 r1
+SYNTAX ERROR

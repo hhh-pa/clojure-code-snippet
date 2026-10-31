@@ -1,0 +1,1 @@
+10 t0 = CONST 1 t1 = ADD t0 t0 t2 = PHI x5 t1 t3 = COPY t2 t4 = PHI x6 t1 t5 = CONST 8 t6 = SUB x2 x1 t7 = MUL t2 t5 t8 = MUL t1 t4 t9 = SUB t7 x1

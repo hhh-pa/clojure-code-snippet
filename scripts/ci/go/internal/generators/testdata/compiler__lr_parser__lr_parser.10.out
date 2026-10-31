@@ -1,0 +1,37 @@
+F -> id
+T -> F
+E -> T
+F -> id
+T -> F
+E -> E + T
+F -> id
+T -> F
+F -> id
+T -> F
+E -> T
+F -> ( E )
+T -> T * F
+E -> E + T
+F -> id
+T -> F
+F -> id
+T -> T * F
+F -> id
+T -> F
+E -> T
+F -> ( E )
+T -> T * F
+F -> id
+T -> F
+E -> T
+F -> ( E )
+T -> T * F
+F -> id
+T -> F
+E -> T
+F -> ( E )
+T -> T * F
+F -> id
+T -> T * F
+E -> E + T
+ACCEPTED

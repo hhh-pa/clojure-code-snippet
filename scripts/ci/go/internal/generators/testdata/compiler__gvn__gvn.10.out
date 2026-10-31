@@ -1,0 +1,12 @@
+t0 = CONST 1 (VN1)
+t1 = ADD VN1 VN1 (VN2)
+t2 = PHI VN2 VN3 (VN4)
+t3 = t2 (VN4 REDUNDANT)
+t4 = PHI VN2 VN5 (VN6)
+t5 = CONST 8 (VN7)
+t6 = SUB VN8 VN9 (VN10)
+t7 = MUL VN4 VN7 (VN11)
+t8 = MUL VN2 VN6 (VN12)
+t9 = SUB VN11 VN9 (VN13)
+Total unique VNs: 13
+Redundant instructions eliminated: 1
