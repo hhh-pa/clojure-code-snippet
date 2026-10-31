@@ -37,8 +37,7 @@ func dispatch(argv []string) int {
 		fmt.Fprintln(os.Stderr, "snip measure: not implemented yet")
 		return 2
 	case "bundle":
-		fmt.Fprintln(os.Stderr, "snip bundle: not implemented yet")
-		return 2
+		return runBundle(argv[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "snip: unknown subcommand %q\n%s", argv[0], usage)
 		return 2
