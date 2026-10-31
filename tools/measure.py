@@ -525,7 +525,16 @@ def measure_case(time_bin, use_perf, template, classpath, label, stem, script,
     # Dedicated allocation runs: separate JVM invocations alongside --
     # never replacing -- the timed repeats above, so cpu/memory
     # baselines are untouched.
-    if alloc_repeat and alloc_supported(template, classpath, script, stem):
+    # Exemptions (label stems): total allocation exceeds any fittable
+    # Epsilon heap, so the run dies before reporting a number.
+    # - search/beam_search: >8GB churn on tiny N-queens cases (naive
+    #   hot paths recompute heavily; correct but allocation-insane).
+    #   cpu_time/peak_memory are still measured; only allocated_bytes
+    #   is omitted from its BMF.
+    alloc_exempt = {"search/beam_search"}
+    exempt = any(label == stem or label.startswith(stem + "/")
+                 for stem in alloc_exempt)
+    if alloc_repeat and not exempt and alloc_supported(template, classpath, script, stem):
         for i in range(alloc_repeat):
             stdout, used, error = measure_alloc_once(
                 template, classpath, script, stem, input_path, timeout)

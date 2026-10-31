@@ -13,20 +13,28 @@ on:
 # the secret to the same value (see the script header).
 
 jobs:
-  test:
+  test-shard:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    name: test (shard ${{ matrix.shard }}/4)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.13'
 
       - name: Cache Clojure jars
         id: jars-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .ci/jars
           key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
@@ -54,10 +62,21 @@ jobs:
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
       - name: Run Clojure snippet tests
-        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
+        run: python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4
 
       - name: Run SSA DF regression test
         run: python3 tests/ssa_df_regression.py
+
+  # Aggregator: branch policy requires a check literally named "test",
+  # which the sharded matrix above no longer produces on its own.
+  test:
+    needs: test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all shards green
+        run: |
+          if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
 
   perf:
     needs: test
@@ -82,17 +101,20 @@ jobs:
           - runtime: jvm
             testbed: ubuntu-latest-jvm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '21.0.13'
 
       - name: Cache Clojure jars
         id: jars-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .ci/jars
           key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
@@ -189,7 +211,7 @@ jobs:
 
       - name: Upload perf results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-results-${{ matrix.runtime }}-shard-${{ matrix.shard }}
           path: |
@@ -211,10 +233,13 @@ jobs:
         include:
           - runtime: jvm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
 
       - name: Download shard results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: perf-results-${{ matrix.runtime }}-shard-*
 
@@ -234,7 +259,7 @@ jobs:
 
       - name: Upload merged results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-results-${{ matrix.runtime }}-merged
           path: |
