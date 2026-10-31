@@ -1,5 +1,7 @@
 # clojure-code-snippet
 
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/hhh-pa/clojure-code-snippet?utm_source=badge)
+
 ## Introduction
 
 This piece of code is a curated collection of commonly used algorithms, aimed at reinforcing a software engineer's general algorithmic knowledge. Each snippet is implemented in a minimal and accessible manner, focusing on clarity of logic rather than production-readiness.
@@ -84,6 +86,24 @@ carries only those three measures; full metrics stay in the uploaded
 `perf-results.json` artifacts). The Bencher project API key lives
 in the `BENCHER_API_KEY` repository secret. Clojure jars and apt
 packages are cached between runs.
+
+## CodSpeed
+
+`.github/workflows/codspeed.yml` tracks every snippet that has a slope
+generator (`tools/generators`) with [CodSpeed](https://codspeed.io), on
+pushes to `master`, pull requests, and manual dispatch. Benchmarks are
+declared in `codspeed.yml` and run end to end (JVM startup included) by
+the CodSpeed CLI with the walltime instrument on CodSpeed macro runners.
+Each benchmark feeds one snippet the smallest calibrated scale of its
+generator (fixed seed), so no secret or encrypted bundle is needed.
+
+```sh
+python3 bench/codspeed_bench.py prepare --check  # write inputs, verify outputs
+codspeed run -m walltime                         # run all benchmarks
+python3 bench/codspeed_bench.py config           # regenerate codspeed.yml
+```
+
+Regenerate `codspeed.yml` after adding or removing a generator.
 
 ## Comparing compilers
 
