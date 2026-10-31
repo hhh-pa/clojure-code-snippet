@@ -13,7 +13,7 @@ on:
 # the secret to the same value (see the script header).
 
 jobs:
-  test:
+  test-shard:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -66,6 +66,16 @@ jobs:
 
       - name: Run SSA DF regression test
         run: python3 tests/ssa_df_regression.py
+
+  # Aggregator: branch policy requires a check literally named "test",
+  # which the sharded matrix above no longer produces on its own.
+  test:
+    needs: test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all shards green
+        run: exit ${{ needs.test-shard.result == 'success' && 0 || 1 }}
 
   perf:
     needs: test
