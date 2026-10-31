@@ -1,0 +1,20 @@
+{
+  "name": "x",
+  "count": 105,
+  "ratio": 105.0,
+  "big": 1e+16,
+  "small": 1e-09,
+  "null": null,
+  "flag": true,
+  "list": [
+    1,
+    2.5
+  ],
+  "nested": {
+    "a": 1,
+    "b": 2
+  },
+  "uni": "caf\u00e9 \ud83d\ude00",
+  "ctrl": "a\bb\fc\nd\te\"f\\g",
+  "html": "<tag>&\"q\""
+}
