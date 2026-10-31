@@ -5,10 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/aot"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/cljread"
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/generators"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/pyjson"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/slope"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/snipcore"
@@ -227,6 +229,7 @@ func selfChecks() []snipcore.Check {
 
 	checkSummary(check)
 	checkAOT(check)
+	checkSlopeRunner(check)
 	return out
 }
 
@@ -421,4 +424,81 @@ func checkAOT(check func(string, bool, string)) {
 	check("cljread-split-inline", err == nil && len(forms) == 3 &&
 		forms[0] == `(def a "x)y")` && forms[1] == "[1 2]" && forms[2] == "'quoted",
 		fmt.Sprintf("%q %v", forms, err))
+}
+
+func checkSlopeRunner(check func(string, bool, string)) {
+	// Stubbed measure (no JVM): reports exact quadratic times
+	// parsed back out of the case name, after validating the
+	// generated IO like the Python stub.
+	stubOK := func(req slope.ScaleRequest) slope.ScaleOutcome {
+		fail := func(msg string) slope.ScaleOutcome {
+			return slope.ScaleOutcome{Ok: false, Error: msg}
+		}
+		// Mirror the signature-drift guard: slope scales are
+		// timing-only probes with alloc_repeat forced to 0.
+		if req.AllocRepeat != 0 {
+			return fail(fmt.Sprintf("alloc_repeat drift: %d", req.AllocRepeat))
+		}
+		tail := req.CaseName[strings.LastIndex(req.CaseName, "_")+1:]
+		n, err := strconv.Atoi(tail)
+		if err != nil {
+			return fail("bad case name")
+		}
+		raw, err := os.ReadFile(req.InPath)
+		if err != nil {
+			return fail("bad generated io")
+		}
+		toks := strings.Fields(string(raw))
+		if len(toks) == 0 || toks[0] != tail || len(toks) != n+1 {
+			return fail("bad generated io")
+		}
+		if _, err := os.Stat(req.OutPath); err != nil {
+			return fail("bad generated io")
+		}
+		t := 2.0 + 1e-6*float64(n)*float64(n)
+		return slope.ScaleOutcome{Ok: true, CpuMin: t, CpuMedian: t, CpuMax: t}
+	}
+	stubFail := func(req slope.ScaleRequest) slope.ScaleOutcome {
+		return slope.ScaleOutcome{Ok: false, Error: "boom"}
+	}
+	tiny := map[string]slope.Generator{
+		"sort/insertion_sort/solution": SlopeAdapter{generators.GENERATORS["sort/insertion_sort/solution"]},
+		"sort/quick_sort/solution":     SlopeAdapter{generators.GENERATORS["sort/quick_sort/solution"]},
+	}
+	scripts := map[slope.Group]string{
+		{Label: "sort/insertion_sort", Stem: "solution"}: "/fake/i.clj",
+		{Label: "sort/quick_sort", Stem: "solution"}:     "/fake/q.clj",
+	}
+	groups := []slope.Group{
+		{Label: "sort/insertion_sort", Stem: "solution"},
+		{Label: "sort/quick_sort", Stem: "solution"},
+	}
+	got, err := slope.RunSlopeAll(stubOK, tiny, scripts, "", groups, nil, 1, 1, 1)
+	bothOK := err == nil && len(got) == 2
+	for _, entry := range got {
+		bothOK = bothOK && entry.Ok && entry.Fit != nil && entry.Fit.Ok &&
+			entry.Fit.Slope.Float64() > 1.95 && entry.Fit.Slope.Float64() < 2.05 &&
+			!entry.ScaleFailed
+	}
+	check("slope-runner-both", bothOK, fmt.Sprintf("%v %+v", err, got))
+
+	got, err = slope.RunSlopeAll(stubOK, tiny, scripts, "quick", groups, nil, 1, 1, 1)
+	check("slope-runner-only", err == nil && len(got) == 1 && got["sort/quick_sort/solution"].Ok,
+		fmt.Sprintf("%v %v", err, sortedEntryKeys(got)))
+
+	wide := []slope.Group{{Label: "a", Stem: "s"}, groups[0], groups[1], {Label: "z", Stem: "s"}}
+	got, err = slope.RunSlopeAll(stubOK, tiny, scripts, "", wide, &slope.Shard{Index: 1, Total: 4}, 1, 1, 1)
+	check("slope-runner-shard", err == nil && len(got) == 1 && got["sort/insertion_sort/solution"].Ok,
+		fmt.Sprintf("%v %v", err, sortedEntryKeys(got)))
+
+	got, err = slope.RunSlopeAll(stubOK, tiny,
+		map[slope.Group]string{{Label: "a", Stem: "s"}: "/fake/a.clj"}, "", groups, nil, 1, 1, 1)
+	check("slope-runner-no-scripts", err == nil && len(got) == 0, fmt.Sprintf("%v %v", err, got))
+
+	got, err = slope.RunSlopeAll(stubFail, tiny, scripts, "", groups, nil, 1, 1, 1)
+	failOK := err == nil && len(got) == 2
+	for _, entry := range got {
+		failOK = failOK && !entry.Ok && entry.Error != nil && entry.ScaleFailed
+	}
+	check("slope-runner-error", failOK, fmt.Sprintf("%v %+v", err, got))
 }

@@ -10,11 +10,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/generators"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/measure"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/pyjson"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/slope"
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/snipcore"
 )
+
+func sortedComplexityNames(complexity map[string]slope.Entry) []string {
+	names := make([]string, 0, len(complexity))
+	for name := range complexity {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 const measureUsage = `Load-independent performance measurement for the Clojure snippet repo.
 
@@ -126,10 +136,6 @@ func runMeasure(argv []string) int {
 		fmt.Fprintln(os.Stderr, "snip measure: cannot combine --aot with --command-template")
 		return 2
 	}
-	if slopeFlag {
-		fmt.Fprintln(os.Stderr, "snip measure: --slope is not available in this build (generators port pending)")
-		return 1
-	}
 
 	timeBinPath, err := measure.ResolveTimeBin(timeBin)
 	if err != nil {
@@ -171,6 +177,14 @@ func runMeasure(argv []string) int {
 		for _, c := range entry.Cases {
 			tasks = append(tasks, task{label, entry.Stem, c.Name, entry.Script, c.Input, c.Output})
 		}
+	}
+	slopeGroups := map[slope.Group]bool{}
+	for _, t := range tasks {
+		slopeGroups[slope.Group{Label: t.label, Stem: t.stem}] = true
+	}
+	slopeGroupList := make([]slope.Group, 0, len(slopeGroups))
+	for g := range slopeGroups {
+		slopeGroupList = append(slopeGroupList, g)
 	}
 	if shardParsed != nil {
 		tasks = measure.SelectShard(tasks, func(t task) (string, string) {
@@ -262,6 +276,77 @@ func runMeasure(argv []string) int {
 		failures = append(failures, label+": no resources found")
 	}
 	complexity := map[string]slope.Entry{}
+	if slopeFlag {
+		slopeScripts := map[slope.Group]string{}
+		for _, entry := range found {
+			label := entry.Label
+			if only != "" && !strings.Contains(label, only) {
+				continue
+			}
+			slopeScripts[slope.Group{Label: label, Stem: entry.Stem}] = entry.Script
+		}
+		var slopeShard *slope.Shard
+		if shardParsed != nil {
+			slopeShard = &slope.Shard{Index: shardParsed[0], Total: shardParsed[1]}
+		}
+		registry := map[string]slope.Generator{}
+		for name, gen := range generators.GENERATORS {
+			registry[name] = measure.SlopeAdapter{Gen: gen}
+		}
+		measureScale := func(req slope.ScaleRequest) slope.ScaleOutcome {
+			res := measure.MeasureCase(measure.CaseOpts{
+				TimeBin: timeBinPath, UsePerf: usePerf, Template: template,
+				Classpath: classpath, Label: req.Label, Stem: req.Stem,
+				Script: req.Script, Case: req.CaseName, InputPath: req.InPath,
+				OutputPath: req.OutPath, Repeat: req.Repeat,
+				AllocRepeat: req.AllocRepeat, CallgrindRepeat: 0,
+				Timeout: req.Timeout, Root: root, AOT: aotCacheObj,
+			})
+			out := slope.ScaleOutcome{Ok: res.Ok}
+			if !res.Ok {
+				if res.Error != nil {
+					out.Error = *res.Error
+				}
+				return out
+			}
+			out.CpuMin = res.Summary.CpuS.Min.Float64()
+			out.CpuMedian = res.Summary.CpuS.Median.Float64()
+			out.CpuMax = res.Summary.CpuS.Max.Float64()
+			return out
+		}
+		var slopeErr error
+		complexity, slopeErr = slope.RunSlopeAll(measureScale, registry, slopeScripts,
+			only, slopeGroupList, slopeShard, slopeRepeat, timeout, jobs)
+		if slopeErr != nil {
+			fmt.Fprintln(os.Stderr, "snip measure:", slopeErr)
+			return 1
+		}
+		for _, name := range sortedComplexityNames(complexity) {
+			entry := complexity[name]
+			if entry.ScaleFailed && entry.Error != nil {
+				failures = append(failures, "slope "+name+": "+*entry.Error)
+			}
+		}
+		for _, name := range sortedComplexityNames(complexity) {
+			entry := complexity[name]
+			if entry.Ok && entry.Fit != nil && entry.Fit.Ok {
+				var scales []string
+				for _, n := range entry.Scales {
+					scales = append(scales, string(n))
+				}
+				fmt.Printf("slope %s: p=%.3f [%.3f,%.3f] R^2=%.4f floor=%.2fs n=[%s]\n",
+					name, entry.Fit.Slope.Float64(), entry.Fit.Lower.Float64(),
+					entry.Fit.Upper.Float64(), entry.Fit.RSquared.Float64(),
+					entry.Fit.FloorC.Float64(), strings.Join(scales, ", "))
+			} else {
+				errText := ""
+				if entry.Error != nil {
+					errText = *entry.Error
+				}
+				fmt.Printf("slope %s: SKIPPED %s\n", name, errText)
+			}
+		}
+	}
 
 	bmf := measure.BuildBMF(results, complexity)
 	report := measure.Report{
