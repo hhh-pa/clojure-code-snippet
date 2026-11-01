@@ -1,0 +1,11 @@
+v0: R0
+v1: SPILL
+v2: R0
+v3: SPILL
+v4: R0
+v5: R0
+v6: SPILL
+v7: SPILL
+v8: R0
+v9: SPILL
+Allocated: 5 Spilled: 5

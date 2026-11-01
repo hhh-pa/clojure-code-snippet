@@ -1,0 +1,1 @@
+(a|b)*a(a|b) 10 abbababaaa bababaabab bcabaaabab abbaabbbaa babbbbbbbb aaacaababa abbcbbabaa bbbaaabbbb abaaaaabaa ababaaaaab

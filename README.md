@@ -24,29 +24,35 @@ Some code examples have been moved to a **private repository** as a precautionar
 
 To respect the rights of original content creators, **test cases are not included** in this repository in plain form. Instead, they can be found on the websites where the referenced problems originate.
 
-For automated validation, the shared test cases from the recipes superproject (`resource/shared`) ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz, AES-256, ASCII-armored). `tests/run_tests.py` runs every `src/**/*.clj` script against the decrypted cases and diff-compares stdout against the expected output (trailing whitespace per line ignored).
+For automated validation, the shared test cases from the recipes superproject (`resource/shared`) ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz, AES-256, ASCII-armored). `snip test` runs every `src/**/*.clj` script against the decrypted cases and diff-compares stdout against the expected output (trailing whitespace per line ignored).
 
 ### CI/CD Pipeline
 
-`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, decrypts the bundle with the `RESOURCES_PASSPHRASE` repository secret, and runs:
+`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, decrypts the bundle with the `RESOURCES_PASSPHRASE` repository secret, builds the `snip` tool once (cached per source hash), and runs:
 
 ```sh
-python3 tests/run_tests.py --resources tests/resources --jobs 4 --timeout 300
+snip test --resources tests/resources --jobs 4 --timeout 300
 ```
 
-To test locally, decrypt the bundle into `tests/resources/` (passphrase holders only) and run the same command. The Clojure classpath comes from `--cp` or `$CLOJURE_CP`; when neither is set, sibling `spec.alpha` / `core.specs.alpha` jars next to a jar named by `$CLOJURE_JAR` (or `.ci/jars/*.jar`) are picked up automatically.
+To test locally, build `snip` (`go build -o snip ./cmd/snip` in
+`scripts/ci/go`; stdlib-only, no dependencies), decrypt the bundle
+into `tests/resources/` (passphrase holders only) and run the same
+command. The Clojure classpath comes from `--cp` or `$CLOJURE_CP`;
+when neither is set, sibling `spec.alpha` / `core.specs.alpha` jars
+next to a jar named by `$CLOJURE_JAR` (or `.ci/jars/*.jar`) are picked
+up automatically.
 
 Rebuild the bundle after resource changes with:
 
 ```sh
-tools/build_bundle.sh <resource/shared dir> <passphrase-file>
+snip bundle <resource/shared dir> <passphrase-file>
 ```
 
-See `tools/build_bundle.sh` for the rotation instructions when using a fresh passphrase.
+See `snip bundle --help` for the rotation instructions when using a fresh passphrase.
 
 ## Performance tracking
 
-`tools/measure.py` runs the same scripts and cases but records
+`snip measure` runs the same scripts and cases but records
 load-independent metrics per case (Linux-only, needs GNU `time`,
 optionally `perf`):
 
@@ -55,29 +61,37 @@ optionally `perf`):
 - `allocated_bytes` (heap-used-at-exit under EpsilonGC, min of 3) —
   total allocation; load-independent gauge of algorithmic work
 - `instructions`/`cycles` (`perf stat`, user-space) — most stable signal
+- `callgrind_instructions` (`--callgrind` only, needs Valgrind) —
+  deterministic whole-process Ir count under `-Xint` + EpsilonGC
 - `wall_s` — secondary; not load-independent
 
 Each case runs `--repeat` times (default 5, CI uses 3) plus 3 dedicated
 EpsilonGC allocation runs; summaries keep min/median/max. Compare
 same-machine ratios only (e.g. Clojure vs native back-to-back), never
 absolutes across machines. Allocated bytes are comparable within one
-JDK build only (absolutes shift between JDK versions).
+JDK build only (absolutes shift between JDK versions). `--aot`
+measures the AOT-compiled classes instead of `clojure.main`
+interpretation (gen-class transform, cached per source hash under
+`.ci/aot-cache/`); `--callgrind` adds the one-shot deterministic
+instruction count (~90s per case, opt-in pilot only in CI).
 
 ```sh
-python3 tools/measure.py --resources tests/resources --repeat 5 \
+snip measure --resources tests/resources --repeat 5 \
   --output perf.json --bmf-output bencher.json
-python3 tools/measure.py --self-test  # parser checks, no JVM needed
+snip measure --self-test  # parser checks, no JVM needed
 ```
 
 CI runs correctness in the `test` job, then measures each configured
 compiler in a sharded matrix `perf` job (`needs: test`, 4 shards via
-`tools/measure.py --shard K/N`). Each shard reports its own BMF subset
+`snip measure --shard K/N`). Each shard reports its own BMF subset
 to Bencher (`bencher run --adapter json --file bencher-bmf.json`) —
 per-shard reports keep every check under GitHub's check-summary limit
 at 3 measures, where one merged report would re-truncate it — and
 uploads per-shard artifacts; a fan-in `report` job merges the full
-reports (`tools/measure.py --merge`), uploads the merged bundle, and
-appends a combined results table to its step summary. Bencher plots
+reports (`snip measure --merge`), uploads the merged bundle, and
+appends a combined results table to its step summary. A non-blocking
+`perf-pilot` job measures one benchmark with `--aot` and one with
+`--callgrind` per push. Bencher plots
 each snippet's `cpu_time`/`peak_memory`/`allocated_bytes` per commit
 and posts a check per shard on the head commit (the BMF payload
 carries only those three measures; full metrics stay in the uploaded
@@ -93,7 +107,7 @@ Bencher's perf page to compare them visually. To add a compiler:
 
 1. Add a matrix entry in `.github/workflows/test.yml` (`runtime` label +
    `testbed` name) with whatever build steps it needs.
-2. Point `tools/measure.py` at its invocation via `--runtime <label>
+2. Point `snip measure` at its invocation via `--runtime <label>
    --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes); the
    same GNU `time` + `perf` harness measures every runtime, keeping
    numbers comparable.

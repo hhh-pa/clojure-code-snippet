@@ -1,0 +1,184 @@
+[
+ {
+  "in": "java -cp a.jar clojure.main x.clj",
+  "tokens": [
+   "java",
+   "-cp",
+   "a.jar",
+   "clojure.main",
+   "x.clj"
+  ]
+ },
+ {
+  "in": "./build/{stem}",
+  "tokens": [
+   "./build/{stem}"
+  ]
+ },
+ {
+  "in": "java -cp '/path with/spaces.jar' clojure.main",
+  "tokens": [
+   "java",
+   "-cp",
+   "/path with/spaces.jar",
+   "clojure.main"
+  ]
+ },
+ {
+  "in": "say \"hello world\"",
+  "tokens": [
+   "say",
+   "hello world"
+  ]
+ },
+ {
+  "in": "a'b'c\"d\"e",
+  "tokens": [
+   "abcde"
+  ]
+ },
+ {
+  "in": "''",
+  "tokens": [
+   ""
+  ]
+ },
+ {
+  "in": "\"\"",
+  "tokens": [
+   ""
+  ]
+ },
+ {
+  "in": "a''b",
+  "tokens": [
+   "ab"
+  ]
+ },
+ {
+  "in": "x\\ y",
+  "tokens": [
+   "x y"
+  ]
+ },
+ {
+  "in": "trailing\\",
+  "error": "No escaped character"
+ },
+ {
+  "in": "'unterminated",
+  "error": "No closing quotation"
+ },
+ {
+  "in": "\"unterminated",
+  "error": "No closing quotation"
+ },
+ {
+  "in": "a'b\"c",
+  "error": "No closing quotation"
+ },
+ {
+  "in": "'a\\b'",
+  "tokens": [
+   "a\\b"
+  ]
+ },
+ {
+  "in": "\"a\\b\"",
+  "tokens": [
+   "a\\b"
+  ]
+ },
+ {
+  "in": "\"a\\\"b\"",
+  "tokens": [
+   "a\"b"
+  ]
+ },
+ {
+  "in": "\"a\\\\b\"",
+  "tokens": [
+   "a\\b"
+  ]
+ },
+ {
+  "in": "\"a\\nb\"",
+  "tokens": [
+   "a\\nb"
+  ]
+ },
+ {
+  "in": "a\\nb",
+  "tokens": [
+   "anb"
+  ]
+ },
+ {
+  "in": "  spaced   out  ",
+  "tokens": [
+   "spaced",
+   "out"
+  ]
+ },
+ {
+  "in": "tab\there",
+  "tokens": [
+   "tab",
+   "here"
+  ]
+ },
+ {
+  "in": "'it''s'",
+  "tokens": [
+   "its"
+  ]
+ },
+ {
+  "in": "\"$HOME\"",
+  "tokens": [
+   "$HOME"
+  ]
+ },
+ {
+  "in": "'$HOME'",
+  "tokens": [
+   "$HOME"
+  ]
+ },
+ {
+  "in": "\\$HOME",
+  "tokens": [
+   "$HOME"
+  ]
+ },
+ {
+  "in": "semi;colon",
+  "tokens": [
+   "semi;colon"
+  ]
+ },
+ {
+  "in": "hash#tag",
+  "tokens": [
+   "hash#tag"
+  ]
+ },
+ {
+  "in": "dash--x=1",
+  "tokens": [
+   "dash--x=1"
+  ]
+ },
+ {
+  "in": "back\\slash",
+  "tokens": [
+   "backslash"
+  ]
+ },
+ {
+  "in": "'a'b'c'",
+  "tokens": [
+   "abc"
+  ]
+ }
+]
