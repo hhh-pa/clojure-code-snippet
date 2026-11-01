@@ -18,20 +18,21 @@ type Measure struct {
 // are pointers so slope-only runs (no regular results) emit an
 // entry with just complexity_exponent, like setdefault does.
 type Benchmark struct {
-	CpuTime               *Measure `json:"cpu_time,omitempty"`
-	PeakMemory            *Measure `json:"peak_memory,omitempty"`
-	AllocatedBytes        *Measure `json:"allocated_bytes,omitempty"`
-	CallgrindInstructions *Measure `json:"callgrind_instructions,omitempty"`
-	ComplexityExponent    *Measure `json:"complexity_exponent,omitempty"`
+	CpuTime                 *Measure `json:"cpu_time,omitempty"`
+	PeakMemory              *Measure `json:"peak_memory,omitempty"`
+	AllocatedBytes          *Measure `json:"allocated_bytes,omitempty"`
+	CallgrindInstructions   *Measure `json:"callgrind_instructions,omitempty"`
+	CallgrindAllocatedBytes *Measure `json:"callgrind_allocated_bytes,omitempty"`
+	ComplexityExponent      *Measure `json:"complexity_exponent,omitempty"`
 }
 
 // BMF maps benchmark name to measures.
 type BMF map[string]Benchmark
 
 // BuildBMF ports build_bmf: one Benchmark per snippet with
-// cpu_time/peak_memory plus allocated_bytes and
-// callgrind_instructions when every case reports them, plus the
-// sparse complexity_exponent for successful slope fits.
+// cpu_time/peak_memory plus allocated_bytes, callgrind_instructions,
+// and callgrind_allocated_bytes when every case reports them, plus
+// the sparse complexity_exponent for successful slope fits.
 func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 	perSnippet := map[string][]*CaseSummary{}
 	for i := range results {
@@ -58,12 +59,16 @@ func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 		}
 		var allocs []*AllocSummary
 		var cgs []*MinMedMax
+		var cgAllocs []*AllocSummary
 		for _, s := range summaries {
 			if s.AllocatedBytes != nil {
 				allocs = append(allocs, s.AllocatedBytes)
 			}
 			if s.CallgrindInstructions != nil {
 				cgs = append(cgs, s.CallgrindInstructions)
+			}
+			if s.CallgrindAllocatedBytes != nil {
+				cgAllocs = append(cgAllocs, s.CallgrindAllocatedBytes)
 			}
 		}
 		if len(allocs) == len(summaries) && len(summaries) > 0 {
@@ -90,6 +95,19 @@ func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 				maxs = append(maxs, c.Max)
 			}
 			bench.CallgrindInstructions = &Measure{
+				Value:      pyjson.Sum(mins),
+				LowerValue: pyjson.Sum(mins),
+				UpperValue: pyjson.Sum(maxs),
+			}
+		}
+		if len(cgAllocs) == len(summaries) && len(summaries) > 0 {
+			mins := make([]pyjson.Num, 0, len(cgAllocs))
+			maxs := make([]pyjson.Num, 0, len(cgAllocs))
+			for _, a := range cgAllocs {
+				mins = append(mins, pyjson.IntNum(a.Min))
+				maxs = append(maxs, pyjson.IntNum(a.Max))
+			}
+			bench.CallgrindAllocatedBytes = &Measure{
 				Value:      pyjson.Sum(mins),
 				LowerValue: pyjson.Sum(mins),
 				UpperValue: pyjson.Sum(maxs),

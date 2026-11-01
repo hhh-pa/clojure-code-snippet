@@ -63,6 +63,9 @@ optionally `perf`):
 - `instructions`/`cycles` (`perf stat`, user-space) — most stable signal
 - `callgrind_instructions` (`--callgrind` only, needs Valgrind) —
   deterministic whole-process Ir count under `-Xint` + EpsilonGC
+- `callgrind_allocated_bytes` (`--callgrind` only) — EpsilonGC total
+  allocation of that same deterministic run (from the JVM's GC log;
+  valgrind-side heap profilers cannot see Java objects)
 - `wall_s` — secondary; not load-independent
 
 Each case runs `--repeat` times (default 5, CI uses 3) plus 3 dedicated
@@ -91,7 +94,9 @@ uploads per-shard artifacts; a fan-in `report` job merges the full
 reports (`snip measure --merge`), uploads the merged bundle, and
 appends a combined results table to its step summary. A non-blocking
 `perf-pilot` job measures one benchmark with `--aot` and one with
-`--callgrind` per push. Bencher plots
+`--callgrind` per push, and reports the two gungraun-run measures
+(`callgrind_instructions`, thresholded at 1%, plus unthresholded
+`callgrind_allocated_bytes`) to Bencher. Bencher plots
 each snippet's `cpu_time`/`peak_memory`/`allocated_bytes` per commit
 and posts a check per shard on the head commit (the BMF payload
 carries only those three measures; full metrics stay in the uploaded

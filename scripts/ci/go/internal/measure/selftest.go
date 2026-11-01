@@ -199,11 +199,14 @@ func selfChecks() []snipcore.Check {
 	s3 := *s
 	cg := SummarizeInts([]int64{300, 100, 200})
 	s3.CallgrindInstructions = &cg
+	s3.CallgrindAllocatedBytes = SummarizeAlloc([]int64{500, 300, 400})
 	bmf3 := BuildBMF([]CaseResult{
 		{Label: "a", Stem: "s", Case: "c", Ok: true, Summary: &s3},
 	}, nil)
 	check("bmf-callgrind", bmf3["a/s"].CallgrindInstructions != nil &&
 		bmf3["a/s"].CallgrindInstructions.Value.Float64() == 100 &&
+		bmf3["a/s"].CallgrindAllocatedBytes != nil &&
+		bmf3["a/s"].CallgrindAllocatedBytes.Value.Float64() == 300 &&
 		bmf3["a/s"].AllocatedBytes == nil, fmt.Sprintf("%+v", bmf3["a/s"]))
 
 	checkMerge(check)

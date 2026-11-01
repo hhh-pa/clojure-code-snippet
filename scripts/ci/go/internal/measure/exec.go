@@ -262,19 +262,27 @@ func ResolveJava(argv0 string) string {
 
 // CallgrindOnce runs inner once under valgrind callgrind with the
 // deterministic recipe (-Xint, EpsilonGC, fixed heap, no perfdata)
-// and returns stdout plus total Ir.
-func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, string) {
+// and returns stdout plus total Ir and EpsilonGC total allocation.
+// The allocation comes from the JVM's own GC log, not from valgrind:
+// valgrind-side heap profilers (Massif/DHAT) see only HotSpot's
+// bulk-mmaped heap reservation, never Java objects.
+func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
 	input, err := os.ReadFile(inputPath)
 	if err != nil {
-		return nil, 0, "open input: " + err.Error()
+		return nil, 0, 0, "open input: " + err.Error()
 	}
 	outFile, err := tempFile("snip-cg-")
 	if err != nil {
-		return nil, 0, "callgrind output unreadable: " + err.Error()
+		return nil, 0, 0, "callgrind output unreadable: " + err.Error()
 	}
 	defer os.Remove(outFile)
+	gcFile, err := tempFile("snip-cg-gc-")
+	if err != nil {
+		return nil, 0, 0, "epsilon log unreadable: " + err.Error()
+	}
+	defer os.Remove(gcFile)
 	jvmFlags := append([]string{"-Xint"}, EpsilonFlags...)
-	jvmFlags = append(jvmFlags, "-XX:-UsePerfData")
+	jvmFlags = append(jvmFlags, "-XX:-UsePerfData", "-Xlog:gc:"+gcFile)
 	cmd := []string{"valgrind", "--tool=callgrind",
 		"--cache-sim=no", "--branch-sim=no", "--collect-jumps=no",
 		"--callgrind-out-file=" + outFile, ResolveJava(inner[0])}
@@ -283,20 +291,28 @@ func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64
 	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
 	var timeoutErr *snipcore.TimeoutError
 	if errors.As(err, &timeoutErr) {
-		return nil, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
+		return nil, 0, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
 	}
 	if err != nil {
-		return nil, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
+		return nil, 0, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
 	}
 	raw, err := os.ReadFile(outFile)
 	if err != nil {
-		return nil, 0, "callgrind output unreadable: " + err.Error()
+		return nil, 0, 0, "callgrind output unreadable: " + err.Error()
 	}
 	ir, err := ParseCallgrindSummary(string(raw))
 	if err != nil {
-		return nil, 0, err.Error()
+		return nil, 0, 0, err.Error()
 	}
-	return stdout, ir, ""
+	gcRaw, err := os.ReadFile(gcFile)
+	if err != nil {
+		return nil, 0, 0, "epsilon log unreadable: " + err.Error()
+	}
+	used, err := ParseEpsilonUsed(string(gcRaw))
+	if err != nil {
+		return nil, 0, 0, "epsilon log unreadable: " + err.Error()
+	}
+	return stdout, ir, used, ""
 }
 
 func tempFile(prefix string) (string, error) {
@@ -471,8 +487,9 @@ func MeasureCase(o CaseOpts) CaseResult {
 	}
 	if o.CallgrindRepeat > 0 {
 		var irs []int64
+		var cgAllocs []int64
 		for i := 0; i < o.CallgrindRepeat; i++ {
-			stdout, ir, runErr := CallgrindOnce(inner, o.InputPath, o.Timeout)
+			stdout, ir, used, runErr := CallgrindOnce(inner, o.InputPath, o.Timeout)
 			if runErr != "" {
 				msg := fmt.Sprintf("%s/%s: callgrind: %s", o.Label, o.Case, runErr)
 				res.Error = &msg
@@ -487,9 +504,11 @@ func MeasureCase(o CaseOpts) CaseResult {
 				return res
 			}
 			irs = append(irs, ir)
+			cgAllocs = append(cgAllocs, used)
 		}
 		s := SummarizeInts(irs)
 		res.Summary.CallgrindInstructions = &s
+		res.Summary.CallgrindAllocatedBytes = SummarizeAlloc(cgAllocs)
 	}
 	res.Ok = true
 	return res

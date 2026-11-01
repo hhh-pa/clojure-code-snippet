@@ -233,8 +233,12 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     continue-on-error: true
+    # checks:write so the pilot can post its Bencher report check
+    # (and PR comment) for the callgrind measure.
     permissions:
       contents: read
+      checks: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner
@@ -303,6 +307,62 @@ jobs:
             --output pilot-callgrind.json --bmf-output pilot-callgrind-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@main
+
+      # Threshold policy: callgrind_instructions (percentage) only.
+      # Both gungraun-run measures (callgrind_instructions and
+      # callgrind_allocated_bytes) are tracked; the overlapping
+      # cpu_time/peak_memory/allocated_bytes entries are stripped
+      # before reporting, since the pilot's --repeat 1 recipe would
+      # otherwise pollute the perf shards' min-of-3 histories for the
+      # same benchmark. A fixed 1% upper boundary sits far above the
+      # ~0.0006% observed callgrind wobble; min/max sample 10/64 match
+      # the allocated_bytes threshold. callgrind_allocated_bytes rides
+      # along threshold-free until its own wobble is characterized.
+      # Skips silently when the pilot produced no callgrind data
+      # (toolchain skew under continue-on-error).
+      - name: Track callgrind benchmark with Bencher
+        run: |
+          if [ ! -f pilot-callgrind-bmf.json ]; then
+            echo "no callgrind pilot BMF; skipping Bencher report"
+            exit 0
+          fi
+          jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
+            pilot-callgrind-bmf.json > pilot-callgrind-bench.json
+          if [ "$(jq 'length' pilot-callgrind-bench.json)" = "0" ]; then
+            echo "no callgrind_instructions data; skipping Bencher report"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bencher run \
+              --project clojure-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.head_ref }}" \
+              --hash "${{ github.event.pull_request.head.sha }}" \
+              --start-point "${{ github.base_ref }}" \
+              --start-point-hash "${{ github.event.pull_request.base.sha }}" \
+              --start-point-clone-thresholds \
+              --testbed ubuntu-latest-jvm \
+              --adapter json \
+              --file pilot-callgrind-bench.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          else
+            bencher run \
+              --project clojure-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.ref_name }}" \
+              --testbed ubuntu-latest-jvm \
+              --threshold-measure callgrind_instructions \
+              --threshold-test percentage \
+              --threshold-min-sample-size 10 \
+              --threshold-max-sample-size 64 \
+              --threshold-upper-boundary 0.01 \
+              --adapter json \
+              --file pilot-callgrind-bench.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          fi
+
       - name: Upload pilot results
         if: always()
         uses: actions/upload-artifact@v7
@@ -313,6 +373,7 @@ jobs:
             pilot-aot-bmf.json
             pilot-callgrind.json
             pilot-callgrind-bmf.json
+            pilot-callgrind-bench.json
 
   report:
     needs: perf
