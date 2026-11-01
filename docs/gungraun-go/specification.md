@@ -61,9 +61,9 @@ Acceptance criteria:
   (`summary.callgrind_allocated_bytes`, BMF
   `callgrind_allocated_bytes`, `cg_alloc` summary column): the
   memory metric of the deterministic run, read from the JVM's GC
-  log. The `perf-pilot` job reports both gungraun-run measures to
-  Bencher (other measures stripped to avoid polluting the perf
-  shards' histories), with a 1% percentage threshold on
+  log. Each `perf-callgrind` shard reports both gungraun-run
+  measures to Bencher (other measures stripped to avoid polluting
+  the perf shards' histories), with a 1% percentage threshold on
   `callgrind_instructions`; `callgrind_allocated_bytes` is tracked
   threshold-free until its wobble is characterized.
 - Memory stays on JVM-native signals: whole-process peak RSS
@@ -86,10 +86,12 @@ Acceptance criteria:
   by OS + source hash, setup-go + `CGO_ENABLED=0 go build` on miss
   only, no `working-directory` key); CI jobs use the cached `snip`
   binary instead of `python3`.
-- CI keeps per-push cost flat: the existing matrices run the Go
-  tools with equivalent flags; `--callgrind` (minutes per case)
-  and `--aot` (seconds of compile per snippet) are opt-in flags,
-  wired in CI as one small pilot each, never on the full matrix.
+- CI runs a full-matrix `perf-callgrind` sweep per push (4 shards,
+  lean `--repeat 1 --no-alloc` recipe, ~1h per shard parallel with
+  `perf`): the pilot-only constraint was calibrated on a slow dev
+  box (~90s/case); CI hardware measures ~21s/case all-in, so the
+  full matrix is affordable. `--aot` stays a one-benchmark
+  non-blocking pilot (stdout-gate canary).
 - All tracked `.py`/`.sh` files deleted; `__pycache__/` dirs
   removed; no `python3`/`bash tools/` invocation remains in CI,
   README, or docs (except this spec's historical notes).
@@ -216,16 +218,12 @@ Acceptance criteria:
   `snip ssa`, `tools/measure.py` → `snip measure` (same flags);
   `Install measurement tools` gains `valgrind` (apt cache
   action) so `--callgrind` pilots can run.
-- CI cost policy: full-matrix jobs keep equivalent flags
-  (no callgrind/aot); one `perf` pilot shard adds `--aot
-  --only <one snippet>`... exact pilot shape: a new matrix
-  axis would fan out all shards; instead the pilot runs as
-  extra steps inside one existing shard (shard 0) plus one
-  `--callgrind --only` probe, both informational
-  (`|| true`? no — they must be green-or-absent: run with
-  `continue-on-error`? Decide in implementation: pilots run
-  as their own job with the cached binary, allowed to fail
-  without blocking, until numbers stabilize).
+- CI cost policy: `perf` keeps equivalent flags (no callgrind);
+  a parallel 4-shard `perf-callgrind` sweep measures the full
+  matrix with the lean recipe and reports stripped per-shard
+  BMFs to Bencher; `--aot` stays a one-benchmark non-blocking
+  `perf-pilot` job (own job with the cached binary, allowed to
+  fail without blocking).
 - Locally `go build ./cmd/snip` uses Go's build cache
   (no redundant rebuilds); AOT classes persist in
   `.ci/aot-cache/` (already gitignored via `.ci/`).

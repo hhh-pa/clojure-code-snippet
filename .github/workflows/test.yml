@@ -180,10 +180,10 @@ jobs:
       # wobble (T24); min/max sample 10/64 match the live threshold.
       # Each shard reports its own BMF subset (same project,
       # testbed, branch, and benchmark names, so history stays
-      # continuous): one merged 37-benchmark x 3-measure report
+      # continuous): one merged ~394-benchmark x 3-measure report
       # would exceed GitHub's ~64KB check-summary limit again (T11),
-      # while per-shard reports (~10 benchmarks x 3 measures) fit
-      # with headroom for a 4th measure.
+      # while per-shard reports (~99 benchmarks x 3 measures,
+      # ~43KB) fit.
       - name: Track benchmarks with Bencher
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -224,21 +224,162 @@ jobs:
             perf-results.json
             bencher-bmf.json
 
-  # Opt-in callgrind-instruction + AOT pilots: one benchmark each, so
-  # per-push CI cost stays flat (~90s per callgrind case rules out the
-  # full matrix). continue-on-error: a valgrind/JDK toolchain skew on
-  # the hosted runner must never fail the push; pilot evidence lands
+  # Full-matrix callgrind sweep: every snippet's gungraun-run
+  # measures (callgrind_instructions + callgrind_allocated_bytes) on
+  # every push. Lean recipe (--repeat 1, --no-alloc since the
+  # callgrind run itself yields allocation, no slope): ~21s/case
+  # all-in on CI hardware x ~440 cases/shard / 2 jobs ~= 1h per
+  # shard, parallel with perf. A valgrind/toolchain failure fails
+  # the push (unlike the pilot): the sweep is a required signal.
+  perf-callgrind:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    strategy:
+      # Let every shard finish so partial artifacts upload for diagnosis.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+        include:
+          # One entry per compiler/runtime; benchmark names stay
+          # identical across runtimes (Bencher compares via testbeds).
+          # Keep in sync with the report-callgrind job's matrix below.
+          - runtime: jvm
+            testbed: ubuntu-latest-jvm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
+      - uses: ./.github/actions/snip-tools
+        with:
+          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21.0.13'
+
+      - name: Cache Clojure jars
+        id: jars-cache
+        uses: actions/cache@v5
+        with:
+          path: .ci/jars
+          key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
+
+      - name: Download Clojure jars
+        if: steps.jars-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .ci/jars
+          base=https://repo1.maven.org/maven2
+          curl -fsSL -o .ci/jars/clojure.jar "$base/org/clojure/clojure/1.12.0/clojure-1.12.0.jar"
+          curl -fsSL -o .ci/jars/spec.alpha.jar "$base/org/clojure/spec.alpha/0.5.238/spec.alpha-0.5.238.jar"
+          curl -fsSL -o .ci/jars/core.specs.alpha.jar "$base/org/clojure/core.specs.alpha/0.4.74/core.specs.alpha-0.4.74.jar"
+
+      - name: Decrypt and extract resources
+        env:
+          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
+        run: |
+          if [ -z "$RESOURCES_PASSPHRASE" ]; then
+            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
+            exit 1
+          fi
+          mkdir -p tests/resources
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$RESOURCES_PASSPHRASE" \
+            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+
+      - name: Install measurement tools
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: time linux-tools-common linux-tools-generic valgrind
+          version: 1.1
+
+      - name: Measure callgrind sweep (deterministic metrics)
+        # Lean recipe: one timed run (stdout gate) + one callgrind
+        # run per case. No --alloc (the callgrind run's own GC log
+        # yields allocation), no --slope (slope fits timed runs).
+        run: |
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
+            --repeat 1 --no-alloc --jobs 2 --timeout 900 \
+            --runtime ${{ matrix.runtime }} \
+            --shard ${{ matrix.shard }}/4 \
+            --callgrind --callgrind-repeat 1 \
+            --output sweep-results.json --bmf-output sweep-bmf.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@main
+
+      # Threshold policy: callgrind_instructions (percentage) only.
+      # Both gungraun-run measures are tracked; the overlapping
+      # cpu_time/peak_memory entries are stripped before reporting,
+      # since the sweep's --repeat 1 recipe would otherwise pollute
+      # the perf shards' min-of-3 histories for the same benchmarks
+      # (no allocated_bytes here: --no-alloc). A fixed 1% upper
+      # boundary sits far above the ~0.0006% observed callgrind
+      # wobble; min/max sample 10/64 match the allocated_bytes
+      # threshold. callgrind_allocated_bytes rides threshold-free
+      # until its own wobble is characterized. Each shard reports
+      # its own stripped subset (~99 benchmarks x 2 measures).
+      - name: Track callgrind benchmarks with Bencher
+        run: |
+          jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
+            sweep-bmf.json > sweep-bench.json
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bencher run \
+              --project clojure-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.head_ref }}" \
+              --hash "${{ github.event.pull_request.head.sha }}" \
+              --start-point "${{ github.base_ref }}" \
+              --start-point-hash "${{ github.event.pull_request.base.sha }}" \
+              --start-point-clone-thresholds \
+              --testbed ${{ matrix.testbed }} \
+              --adapter json \
+              --file sweep-bench.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          else
+            bencher run \
+              --project clojure-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.ref_name }}" \
+              --testbed ${{ matrix.testbed }} \
+              --threshold-measure callgrind_instructions \
+              --threshold-test percentage \
+              --threshold-min-sample-size 10 \
+              --threshold-max-sample-size 64 \
+              --threshold-upper-boundary 0.01 \
+              --adapter json \
+              --file sweep-bench.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          fi
+
+      - name: Upload sweep results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-${{ matrix.runtime }}-shard-${{ matrix.shard }}
+          path: |
+            sweep-results.json
+            sweep-bmf.json
+            sweep-bench.json
+
+  # AOT pilot: one benchmark per push as a cheap AOT stdout-gate
+  # canary (the callgrind half moved to the full-matrix sweep
+  # above). continue-on-error: an AOT/JDK toolchain skew on the
+  # hosted runner must never fail the push; pilot evidence lands
   # in the uploaded artifacts either way.
   perf-pilot:
     needs: test
     runs-on: ubuntu-latest
     continue-on-error: true
-    # checks:write so the pilot can post its Bencher report check
-    # (and PR comment) for the callgrind measure.
     permissions:
       contents: read
-      checks: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner
@@ -298,71 +439,6 @@ jobs:
             --output pilot-aot.json --bmf-output pilot-aot-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
-      - name: Measure callgrind pilot
-        run: |
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
-            --only sort/bubble_sort --callgrind --callgrind-repeat 1 \
-            --repeat 1 --alloc-repeat 1 --jobs 1 --timeout 900 \
-            --runtime jvm \
-            --output pilot-callgrind.json --bmf-output pilot-callgrind-bmf.json \
-            --summary-file "$GITHUB_STEP_SUMMARY"
-
-      - name: Install Bencher CLI
-        uses: bencherdev/bencher@main
-
-      # Threshold policy: callgrind_instructions (percentage) only.
-      # Both gungraun-run measures (callgrind_instructions and
-      # callgrind_allocated_bytes) are tracked; the overlapping
-      # cpu_time/peak_memory/allocated_bytes entries are stripped
-      # before reporting, since the pilot's --repeat 1 recipe would
-      # otherwise pollute the perf shards' min-of-3 histories for the
-      # same benchmark. A fixed 1% upper boundary sits far above the
-      # ~0.0006% observed callgrind wobble; min/max sample 10/64 match
-      # the allocated_bytes threshold. callgrind_allocated_bytes rides
-      # along threshold-free until its own wobble is characterized.
-      # Skips silently when the pilot produced no callgrind data
-      # (toolchain skew under continue-on-error).
-      - name: Track callgrind benchmark with Bencher
-        run: |
-          if [ ! -f pilot-callgrind-bmf.json ]; then
-            echo "no callgrind pilot BMF; skipping Bencher report"
-            exit 0
-          fi
-          jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
-            pilot-callgrind-bmf.json > pilot-callgrind-bench.json
-          if [ "$(jq 'length' pilot-callgrind-bench.json)" = "0" ]; then
-            echo "no callgrind_instructions data; skipping Bencher report"
-            exit 0
-          fi
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            bencher run \
-              --project clojure-code-snippet \
-              --key '${{ secrets.BENCHER_API_KEY }}' \
-              --branch "${{ github.head_ref }}" \
-              --hash "${{ github.event.pull_request.head.sha }}" \
-              --start-point "${{ github.base_ref }}" \
-              --start-point-hash "${{ github.event.pull_request.base.sha }}" \
-              --start-point-clone-thresholds \
-              --testbed ubuntu-latest-jvm \
-              --adapter json \
-              --file pilot-callgrind-bench.json \
-              --github-actions "${{ secrets.GITHUB_TOKEN }}"
-          else
-            bencher run \
-              --project clojure-code-snippet \
-              --key '${{ secrets.BENCHER_API_KEY }}' \
-              --branch "${{ github.ref_name }}" \
-              --testbed ubuntu-latest-jvm \
-              --threshold-measure callgrind_instructions \
-              --threshold-test percentage \
-              --threshold-min-sample-size 10 \
-              --threshold-max-sample-size 64 \
-              --threshold-upper-boundary 0.01 \
-              --adapter json \
-              --file pilot-callgrind-bench.json \
-              --github-actions "${{ secrets.GITHUB_TOKEN }}"
-          fi
-
       - name: Upload pilot results
         if: always()
         uses: actions/upload-artifact@v7
@@ -371,15 +447,13 @@ jobs:
           path: |
             pilot-aot.json
             pilot-aot-bmf.json
-            pilot-callgrind.json
-            pilot-callgrind-bmf.json
-            pilot-callgrind-bench.json
 
   report:
     needs: perf
     runs-on: ubuntu-latest
-    # No Bencher run here by design: reporting the merged 37-benchmark
-    # x 3-measure file would re-truncate the check summary (T11).
+    # No Bencher run here by design: reporting the merged
+    # ~394-benchmark x 3-measure file would re-truncate the check
+    # summary (T11).
     # This job only merges artifacts and appends the combined table
     # to its step summary (per-shard summaries stay in the perf jobs).
     permissions:
@@ -425,3 +499,53 @@ jobs:
           path: |
             perf-results-merged.json
             bencher-bmf-merged.json
+
+  report-callgrind:
+    needs: perf-callgrind
+    runs-on: ubuntu-latest
+    # No Bencher run here by design, same as report: one merged
+    # ~394-benchmark file would re-truncate the check summary (T11).
+    permissions:
+      contents: read
+    # One merge per runtime; keep in sync with the perf-callgrind
+    # job's matrix above.
+    strategy:
+      matrix:
+        include:
+          - runtime: jvm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
+      - uses: ./.github/actions/snip-tools
+        with:
+          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
+
+      - name: Download sweep results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: sweep-results-${{ matrix.runtime }}-shard-*
+
+      - name: Merge sweep reports
+        run: |
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge sweep-results-*/sweep-results.json \
+            --output sweep-results-merged.json \
+            --bmf-output sweep-bmf-merged.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      # The merge must equal the plain BMF union: sharding is
+      # snippet-cohesive, so no benchmark straddles two shards.
+      - name: Verify merge matches per-shard BMFs
+        run: |
+          jq -s 'add' sweep-results-*/sweep-bmf.json > sweep-bmf-jq.json
+          diff <(jq -S . sweep-bmf-merged.json) <(jq -S . sweep-bmf-jq.json)
+
+      - name: Upload merged sweep results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-${{ matrix.runtime }}-merged
+          path: |
+            sweep-results-merged.json
+            sweep-bmf-merged.json

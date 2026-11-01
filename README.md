@@ -76,7 +76,8 @@ JDK build only (absolutes shift between JDK versions). `--aot`
 measures the AOT-compiled classes instead of `clojure.main`
 interpretation (gen-class transform, cached per source hash under
 `.ci/aot-cache/`); `--callgrind` adds the one-shot deterministic
-instruction count (~90s per case, opt-in pilot only in CI).
+instruction count (~21s per case all-in on CI hardware, measured
+for all snippets by the sweep job).
 
 ```sh
 snip measure --resources tests/resources --repeat 5 \
@@ -92,11 +93,14 @@ per-shard reports keep every check under GitHub's check-summary limit
 at 3 measures, where one merged report would re-truncate it — and
 uploads per-shard artifacts; a fan-in `report` job merges the full
 reports (`snip measure --merge`), uploads the merged bundle, and
-appends a combined results table to its step summary. A non-blocking
-`perf-pilot` job measures one benchmark with `--aot` and one with
-`--callgrind` per push, and reports the two gungraun-run measures
-(`callgrind_instructions`, thresholded at 1%, plus unthresholded
-`callgrind_allocated_bytes`) to Bencher. Bencher plots
+appends a combined results table to its step summary. A parallel
+`perf-callgrind` sweep job measures all snippets with `--callgrind`
+(lean `--repeat 1 --no-alloc` recipe, ~1h per shard) and reports
+the two gungraun-run measures (`callgrind_instructions`,
+thresholded at 1%, plus unthresholded
+`callgrind_allocated_bytes`) to Bencher per shard, merged by a
+`report-callgrind` fan-in. A non-blocking `perf-pilot` job keeps
+one `--aot` measurement per push as a stdout-gate canary. Bencher plots
 each snippet's `cpu_time`/`peak_memory`/`allocated_bytes` per commit
 and posts a check per shard on the head commit (the BMF payload
 carries only those three measures; full metrics stay in the uploaded
