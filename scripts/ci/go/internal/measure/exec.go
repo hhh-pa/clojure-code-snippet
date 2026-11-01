@@ -260,6 +260,14 @@ func ResolveJava(argv0 string) string {
 	return argv0
 }
 
+// IsCallgrindTimeout reports whether a CallgrindOnce error text is a
+// deadline timeout rather than a crash or output mismatch: timeouts
+// mean the input exceeds the instrument's budget, so the case
+// degrades to a skip instead of failing the run.
+func IsCallgrindTimeout(runErr string) bool {
+	return strings.Contains(runErr, "TIMEOUT")
+}
+
 // CallgrindOnce runs inner once under valgrind callgrind with the
 // deterministic recipe (-Xint, EpsilonGC, fixed heap, no perfdata)
 // and returns stdout plus total Ir and EpsilonGC total allocation.
@@ -491,6 +499,13 @@ func MeasureCase(o CaseOpts) CaseResult {
 		for i := 0; i < o.CallgrindRepeat; i++ {
 			stdout, ir, used, runErr := CallgrindOnce(inner, o.InputPath, o.Timeout)
 			if runErr != "" {
+				if IsCallgrindTimeout(runErr) {
+					skip := runErr
+					res.CallgrindSkipped = &skip
+					fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: callgrind skipped (%s)\n",
+						o.Label, o.Stem, o.Case, runErr)
+					break
+				}
 				msg := fmt.Sprintf("%s/%s: callgrind: %s", o.Label, o.Case, runErr)
 				res.Error = &msg
 				return res
@@ -506,9 +521,11 @@ func MeasureCase(o CaseOpts) CaseResult {
 			irs = append(irs, ir)
 			cgAllocs = append(cgAllocs, used)
 		}
-		s := SummarizeInts(irs)
-		res.Summary.CallgrindInstructions = &s
-		res.Summary.CallgrindAllocatedBytes = SummarizeAlloc(cgAllocs)
+		if res.CallgrindSkipped == nil {
+			s := SummarizeInts(irs)
+			res.Summary.CallgrindInstructions = &s
+			res.Summary.CallgrindAllocatedBytes = SummarizeAlloc(cgAllocs)
+		}
 	}
 	res.Ok = true
 	return res

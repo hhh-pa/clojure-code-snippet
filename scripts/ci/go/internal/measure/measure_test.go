@@ -17,3 +17,15 @@ func TestSelfTestGreen(t *testing.T) {
 		t.Fatalf("missing summary:\n%s", buf.String())
 	}
 }
+
+func TestIsCallgrindTimeout(t *testing.T) {
+	if !IsCallgrindTimeout("TIMEOUT (>900s)") {
+		t.Fatal("timeout not detected")
+	}
+	for _, other := range []string{"", "exit 1: boom", "callgrind output unreadable: x",
+		"callgrind summary not found", "epsilon log unreadable: x"} {
+		if IsCallgrindTimeout(other) {
+			t.Fatalf("false positive: %q", other)
+		}
+	}
+}

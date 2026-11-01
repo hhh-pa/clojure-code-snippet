@@ -77,7 +77,10 @@ measures the AOT-compiled classes instead of `clojure.main`
 interpretation (gen-class transform, cached per source hash under
 `.ci/aot-cache/`); `--callgrind` adds the one-shot deterministic
 instruction count (~21s per case all-in on CI hardware, measured
-for all snippets by the sweep job).
+for all snippets by the sweep job). Cases exceeding the callgrind
+budget degrade to `callgrind_skipped` with a warning instead of
+failing (the timed data stays valid); crashes and output
+mismatches still fail.
 
 ```sh
 snip measure --resources tests/resources --repeat 5 \

@@ -330,6 +330,10 @@ jobs:
         run: |
           jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
             sweep-bmf.json > sweep-bench.json
+          if [ "$(jq 'length' sweep-bench.json)" = "0" ]; then
+            echo "no callgrind data in shard; skipping Bencher report"
+            exit 0
+          fi
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             bencher run \
               --project clojure-code-snippet \

@@ -410,6 +410,8 @@ func formatCaseProgress(done, total int, res measure.CaseResult) string {
 		if res.Error != nil {
 			outcome = *res.Error
 		}
+	} else if res.CallgrindSkipped != nil {
+		outcome = "ok (callgrind skipped: " + *res.CallgrindSkipped + ")"
 	}
 	return fmt.Sprintf("measure [%d/%d] %s/%s/%s: %s",
 		done, total, res.Label, res.Stem, res.Case, outcome)
