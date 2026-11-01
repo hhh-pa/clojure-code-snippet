@@ -12,8 +12,9 @@ const TimeFormat = "wall=%e user=%U sys=%S maxrss_kb=%M cpu_pct=%P major_faults=
 // PerfEvents are the user-space counters (PERF_EVENTS).
 const PerfEvents = "instructions:u,cycles:u"
 
-// ToolVersion tags the report; 3 adds the optional callgrind/aot fields.
-const ToolVersion = 3
+// ToolVersion tags the report; 3 adds the optional callgrind/aot
+// fields, 4 the callgrind_allocated_bytes signal.
+const ToolVersion = 4
 
 // DefaultCommandTemplate runs snippets on the JVM.
 const DefaultCommandTemplate = "java -cp {cp} clojure.main {script}"

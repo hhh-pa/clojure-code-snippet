@@ -57,6 +57,15 @@ Acceptance criteria:
   Verified end to end: `snip measure --callgrind` on bubble_sort
   reports 6,204,377,129 / 6,203,575,053 Ir with BMF
   `callgrind_instructions` and the `cg_insn` summary column.
+- The callgrind run also reports EpsilonGC total allocation
+  (`summary.callgrind_allocated_bytes`, BMF
+  `callgrind_allocated_bytes`, `cg_alloc` summary column): the
+  memory metric of the deterministic run, read from the JVM's GC
+  log. The `perf-pilot` job reports both gungraun-run measures to
+  Bencher (other measures stripped to avoid polluting the perf
+  shards' histories), with a 1% percentage threshold on
+  `callgrind_instructions`; `callgrind_allocated_bytes` is tracked
+  threshold-free until its wobble is characterized.
 - Memory stays on JVM-native signals: whole-process peak RSS
   (start-to-finish) plus EpsilonGC total allocation. Valgrind
   DHAT/Massif are explicitly NOT used for Java heap: HotSpot

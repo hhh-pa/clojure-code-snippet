@@ -92,11 +92,13 @@ func sortedComplexity(complexity map[string]slope.Entry) []string {
 }
 
 // AppendSummary ports append_summary: the Markdown results table,
-// with the conditional cxp column and the new conditional cg_insn
-// column (present only when some benchmark reports callgrind data).
+// with the conditional cxp column and the new conditional cg_insn /
+// cg_alloc columns (present only when some benchmark reports
+// callgrind data).
 func AppendSummary(path string, report Report, bmf BMF) error {
 	showCxp := false
 	showCg := false
+	showCgAlloc := false
 	for _, m := range bmf {
 		if m.ComplexityExponent != nil {
 			showCxp = true
@@ -104,11 +106,18 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 		if m.CallgrindInstructions != nil {
 			showCg = true
 		}
+		if m.CallgrindAllocatedBytes != nil {
+			showCgAlloc = true
+		}
 	}
 	header := "| snippet | cases | cpu total (s) | peak RSS (MB) | alloc total (MB) | instructions |"
 	sep := "| --- | ---: | ---: | ---: | ---: | ---: |"
 	if showCg {
 		header += " cg_insn |"
+		sep += " ---: |"
+	}
+	if showCgAlloc {
+		header += " cg_alloc (MB) |"
 		sep += " ---: |"
 	}
 	header += " wall total (s) |"
@@ -208,6 +217,13 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 				cg = numPlain(m.CallgrindInstructions.Value)
 			}
 			row += fmt.Sprintf(" %s |", cg)
+		}
+		if showCgAlloc {
+			cga := "n/a"
+			if m.CallgrindAllocatedBytes != nil {
+				cga = fmt.Sprintf("%.1f", m.CallgrindAllocatedBytes.Value.Float64()/1048576)
+			}
+			row += fmt.Sprintf(" %s |", cga)
 		}
 		row += fmt.Sprintf(" %.3f |", perSnippetWall[name])
 		if showCxp {

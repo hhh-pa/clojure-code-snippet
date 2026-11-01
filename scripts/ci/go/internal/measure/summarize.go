@@ -40,16 +40,17 @@ type AllocSummary struct {
 
 // CaseSummary aggregates one case's runs. Field order matches
 // summarize_case plus the appended allocated_bytes and the new
-// callgrind_instructions signal.
+// callgrind_instructions / callgrind_allocated_bytes signals.
 type CaseSummary struct {
-	CpuS                  MinMedMax     `json:"cpu_s"`
-	MaxRSSKb              MinMedMax     `json:"maxrss_kb"`
-	WallS                 MinMedMax     `json:"wall_s"`
-	Runs                  int           `json:"runs"`
-	Instructions          *MinMedMax    `json:"instructions"`
-	Cycles                *MinMedMax    `json:"cycles"`
-	AllocatedBytes        *AllocSummary `json:"allocated_bytes"`
-	CallgrindInstructions *MinMedMax    `json:"callgrind_instructions"`
+	CpuS                    MinMedMax     `json:"cpu_s"`
+	MaxRSSKb                MinMedMax     `json:"maxrss_kb"`
+	WallS                   MinMedMax     `json:"wall_s"`
+	Runs                    int           `json:"runs"`
+	Instructions            *MinMedMax    `json:"instructions"`
+	Cycles                  *MinMedMax    `json:"cycles"`
+	AllocatedBytes          *AllocSummary `json:"allocated_bytes"`
+	CallgrindInstructions   *MinMedMax    `json:"callgrind_instructions"`
+	CallgrindAllocatedBytes *AllocSummary `json:"callgrind_allocated_bytes"`
 }
 
 // CaseResult is one measured case. Error is nil (null) on success.
