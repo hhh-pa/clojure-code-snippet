@@ -268,6 +268,18 @@ func IsCallgrindTimeout(runErr string) bool {
 	return strings.Contains(runErr, "TIMEOUT")
 }
 
+// CallgrindSkipReason returns the skip reason when the callgrind
+// phase must not run for this label, or "" to proceed. EpsilonGC
+// exempt workloads exceed the fixed callgrind heap by definition
+// (the callgrind recipe uses the same EpsilonGC flags), so they
+// skip outright instead of OOMing.
+func CallgrindSkipReason(label string) string {
+	if allocExempt(label) {
+		return "EpsilonGC-exempt workload exceeds the fixed callgrind heap"
+	}
+	return ""
+}
+
 // CallgrindOnce runs inner once under valgrind callgrind with the
 // deterministic recipe (-Xint, EpsilonGC, fixed heap, no perfdata)
 // and returns stdout plus total Ir and EpsilonGC total allocation.
@@ -494,6 +506,13 @@ func MeasureCase(o CaseOpts) CaseResult {
 		res.Summary.AllocatedBytes = SummarizeAlloc(res.AllocRuns)
 	}
 	if o.CallgrindRepeat > 0 {
+		if reason := CallgrindSkipReason(o.Label); reason != "" {
+			res.CallgrindSkipped = &reason
+			fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: callgrind skipped (%s)\n",
+				o.Label, o.Stem, o.Case, reason)
+			res.Ok = true
+			return res
+		}
 		var irs []int64
 		var cgAllocs []int64
 		for i := 0; i < o.CallgrindRepeat; i++ {

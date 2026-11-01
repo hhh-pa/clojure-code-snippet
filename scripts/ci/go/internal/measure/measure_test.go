@@ -29,3 +29,12 @@ func TestIsCallgrindTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestCallgrindSkipReason(t *testing.T) {
+	if r := CallgrindSkipReason("search/beam_search"); r == "" {
+		t.Fatal("exempt label must skip")
+	}
+	if r := CallgrindSkipReason("sort/bubble_sort"); r != "" {
+		t.Fatalf("ordinary label must not skip: %q", r)
+	}
+}
