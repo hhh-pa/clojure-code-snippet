@@ -473,7 +473,7 @@ func checkSlopeRunner(check func(string, bool, string)) {
 		{Label: "sort/insertion_sort", Stem: "solution"},
 		{Label: "sort/quick_sort", Stem: "solution"},
 	}
-	got, err := slope.RunSlopeAll(stubOK, tiny, scripts, "", groups, nil, 1, 1, 1)
+	got, err := slope.RunSlopeAll(stubOK, tiny, scripts, "", groups, nil, 1, 1, 1, nil)
 	bothOK := err == nil && len(got) == 2
 	for _, entry := range got {
 		bothOK = bothOK && entry.Ok && entry.Fit != nil && entry.Fit.Ok &&
@@ -482,23 +482,38 @@ func checkSlopeRunner(check func(string, bool, string)) {
 	}
 	check("slope-runner-both", bothOK, fmt.Sprintf("%v %+v", err, got))
 
-	got, err = slope.RunSlopeAll(stubOK, tiny, scripts, "quick", groups, nil, 1, 1, 1)
+	got, err = slope.RunSlopeAll(stubOK, tiny, scripts, "quick", groups, nil, 1, 1, 1, nil)
 	check("slope-runner-only", err == nil && len(got) == 1 && got["sort/quick_sort/solution"].Ok,
 		fmt.Sprintf("%v %v", err, sortedEntryKeys(got)))
 
 	wide := []slope.Group{{Label: "a", Stem: "s"}, groups[0], groups[1], {Label: "z", Stem: "s"}}
-	got, err = slope.RunSlopeAll(stubOK, tiny, scripts, "", wide, &slope.Shard{Index: 1, Total: 4}, 1, 1, 1)
+	got, err = slope.RunSlopeAll(stubOK, tiny, scripts, "", wide, &slope.Shard{Index: 1, Total: 4}, 1, 1, 1, nil)
 	check("slope-runner-shard", err == nil && len(got) == 1 && got["sort/insertion_sort/solution"].Ok,
 		fmt.Sprintf("%v %v", err, sortedEntryKeys(got)))
 
 	got, err = slope.RunSlopeAll(stubOK, tiny,
-		map[slope.Group]string{{Label: "a", Stem: "s"}: "/fake/a.clj"}, "", groups, nil, 1, 1, 1)
+		map[slope.Group]string{{Label: "a", Stem: "s"}: "/fake/a.clj"}, "", groups, nil, 1, 1, 1, nil)
 	check("slope-runner-no-scripts", err == nil && len(got) == 0, fmt.Sprintf("%v %v", err, got))
 
-	got, err = slope.RunSlopeAll(stubFail, tiny, scripts, "", groups, nil, 1, 1, 1)
+	got, err = slope.RunSlopeAll(stubFail, tiny, scripts, "", groups, nil, 1, 1, 1, nil)
 	failOK := err == nil && len(got) == 2
 	for _, entry := range got {
 		failOK = failOK && !entry.Ok && entry.Error != nil && entry.ScaleFailed
 	}
 	check("slope-runner-error", failOK, fmt.Sprintf("%v %+v", err, got))
+
+	type progressCall struct {
+		index, total int
+		name         string
+		ok           bool
+	}
+	var calls []progressCall
+	_, err = slope.RunSlopeAll(stubOK, tiny, scripts, "", groups, nil, 1, 1, 1,
+		func(index, total int, name string, entry slope.Entry) {
+			calls = append(calls, progressCall{index, total, name, entry.Ok})
+		})
+	progOK := err == nil && len(calls) == 2 &&
+		calls[0] == progressCall{1, 2, "sort/insertion_sort/solution", true} &&
+		calls[1] == progressCall{2, 2, "sort/quick_sort/solution", true}
+	check("slope-runner-progress", progOK, fmt.Sprintf("%v %+v", err, calls))
 }

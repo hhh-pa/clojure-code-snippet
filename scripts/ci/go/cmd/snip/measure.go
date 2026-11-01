@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/generators"
@@ -231,6 +232,9 @@ func runMeasure(argv []string) int {
 
 	results := make([]measure.CaseResult, len(tasks))
 	work := make(chan int)
+	total := len(tasks)
+	var done atomic.Int64
+	var printMu sync.Mutex
 	var workers sync.WaitGroup
 	for w := 0; w < jobs; w++ {
 		workers.Add(1)
@@ -246,6 +250,10 @@ func runMeasure(argv []string) int {
 					AllocRepeat: effectiveAlloc, CallgrindRepeat: effectiveCg,
 					Timeout: timeout, Root: root, AOT: aotCacheObj,
 				})
+				n := done.Add(1)
+				printMu.Lock()
+				fmt.Println(formatCaseProgress(int(n), total, results[i]))
+				printMu.Unlock()
 			}
 		}()
 	}
@@ -316,7 +324,10 @@ func runMeasure(argv []string) int {
 		}
 		var slopeErr error
 		complexity, slopeErr = slope.RunSlopeAll(measureScale, registry, slopeScripts,
-			only, slopeGroupList, slopeShard, slopeRepeat, timeout, jobs)
+			only, slopeGroupList, slopeShard, slopeRepeat, timeout, jobs,
+			func(index, total int, name string, entry slope.Entry) {
+				fmt.Println(formatSlopeProgress(index, total, name, entry))
+			})
 		if slopeErr != nil {
 			fmt.Fprintln(os.Stderr, "snip measure:", slopeErr)
 			return 1
@@ -325,25 +336,6 @@ func runMeasure(argv []string) int {
 			entry := complexity[name]
 			if entry.ScaleFailed && entry.Error != nil {
 				failures = append(failures, "slope "+name+": "+*entry.Error)
-			}
-		}
-		for _, name := range sortedComplexityNames(complexity) {
-			entry := complexity[name]
-			if entry.Ok && entry.Fit != nil && entry.Fit.Ok {
-				var scales []string
-				for _, n := range entry.Scales {
-					scales = append(scales, string(n))
-				}
-				fmt.Printf("slope %s: p=%.3f [%.3f,%.3f] R^2=%.4f floor=%.2fs n=[%s]\n",
-					name, entry.Fit.Slope.Float64(), entry.Fit.Lower.Float64(),
-					entry.Fit.Upper.Float64(), entry.Fit.RSquared.Float64(),
-					entry.Fit.FloorC.Float64(), strings.Join(scales, ", "))
-			} else {
-				errText := ""
-				if entry.Error != nil {
-					errText = *entry.Error
-				}
-				fmt.Printf("slope %s: SKIPPED %s\n", name, errText)
 			}
 		}
 	}
@@ -406,6 +398,43 @@ func strOrNil(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// formatCaseProgress renders one live progress line for a finished
+// case: the [done/total] counter streams the battery's progress to
+// the log while the full table still prints at the end.
+func formatCaseProgress(done, total int, res measure.CaseResult) string {
+	outcome := "ok"
+	if !res.Ok {
+		outcome = "failed"
+		if res.Error != nil {
+			outcome = *res.Error
+		}
+	}
+	return fmt.Sprintf("measure [%d/%d] %s/%s/%s: %s",
+		done, total, res.Label, res.Stem, res.Case, outcome)
+}
+
+// formatSlopeProgress renders one live progress line for a finished
+// slope benchmark, streamed from the RunSlopeAll callback in
+// sorted-name order (same text the end-of-run block used to print,
+// plus the [index/total] counter).
+func formatSlopeProgress(index, total int, name string, entry slope.Entry) string {
+	if entry.Ok && entry.Fit != nil && entry.Fit.Ok {
+		var scales []string
+		for _, n := range entry.Scales {
+			scales = append(scales, string(n))
+		}
+		return fmt.Sprintf("slope [%d/%d] %s: p=%.3f [%.3f,%.3f] R^2=%.4f floor=%.2fs n=[%s]",
+			index, total, name, entry.Fit.Slope.Float64(), entry.Fit.Lower.Float64(),
+			entry.Fit.Upper.Float64(), entry.Fit.RSquared.Float64(),
+			entry.Fit.FloorC.Float64(), strings.Join(scales, ", "))
+	}
+	errText := ""
+	if entry.Error != nil {
+		errText = *entry.Error
+	}
+	return fmt.Sprintf("slope [%d/%d] %s: SKIPPED %s", index, total, name, errText)
 }
 
 func runMerge(inputs []string, output, bmfOutput, summaryFile string) int {

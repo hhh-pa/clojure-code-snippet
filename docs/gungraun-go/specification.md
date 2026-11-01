@@ -40,6 +40,10 @@ Acceptance criteria:
   synthetic resources and diffing, plus `jq -S` BMF equality in CI.
 - `snip measure --self-test` preserves every existing check name
   and passes with no JVM/time/perf/valgrind present.
+- `snip measure` streams per-case `measure [done/total]` progress
+  lines as cases complete and per-benchmark `slope [index/total]`
+  lines as slope fits finish (in sorted-name order); the full
+  results table, JSON/BMF outputs, and summary file are unchanged.
 - Every slope generator port is byte-verified: Go
   `generate(n, seed)` output equals Python `generate(n, seed)` at
   probed scales (exact Mersenne Twister replication, proven by

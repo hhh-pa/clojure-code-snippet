@@ -3,6 +3,10 @@ package main
 import (
 	"errors"
 	"testing"
+
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/measure"
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/pyjson"
+	"github.com/hhh-pa/clojure/scripts/ci/go/internal/slope"
 )
 
 func TestParseFlags(t *testing.T) {
@@ -53,5 +57,33 @@ func TestDispatch(t *testing.T) {
 	}
 	if code := dispatch(nil); code != 2 {
 		t.Fatalf("no args: %d", code)
+	}
+}
+
+func TestFormatCaseProgress(t *testing.T) {
+	ok := measure.CaseResult{Label: "sort/bubble_sort", Stem: "solution", Case: "test_case_1", Ok: true}
+	if got := formatCaseProgress(7, 480, ok); got != "measure [7/480] sort/bubble_sort/solution/test_case_1: ok" {
+		t.Fatalf("ok line: %q", got)
+	}
+	msg := "sort/bubble_sort/test_case_2: TIMEOUT (>120s)"
+	bad := measure.CaseResult{Label: "sort/bubble_sort", Stem: "solution", Case: "test_case_2", Error: &msg}
+	if got := formatCaseProgress(8, 480, bad); got != "measure [8/480] sort/bubble_sort/solution/test_case_2: "+msg {
+		t.Fatalf("error line: %q", got)
+	}
+}
+
+func TestFormatSlopeProgress(t *testing.T) {
+	num := func(f float64) *pyjson.Num { n := pyjson.FloatNum(f); return &n }
+	fit := &slope.Fit{Ok: true, Slope: num(2.5), Lower: num(2.4), Upper: num(2.6),
+		RSquared: num(0.99), FloorC: num(0.11)}
+	entry := slope.Entry{Scales: []slope.Digits{"10", "20"}, Ok: true, Fit: fit}
+	want := "slope [3/90] sort/bubble_sort/solution: p=2.500 [2.400,2.600] R^2=0.9900 floor=0.11s n=[10, 20]"
+	if got := formatSlopeProgress(3, 90, "sort/bubble_sort/solution", entry); got != want {
+		t.Fatalf("fit line: %q", got)
+	}
+	msg := "boom"
+	skip := slope.Entry{Error: &msg}
+	if got := formatSlopeProgress(4, 90, "a/b", skip); got != "slope [4/90] a/b: SKIPPED boom" {
+		t.Fatalf("skipped line: %q", got)
 	}
 }

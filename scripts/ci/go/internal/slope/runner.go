@@ -52,10 +52,14 @@ type Shard struct {
 // harness, and fit t = C + k*n**p. Benchmarks run sequentially
 // (one tmpdir at a time, crash-safe cleanup); scales within a
 // benchmark run on a jobs-wide pool. A generator failure aborts the
-// run with an error (Python crashes the same way).
+// run with an error (Python crashes the same way). progress, when
+// non-nil, fires after each benchmark with its 1-based index,
+// the task count, and the finished entry, so callers can stream
+// per-benchmark progress (tasks run in sorted-name order).
 func RunSlopeAll(measure MeasureScaleFunc, registry map[string]Generator,
 	scripts map[Group]string, only string, allGroups []Group,
-	shard *Shard, repeat, timeout, jobs int) (map[string]Entry, error) {
+	shard *Shard, repeat, timeout, jobs int,
+	progress func(index, total int, name string, entry Entry)) (map[string]Entry, error) {
 	var keep map[Group]bool
 	if shard != nil {
 		ordered := append([]Group(nil), allGroups...)
@@ -93,12 +97,15 @@ func RunSlopeAll(measure MeasureScaleFunc, registry map[string]Generator,
 		tasks = append(tasks, slopeTask{name, label, stem, script, registry[name]})
 	}
 	complexity := map[string]Entry{}
-	for _, t := range tasks {
+	for i, t := range tasks {
 		entry, err := runOne(measure, t, repeat, timeout, jobs)
 		if err != nil {
 			return nil, err
 		}
 		complexity[t.name] = entry
+		if progress != nil {
+			progress(i+1, len(tasks), t.name, entry)
+		}
 	}
 	return complexity, nil
 }
