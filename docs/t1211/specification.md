@@ -173,13 +173,13 @@ non-`java` templates. The change branches on
 
 ### TDD plan
 
-- New parser `ParseAllocShimTotal` with unit tests first
+- New parser `ParseAllocShimTotal` with self-test checks first
   (valid line amid noise, missing line -> error, malformed
   line -> error), following the `ParseCallgrindSummary`
-  pattern; self-test gains the same checks plus a live
-  compile-and-run check against `/bin/true` that passes
-  with a note where `cc` is absent or the host is not
-  Linux.
+  pattern (self-test stays subprocess-free, so the live
+  compile-and-run check against `sh` lives in
+  `allocshim_test.go` with `t.Skip` where `cc` is absent or
+  the host is not Linux).
 - Workflow validated by `python3 -c yaml.safe_load` and a
   matrix/condition review (no local Actions runner).
 - Local end-to-end is partial by construction: this host has

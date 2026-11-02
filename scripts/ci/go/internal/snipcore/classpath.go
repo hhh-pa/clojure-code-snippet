@@ -37,3 +37,23 @@ func ResolveClasspath(root, explicit string) (string, error) {
 	}
 	return "", errors.New("no Clojure classpath: pass --cp, set CLOJURE_CP/CLOJURE_JAR, or put jars under .ci/jars/")
 }
+
+// TemplateNeedsClasspath reports whether a command template
+// references the {cp} hole, honoring {{/}} escapes like
+// ExpandTemplate. snip measure tolerates a missing Clojure
+// classpath when the template never uses it (native legs).
+func TemplateNeedsClasspath(template string) bool {
+	for i := 0; i < len(template); {
+		if template[i] == '{' {
+			if i+1 < len(template) && template[i+1] == '{' {
+				i += 2
+				continue
+			}
+			if strings.HasPrefix(template[i:], "{cp}") {
+				return true
+			}
+		}
+		i++
+	}
+	return false
+}

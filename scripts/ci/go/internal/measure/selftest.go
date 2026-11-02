@@ -217,6 +217,14 @@ func selfChecks() []snipcore.Check {
 	_, err = ParseCallgrindSummary("no summary here\n")
 	check("callgrind-parse-rejects", err != nil, "no error raised")
 
+	shimOut := "program chatter\nsnip_alloc_total_bytes=123456\n"
+	shimTotal, err := ParseAllocShimTotal(shimOut)
+	check("allocshim-parse", err == nil && shimTotal == 123456, fmt.Sprintf("%d %v", shimTotal, err))
+	_, err = ParseAllocShimTotal("no total here\n")
+	check("allocshim-parse-rejects", err != nil, "no error raised")
+	_, err = ParseAllocShimTotal("snip_alloc_total_bytes=abc\n")
+	check("allocshim-parse-rejects-malformed", err != nil, "no error raised")
+
 	check("num-int-marshal", marshalNum(pyjson.IntNum(107520)) == "107520", marshalNum(pyjson.IntNum(107520)))
 	check("num-float-marshal", marshalNum(pyjson.FloatNum(105.0)) == "105.0", marshalNum(pyjson.FloatNum(105.0)))
 

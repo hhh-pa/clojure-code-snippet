@@ -22,6 +22,9 @@ func TestIsCallgrindTimeout(t *testing.T) {
 	if !IsCallgrindTimeout("TIMEOUT (>900s)") {
 		t.Fatal("timeout not detected")
 	}
+	if !IsCallgrindTimeout("alloc-shim TIMEOUT (>900s)") {
+		t.Fatal("shim timeout not detected")
+	}
 	for _, other := range []string{"", "exit 1: boom", "callgrind output unreadable: x",
 		"callgrind summary not found", "epsilon log unreadable: x"} {
 		if IsCallgrindTimeout(other) {
@@ -31,10 +34,13 @@ func TestIsCallgrindTimeout(t *testing.T) {
 }
 
 func TestCallgrindSkipReason(t *testing.T) {
-	if r := CallgrindSkipReason("search/beam_search"); r == "" {
-		t.Fatal("exempt label must skip")
+	if r := CallgrindSkipReason("search/beam_search", true); r == "" {
+		t.Fatal("exempt label must skip on the JVM leg")
 	}
-	if r := CallgrindSkipReason("sort/bubble_sort"); r != "" {
+	if r := CallgrindSkipReason("sort/bubble_sort", true); r != "" {
 		t.Fatalf("ordinary label must not skip: %q", r)
+	}
+	if r := CallgrindSkipReason("search/beam_search", false); r != "" {
+		t.Fatalf("native leg has no fixed heap, must not skip: %q", r)
 	}
 }
