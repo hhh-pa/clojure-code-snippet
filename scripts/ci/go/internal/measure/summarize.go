@@ -54,16 +54,20 @@ type CaseSummary struct {
 }
 
 // CaseResult is one measured case. Error is nil (null) on success.
+// CallgrindSkipped records a degraded callgrind phase: the timed
+// data is valid (Ok stays true) but the case exceeded the callgrind
+// budget, so no callgrind summaries were recorded.
 type CaseResult struct {
-	Label     string       `json:"label"`
-	Stem      string       `json:"stem"`
-	Script    string       `json:"script"`
-	Case      string       `json:"case"`
-	Ok        bool         `json:"ok"`
-	Error     *string      `json:"error"`
-	Runs      []RunMetrics `json:"runs"`
-	AllocRuns []int64      `json:"alloc_runs"`
-	Summary   *CaseSummary `json:"summary"`
+	Label            string       `json:"label"`
+	Stem             string       `json:"stem"`
+	Script           string       `json:"script"`
+	Case             string       `json:"case"`
+	Ok               bool         `json:"ok"`
+	Error            *string      `json:"error"`
+	Runs             []RunMetrics `json:"runs"`
+	AllocRuns        []int64      `json:"alloc_runs"`
+	Summary          *CaseSummary `json:"summary"`
+	CallgrindSkipped *string      `json:"callgrind_skipped,omitempty"`
 }
 
 // SummarizeFloats aggregates floats (odd counts keep the middle

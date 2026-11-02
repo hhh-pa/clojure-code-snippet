@@ -17,3 +17,24 @@ func TestSelfTestGreen(t *testing.T) {
 		t.Fatalf("missing summary:\n%s", buf.String())
 	}
 }
+
+func TestIsCallgrindTimeout(t *testing.T) {
+	if !IsCallgrindTimeout("TIMEOUT (>900s)") {
+		t.Fatal("timeout not detected")
+	}
+	for _, other := range []string{"", "exit 1: boom", "callgrind output unreadable: x",
+		"callgrind summary not found", "epsilon log unreadable: x"} {
+		if IsCallgrindTimeout(other) {
+			t.Fatalf("false positive: %q", other)
+		}
+	}
+}
+
+func TestCallgrindSkipReason(t *testing.T) {
+	if r := CallgrindSkipReason("search/beam_search"); r == "" {
+		t.Fatal("exempt label must skip")
+	}
+	if r := CallgrindSkipReason("sort/bubble_sort"); r != "" {
+		t.Fatalf("ordinary label must not skip: %q", r)
+	}
+}

@@ -260,6 +260,26 @@ func ResolveJava(argv0 string) string {
 	return argv0
 }
 
+// IsCallgrindTimeout reports whether a CallgrindOnce error text is a
+// deadline timeout rather than a crash or output mismatch: timeouts
+// mean the input exceeds the instrument's budget, so the case
+// degrades to a skip instead of failing the run.
+func IsCallgrindTimeout(runErr string) bool {
+	return strings.Contains(runErr, "TIMEOUT")
+}
+
+// CallgrindSkipReason returns the skip reason when the callgrind
+// phase must not run for this label, or "" to proceed. EpsilonGC
+// exempt workloads exceed the fixed callgrind heap by definition
+// (the callgrind recipe uses the same EpsilonGC flags), so they
+// skip outright instead of OOMing.
+func CallgrindSkipReason(label string) string {
+	if allocExempt(label) {
+		return "EpsilonGC-exempt workload exceeds the fixed callgrind heap"
+	}
+	return ""
+}
+
 // CallgrindOnce runs inner once under valgrind callgrind with the
 // deterministic recipe (-Xint, EpsilonGC, fixed heap, no perfdata)
 // and returns stdout plus total Ir and EpsilonGC total allocation.
@@ -486,11 +506,25 @@ func MeasureCase(o CaseOpts) CaseResult {
 		res.Summary.AllocatedBytes = SummarizeAlloc(res.AllocRuns)
 	}
 	if o.CallgrindRepeat > 0 {
+		if reason := CallgrindSkipReason(o.Label); reason != "" {
+			res.CallgrindSkipped = &reason
+			fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: callgrind skipped (%s)\n",
+				o.Label, o.Stem, o.Case, reason)
+			res.Ok = true
+			return res
+		}
 		var irs []int64
 		var cgAllocs []int64
 		for i := 0; i < o.CallgrindRepeat; i++ {
 			stdout, ir, used, runErr := CallgrindOnce(inner, o.InputPath, o.Timeout)
 			if runErr != "" {
+				if IsCallgrindTimeout(runErr) {
+					skip := runErr
+					res.CallgrindSkipped = &skip
+					fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: callgrind skipped (%s)\n",
+						o.Label, o.Stem, o.Case, runErr)
+					break
+				}
 				msg := fmt.Sprintf("%s/%s: callgrind: %s", o.Label, o.Case, runErr)
 				res.Error = &msg
 				return res
@@ -506,9 +540,11 @@ func MeasureCase(o CaseOpts) CaseResult {
 			irs = append(irs, ir)
 			cgAllocs = append(cgAllocs, used)
 		}
-		s := SummarizeInts(irs)
-		res.Summary.CallgrindInstructions = &s
-		res.Summary.CallgrindAllocatedBytes = SummarizeAlloc(cgAllocs)
+		if res.CallgrindSkipped == nil {
+			s := SummarizeInts(irs)
+			res.Summary.CallgrindInstructions = &s
+			res.Summary.CallgrindAllocatedBytes = SummarizeAlloc(cgAllocs)
+		}
 	}
 	res.Ok = true
 	return res

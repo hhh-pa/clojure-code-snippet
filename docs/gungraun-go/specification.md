@@ -54,6 +54,11 @@ Acceptance criteria:
   (probed: 6,201,082,869 vs 6,201,117,587 across runs, 0.0006%
   wobble, ~90 s per small case on this machine); missing valgrind
   degrades to null with a warning, exactly like `perf` today.
+  A case exceeding the callgrind timeout degrades to
+  `callgrind_skipped` (Ok, timed data valid, warning on stderr)
+  instead of failing, as do EpsilonGC-exempt workloads (which
+  exceed the fixed callgrind heap by definition); crashes and
+  output mismatches still fail.
   Verified end to end: `snip measure --callgrind` on bubble_sort
   reports 6,204,377,129 / 6,203,575,053 Ir with BMF
   `callgrind_instructions` and the `cg_insn` summary column.

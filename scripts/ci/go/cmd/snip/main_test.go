@@ -70,6 +70,11 @@ func TestFormatCaseProgress(t *testing.T) {
 	if got := formatCaseProgress(8, 480, bad); got != "measure [8/480] sort/bubble_sort/solution/test_case_2: "+msg {
 		t.Fatalf("error line: %q", got)
 	}
+	skip := "TIMEOUT (>900s)"
+	skipped := measure.CaseResult{Label: "sort/bubble_sort", Stem: "solution", Case: "test_case_1", Ok: true, CallgrindSkipped: &skip}
+	if got := formatCaseProgress(9, 480, skipped); got != "measure [9/480] sort/bubble_sort/solution/test_case_1: ok (callgrind skipped: TIMEOUT (>900s))" {
+		t.Fatalf("skipped line: %q", got)
+	}
 }
 
 func TestFormatSlopeProgress(t *testing.T) {
