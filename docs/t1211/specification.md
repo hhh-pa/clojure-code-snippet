@@ -163,8 +163,9 @@ non-`java` templates. The change branches on
 ### clojure-rs pin
 
 - `CLOJURE_RS_SHA` workflow env pins `hhh-pa/clojure`
-  (spec-time HEAD `0dbb78a`, the "all 1754 snippet cases
-  green" drop-in commit; re-verified at implementation).
+  (currently `7e13b3e`, the #209 perf-gap fixes; first pinned
+  at spec-time HEAD `0dbb78a`, the "all 1754 snippet cases
+  green" drop-in commit).
 - Bump process (README): update the SHA, re-run; the sweep's
   stdout gate catches regressions, Bencher shows the delta.
 - `clojure-rs run <script>` (stdin in, stdout out, exit

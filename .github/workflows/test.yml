@@ -16,9 +16,10 @@ env:
   # Pinned clojure-rs revision for the perf-callgrind native leg
   # (interpreter-only build; `run` needs no LLVM). Bump
   # deliberately: the sweep diff-gates every case, so a bad pin
-  # fails loudly, and Bencher shows the perf delta. Spec-time HEAD
-  # is the all-1754-cases-green recipes drop-in.
-  CLOJURE_RS_SHA: 0dbb78abbe85aa22850cde450def1e0670a6308b
+  # fails loudly, and Bencher shows the perf delta. Currently the
+  # #209 perf-gap fixes (2-20x faster), validated locally with
+  # byte-identical outputs before pinning.
+  CLOJURE_RS_SHA: 7e13b3e799f830d086e47636386e6383af6384c9
 
 jobs:
   test-shard:
