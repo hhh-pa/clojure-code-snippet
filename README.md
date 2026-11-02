@@ -123,11 +123,12 @@ Each compiler is a Bencher testbed (`ubuntu-latest-jvm` for JVM
 Clojure, `ubuntu-latest-clojure-rs` for the Rust port);
 benchmark names stay identical across compilers, so overlay the
 testbeds on Bencher's perf page to compare them visually. The
-clojure-rs revision is pinned in the workflow's `CLOJURE_RS_SHA`
-env (interpreter-only `cargo build --release --locked
---no-default-features` — `run` needs no LLVM); bump it
-deliberately, since the sweep diff-gates every case and Bencher
-shows the delta. To add a compiler:
+native leg always builds clojure-rs master HEAD (resolved once
+per run so all 16 legs share one revision; interpreter-only
+`cargo build --release --locked --no-default-features` — `run`
+needs no LLVM), since the sweep diff-gates every case and
+Bencher shows the delta; a manual dispatch may pin
+`clojure_rs_sha` to bisect or repro. To add a compiler:
 
 1. Add a `runtime` entry in `.github/workflows/test.yml`
    (perf-callgrind + report-callgrind matrices, testbed
