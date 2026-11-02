@@ -62,25 +62,32 @@ optionally `perf`):
   total allocation; load-independent gauge of algorithmic work
 - `instructions`/`cycles` (`perf stat`, user-space) — most stable signal
 - `callgrind_instructions` (`--callgrind` only, needs Valgrind) —
-  deterministic whole-process Ir count under `-Xint` + EpsilonGC
-- `callgrind_allocated_bytes` (`--callgrind` only) — EpsilonGC total
-  allocation of that same deterministic run (from the JVM's GC log;
-  valgrind-side heap profilers cannot see Java objects)
+  deterministic whole-process Ir count (JVM: under `-Xint` +
+  EpsilonGC; native: plain callgrind, no JVM flags)
+- `callgrind_allocated_bytes` (`--callgrind` only) — total
+  allocation of that same deterministic run: EpsilonGC total from
+  the JVM's GC log on JVM legs (valgrind-side heap profilers
+  cannot see Java objects), or the `LD_PRELOAD` counting shim's
+  malloc-request total on native legs
 - `wall_s` — secondary; not load-independent
 
-Each case runs `--repeat` times (default 5, CI uses 3) plus 3 dedicated
-EpsilonGC allocation runs; summaries keep min/median/max. Compare
-same-machine ratios only (e.g. Clojure vs native back-to-back), never
-absolutes across machines. Allocated bytes are comparable within one
-JDK build only (absolutes shift between JDK versions). `--aot`
-measures the AOT-compiled classes instead of `clojure.main`
-interpretation (gen-class transform, cached per source hash under
+Each case runs `--repeat` times (default 5) plus dedicated
+EpsilonGC allocation runs unless `--no-alloc`; summaries keep
+min/median/max. Compare same-machine ratios only (e.g. Clojure vs
+native back-to-back), never absolutes across machines. JVM
+allocated bytes are comparable within one JDK build only
+(absolutes shift between JDK versions); native-leg bytes are
+malloc-request totals — ratio-meaningful against the JVM number
+per benchmark, not bit-comparable absolutes. `--aot` measures the
+AOT-compiled classes instead of `clojure.main` interpretation
+(gen-class transform, cached per source hash under
 `.ci/aot-cache/`); `--callgrind` adds the one-shot deterministic
-instruction count (~21s per case all-in on CI hardware, measured
+instrumentation (~21s per case all-in on CI hardware, measured
 for all snippets by the sweep job). Cases exceeding the callgrind
-budget, and EpsilonGC-exempt workloads, degrade to
-`callgrind_skipped` with a warning instead of failing (the timed
-data stays valid); crashes and output mismatches still fail.
+budget, EpsilonGC-exempt workloads (JVM leg only), and native-leg
+counter problems degrade to `callgrind_skipped` with a warning
+instead of failing (the timed data stays valid); crashes and
+output mismatches still fail.
 
 ```sh
 snip measure --resources tests/resources --repeat 5 \
@@ -88,38 +95,46 @@ snip measure --resources tests/resources --repeat 5 \
 snip measure --self-test  # parser checks, no JVM needed
 ```
 
-CI runs correctness in the `test` job, then measures each configured
-compiler in a sharded matrix `perf` job (`needs: test`, 4 shards via
-`snip measure --shard K/N`). Each shard reports its own BMF subset
-to Bencher (`bencher run --adapter json --file bencher-bmf.json`) —
-per-shard reports keep every check under GitHub's check-summary limit
-at 3 measures, where one merged report would re-truncate it — and
-uploads per-shard artifacts; a fan-in `report` job merges the full
-reports (`snip measure --merge`), uploads the merged bundle, and
-appends a combined results table to its step summary. A parallel
-`perf-callgrind` sweep job measures all snippets with `--callgrind`
-(lean `--repeat 1 --no-alloc` recipe, ~1h per shard) and reports
-the two gungraun-run measures (`callgrind_instructions`,
-thresholded at 1%, plus unthresholded
-`callgrind_allocated_bytes`) to Bencher per shard, merged by a
-`report-callgrind` fan-in. A non-blocking `perf-pilot` job keeps
-one `--aot` measurement per push as a stdout-gate canary. Bencher plots
-each snippet's `cpu_time`/`peak_memory`/`allocated_bytes` per commit
-and posts a check per shard on the head commit (the BMF payload
-carries only those three measures; full metrics stay in the uploaded
-`perf-results.json` artifacts). The Bencher project API key lives
-in the `BENCHER_API_KEY` repository secret. Clojure jars and apt
-packages are cached between runs.
+CI runs correctness in the `test` job, then measures every snippet
+with `--callgrind` in a sharded matrix `perf-callgrind` sweep job
+(`needs: test`, 8 shards x 2 runtimes via `snip measure --shard
+K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard). Each
+shard reports its own BMF subset to Bencher (`bencher run --adapter
+json --file sweep-bench.json`, carrying only the two gungraun-run
+measures: `callgrind_instructions` thresholded at 1% plus
+unthresholded `callgrind_allocated_bytes`) — per-shard reports keep
+every check under GitHub's check-summary limit, where one merged
+report would re-truncate it — and uploads per-shard artifacts; a
+fan-in `report-callgrind` job merges the full reports per runtime
+(`snip measure --merge`), uploads the merged bundles, and appends
+a combined results table to its step summary. A non-blocking
+`perf-pilot` job keeps one `--aot` measurement per push as a
+stdout-gate canary. Bencher plots each snippet's
+`callgrind_instructions`/`callgrind_allocated_bytes` per commit
+for both runtimes and posts a check per shard on the head commit
+(full metrics stay in the uploaded `sweep-results.json`
+artifacts). The Bencher project API key lives in the
+`BENCHER_API_KEY` repository secret. Clojure jars, apt packages,
+and the cargo build are cached between runs.
 
 ## Comparing compilers
 
-Each compiler is a Bencher testbed (`ubuntu-latest-jvm` today); benchmark
-names stay identical across compilers, so overlay the testbeds on
-Bencher's perf page to compare them visually. To add a compiler:
+Each compiler is a Bencher testbed (`ubuntu-latest-jvm` for JVM
+Clojure, `ubuntu-latest-clojure-rs` for the Rust port);
+benchmark names stay identical across compilers, so overlay the
+testbeds on Bencher's perf page to compare them visually. The
+clojure-rs revision is pinned in the workflow's `CLOJURE_RS_SHA`
+env (interpreter-only `cargo build --release --locked
+--no-default-features` — `run` needs no LLVM); bump it
+deliberately, since the sweep diff-gates every case and Bencher
+shows the delta. To add a compiler:
 
-1. Add a matrix entry in `.github/workflows/test.yml` (`runtime` label +
-   `testbed` name) with whatever build steps it needs.
+1. Add a `runtime` entry in `.github/workflows/test.yml`
+   (perf-callgrind + report-callgrind matrices, testbed
+   `ubuntu-latest-<runtime>`) with whatever build steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
-   --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes); the
-   same GNU `time` + `perf` harness measures every runtime, keeping
-   numbers comparable.
+   --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes);
+   the same GNU `time` + `perf` harness measures every runtime,
+   and non-`java` commands automatically take the native
+   callgrind recipe (plain callgrind + `LD_PRELOAD` counting),
+   keeping numbers comparable.
