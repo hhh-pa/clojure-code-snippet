@@ -13,8 +13,9 @@ const TimeFormat = "wall=%e user=%U sys=%S maxrss_kb=%M cpu_pct=%P major_faults=
 const PerfEvents = "instructions:u,cycles:u"
 
 // ToolVersion tags the report; 3 adds the optional callgrind/aot
-// fields, 4 the callgrind_allocated_bytes signal.
-const ToolVersion = 4
+// fields, 4 the callgrind_allocated_bytes signal, 5 the native
+// callgrind recipe plus runtime_version provenance.
+const ToolVersion = 5
 
 // DefaultCommandTemplate runs snippets on the JVM.
 const DefaultCommandTemplate = "java -cp {cp} clojure.main {script}"

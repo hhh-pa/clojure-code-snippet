@@ -244,10 +244,11 @@ func MeasureAllocOnce(inner []string, inputPath string, timeout int) ([]byte, in
 	return stdout, used, ""
 }
 
-// ResolveJava finds the real java binary behind PATH/symlinks: under
+// ResolveArgv0 finds the real binary behind PATH/symlinks: under
 // valgrind the /bin/java alternatives symlink loses libjli.so
-// (exit 127), so callgrind runs need the resolved path.
-func ResolveJava(argv0 string) string {
+// (exit 127), so callgrind runs need the resolved path. Used for
+// JVM and native legs alike.
+func ResolveArgv0(argv0 string) string {
 	path := argv0
 	if !strings.Contains(path, string(os.PathSeparator)) {
 		if found, err := exec.LookPath(path); err == nil {
@@ -268,25 +269,45 @@ func IsCallgrindTimeout(runErr string) bool {
 	return strings.Contains(runErr, "TIMEOUT")
 }
 
+// IsAllocShimSkip reports whether a CallgrindOnce error text is a
+// native-leg counter problem (missing toolchain, timeout, unreadable
+// total) rather than a program failure: the Ir leg already gated
+// correctness, so counter problems degrade to a skip.
+func IsAllocShimSkip(runErr string) bool {
+	return strings.HasPrefix(runErr, "alloc-shim ")
+}
+
 // CallgrindSkipReason returns the skip reason when the callgrind
-// phase must not run for this label, or "" to proceed. EpsilonGC
-// exempt workloads exceed the fixed callgrind heap by definition
-// (the callgrind recipe uses the same EpsilonGC flags), so they
-// skip outright instead of OOMing.
-func CallgrindSkipReason(label string) string {
-	if allocExempt(label) {
+// phase must not run for this label, or "" to proceed. On the JVM
+// leg, EpsilonGC exempt workloads exceed the fixed callgrind heap
+// by definition (the callgrind recipe uses the same EpsilonGC
+// flags), so they skip outright instead of OOMing. The native leg
+// has no fixed heap, so it never skips for size reasons.
+func CallgrindSkipReason(label string, javaLeg bool) string {
+	if javaLeg && allocExempt(label) {
 		return "EpsilonGC-exempt workload exceeds the fixed callgrind heap"
 	}
 	return ""
 }
 
-// CallgrindOnce runs inner once under valgrind callgrind with the
+// CallgrindOnce runs inner once under valgrind callgrind and
+// returns stdout plus total Ir and total allocation, dispatching on
+// the resolved argv0: the JVM recipe (below) for java, the native
+// recipe (no JVM flags, LD_PRELOAD-counted allocation) otherwise.
+func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+	if !InnerIsJava(inner) {
+		return nativeCallgrindOnce(inner, inputPath, timeout)
+	}
+	return jvmCallgrindOnce(inner, inputPath, timeout)
+}
+
+// jvmCallgrindOnce runs inner once under valgrind callgrind with the
 // deterministic recipe (-Xint, EpsilonGC, fixed heap, no perfdata)
 // and returns stdout plus total Ir and EpsilonGC total allocation.
 // The allocation comes from the JVM's own GC log, not from valgrind:
 // valgrind-side heap profilers (Massif/DHAT) see only HotSpot's
 // bulk-mmaped heap reservation, never Java objects.
-func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+func jvmCallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
 	input, err := os.ReadFile(inputPath)
 	if err != nil {
 		return nil, 0, 0, "open input: " + err.Error()
@@ -305,7 +326,7 @@ func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64
 	jvmFlags = append(jvmFlags, "-XX:-UsePerfData", "-Xlog:gc:"+gcFile)
 	cmd := []string{"valgrind", "--tool=callgrind",
 		"--cache-sim=no", "--branch-sim=no", "--collect-jumps=no",
-		"--callgrind-out-file=" + outFile, ResolveJava(inner[0])}
+		"--callgrind-out-file=" + outFile, ResolveArgv0(inner[0])}
 	cmd = append(cmd, jvmFlags...)
 	cmd = append(cmd, inner[1:]...)
 	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
@@ -333,6 +354,78 @@ func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64
 		return nil, 0, 0, "epsilon log unreadable: " + err.Error()
 	}
 	return stdout, ir, used, ""
+}
+
+// nativeCallgrindOnce runs a native binary once under valgrind
+// callgrind (same no-sim flags, no JVM flags) for Ir, plus one
+// near-native-speed LD_PRELOAD counting run for allocation. The Ir
+// leg is authoritative — its crashes fail like the JVM path — while
+// every counter-leg problem degrades to an "alloc-shim ..." skip
+// reason (a broken counter must never fail correct runs).
+func nativeCallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+	input, err := os.ReadFile(inputPath)
+	if err != nil {
+		return nil, 0, 0, "open input: " + err.Error()
+	}
+	outFile, err := tempFile("snip-cg-")
+	if err != nil {
+		return nil, 0, 0, "callgrind output unreadable: " + err.Error()
+	}
+	defer os.Remove(outFile)
+	cmd := []string{"valgrind", "--tool=callgrind",
+		"--cache-sim=no", "--branch-sim=no", "--collect-jumps=no",
+		"--callgrind-out-file=" + outFile, ResolveArgv0(inner[0])}
+	cmd = append(cmd, inner[1:]...)
+	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
+	var timeoutErr *snipcore.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return nil, 0, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
+	}
+	if err != nil {
+		return nil, 0, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
+	}
+	raw, err := os.ReadFile(outFile)
+	if err != nil {
+		return nil, 0, 0, "callgrind output unreadable: " + err.Error()
+	}
+	ir, err := ParseCallgrindSummary(string(raw))
+	if err != nil {
+		return nil, 0, 0, err.Error()
+	}
+	used, skip := MeasureShimAllocOnce(inner, input, stdout, timeout)
+	if skip != "" {
+		return nil, 0, 0, skip
+	}
+	return stdout, ir, used, ""
+}
+
+// MeasureShimAllocOnce runs inner once under the LD_PRELOAD
+// counting shim and returns total allocated bytes. wantStdout is
+// the Ir leg's stdout: a shim-run mismatch means the counter run
+// diverged, which degrades like any other counter problem. Every
+// failure returns a skip reason (never a hard error); "" means
+// success.
+func MeasureShimAllocOnce(inner []string, input, wantStdout []byte, timeout int) (int64, string) {
+	so, err := EnsureAllocShim()
+	if err != nil {
+		return 0, "alloc-shim unavailable: " + err.Error()
+	}
+	stdout, stderr, err := snipcore.RunEnv(inner, input, timeout, []string{"LD_PRELOAD=" + so})
+	var timeoutErr *snipcore.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return 0, fmt.Sprintf("alloc-shim TIMEOUT (>%ds)", timeout)
+	}
+	if err != nil {
+		return 0, fmt.Sprintf("alloc-shim exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
+	}
+	if string(snipcore.Normalize(stdout)) != string(snipcore.Normalize(wantStdout)) {
+		return 0, "alloc-shim output mismatch: counter run diverged from the callgrind run"
+	}
+	used, err := ParseAllocShimTotal(string(stderr))
+	if err != nil {
+		return 0, err.Error()
+	}
+	return used, ""
 }
 
 func tempFile(prefix string) (string, error) {
@@ -506,7 +599,7 @@ func MeasureCase(o CaseOpts) CaseResult {
 		res.Summary.AllocatedBytes = SummarizeAlloc(res.AllocRuns)
 	}
 	if o.CallgrindRepeat > 0 {
-		if reason := CallgrindSkipReason(o.Label); reason != "" {
+		if reason := CallgrindSkipReason(o.Label, InnerIsJava(inner)); reason != "" {
 			res.CallgrindSkipped = &reason
 			fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: callgrind skipped (%s)\n",
 				o.Label, o.Stem, o.Case, reason)
@@ -518,7 +611,7 @@ func MeasureCase(o CaseOpts) CaseResult {
 		for i := 0; i < o.CallgrindRepeat; i++ {
 			stdout, ir, used, runErr := CallgrindOnce(inner, o.InputPath, o.Timeout)
 			if runErr != "" {
-				if IsCallgrindTimeout(runErr) {
+				if IsCallgrindTimeout(runErr) || IsAllocShimSkip(runErr) {
 					skip := runErr
 					res.CallgrindSkipped = &skip
 					fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: callgrind skipped (%s)\n",

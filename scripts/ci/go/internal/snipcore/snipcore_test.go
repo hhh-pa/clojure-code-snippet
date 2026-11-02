@@ -118,6 +118,26 @@ func TestResolveClasspath(t *testing.T) {
 	}
 }
 
+func TestTemplateNeedsClasspath(t *testing.T) {
+	for _, tc := range []struct {
+		template string
+		want     bool
+	}{
+		{"java -cp {cp} clojure.main {script}", true},
+		{"clojure-rs run {script}", false},
+		{"run {script} {stem}", false},
+		{"echo {{cp}}", false},
+		{"echo {{cp}} {cp}", true},
+		{"{cpx}", false},
+		{"{", false},
+		{"", false},
+	} {
+		if got := TemplateNeedsClasspath(tc.template); got != tc.want {
+			t.Fatalf("TemplateNeedsClasspath(%q) = %v, want %v", tc.template, got, tc.want)
+		}
+	}
+}
+
 func TestDiscover(t *testing.T) {
 	root := t.TempDir()
 	write := func(path, body string) {
@@ -188,6 +208,17 @@ func TestRun(t *testing.T) {
 	var timeout *TimeoutError
 	if err == nil || !errors.As(err, &timeout) || timeout.Seconds != 1 {
 		t.Fatalf("timeout: %v", err)
+	}
+}
+
+func TestRunEnv(t *testing.T) {
+	stdout, _, err := RunEnv([]string{"sh", "-c", "echo $SNIP_PROBE"}, nil, 30, []string{"SNIP_PROBE=bar"})
+	if err != nil || string(stdout) != "bar\n" {
+		t.Fatalf("env passthrough: %q %v", stdout, err)
+	}
+	stdout, _, err = RunEnv([]string{"sh", "-c", "echo out"}, nil, 30, nil)
+	if err != nil || string(stdout) != "out\n" {
+		t.Fatalf("empty extra env: %q %v", stdout, err)
 	}
 }
 

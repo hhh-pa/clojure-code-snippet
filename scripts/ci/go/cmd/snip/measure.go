@@ -153,8 +153,13 @@ func runMeasure(argv []string) int {
 	}
 	classpath, err := snipcore.ResolveClasspath(root, cp)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		if !snipcore.TemplateNeedsClasspath(template) {
+			fmt.Fprintln(os.Stderr, "warning: no Clojure classpath; continuing without one (template has no {cp} hole)")
+			classpath = ""
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	}
 	found, err := snipcore.Discover(root, resources)
 	if err != nil {
@@ -207,16 +212,12 @@ func runMeasure(argv []string) int {
 			effectiveAlloc = 0
 		}
 	}
+	// Callgrind runs for JVM and native legs alike now: the
+	// recipe branches on the resolved argv0 (EpsilonGC log vs
+	// LD_PRELOAD counting). Only valgrind's absence disables it.
 	effectiveCg := 0
 	if useCallgrind {
 		effectiveCg = callgrindRepeat
-	}
-	if effectiveCg > 0 && len(tasks) > 0 && !aotFlag {
-		t0 := tasks[0]
-		if !measure.AllocSupported(template, classpath, t0.script, t0.stem) {
-			fmt.Fprintln(os.Stderr, "warning: callgrind measurement needs a java command template; skipping (callgrind_instructions will be null)")
-			effectiveCg = 0
-		}
 	}
 	var aotCacheObj *measure.AOTCache
 	if aotFlag {
@@ -340,6 +341,26 @@ func runMeasure(argv []string) int {
 		}
 	}
 
+	javaLeg := aotFlag
+	nativeBin := ""
+	if !aotFlag && len(tasks) > 0 {
+		t0 := tasks[0]
+		if inner, err := measure.BuildInnerCommand(template, classpath, t0.script, t0.stem); err == nil && len(inner) > 0 {
+			if measure.InnerIsJava(inner) {
+				javaLeg = true
+			} else {
+				nativeBin = inner[0]
+			}
+		}
+	} else if !aotFlag {
+		javaLeg = measure.TemplateHeadIsJava(template)
+	}
+	var javaVersion, runtimeVersion *string
+	if javaLeg {
+		javaVersion = measure.JavaVersion()
+	} else if nativeBin != "" {
+		runtimeVersion = measure.RuntimeVersion(nativeBin)
+	}
 	bmf := measure.BuildBMF(results, complexity)
 	report := measure.Report{
 		Tool: "snip measure", Version: measure.ToolVersion,
@@ -347,8 +368,9 @@ func runMeasure(argv []string) int {
 		Host:         measure.HostInfo(),
 		Runtime: measure.Runtime{
 			Name: runtimeName, CommandTemplate: template,
-			JavaVersion: measure.JavaVersion(), Classpath: classpath,
-			TimeBin: timeBinPath, PerfUsed: usePerf, CallgrindUsed: effectiveCg > 0,
+			JavaVersion: javaVersion, RuntimeVersion: runtimeVersion,
+			Classpath: classpath,
+			TimeBin:   timeBinPath, PerfUsed: usePerf, CallgrindUsed: effectiveCg > 0,
 		},
 		Config: measure.Config{
 			Repeat: repeat, Jobs: jobs, Timeout: timeout, Only: only,

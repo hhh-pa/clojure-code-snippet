@@ -29,6 +29,7 @@ type Runtime struct {
 	Name            string  `json:"name"`
 	CommandTemplate string  `json:"command_template"`
 	JavaVersion     *string `json:"java_version"`
+	RuntimeVersion  *string `json:"runtime_version"`
 	Classpath       string  `json:"classpath"`
 	TimeBin         string  `json:"time_bin"`
 	PerfUsed        bool    `json:"perf_used"`
@@ -119,6 +120,29 @@ func JavaVersion() *string {
 	for _, line := range strings.Split(string(stderr), "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			return &trimmed
+		}
+	}
+	return nil
+}
+
+// RuntimeVersion probes a native runtime binary's `<argv0>
+// --version`, returning the first non-empty output line (stdout,
+// then stderr) or nil when the probe fails. Best-effort
+// provenance for non-JVM legs, mirroring JavaVersion's tolerance.
+func RuntimeVersion(argv0 string) *string {
+	stdout, stderr, err := snipcore.Run([]string{argv0, "--version"}, nil, 30)
+	if err != nil {
+		var timeout *snipcore.TimeoutError
+		var exitErr *exec.ExitError
+		if errors.As(err, &timeout) || !errors.As(err, &exitErr) {
+			return nil
+		}
+	}
+	for _, raw := range [][]byte{stdout, stderr} {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				return &trimmed
+			}
 		}
 	}
 	return nil

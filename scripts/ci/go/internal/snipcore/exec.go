@@ -3,6 +3,7 @@ package snipcore
 import (
 	"bytes"
 	"errors"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -28,7 +29,18 @@ func (e *TimeoutError) Error() string {
 // blocks for pipe EOF, so killing after Wait would hang until the
 // grandchildren exit on their own.
 func Run(argv []string, stdin []byte, timeoutSecs int) (stdout, stderr []byte, err error) {
+	return RunEnv(argv, stdin, timeoutSecs, nil)
+}
+
+// RunEnv is Run with extra child-process environment entries
+// (KEY=value strings, appended after os.Environ so they win on
+// duplicates). The native callgrind recipe uses it to inject
+// LD_PRELOAD for the allocation-counting run.
+func RunEnv(argv []string, stdin []byte, timeoutSecs int, extraEnv []string) (stdout, stderr []byte, err error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	setProcessGroup(cmd)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
