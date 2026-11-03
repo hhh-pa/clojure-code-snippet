@@ -114,10 +114,10 @@
                 (reset! base (vec (range n)))
                 (reset! used (vec (repeat n false)))
                 (swap! used assoc root true)
-                (loop [q [root]]
+                (loop [q (conj clojure.lang.PersistentQueue/EMPTY root)]
                   (if (empty? q)
                     false
-                    (let [v (first q) rst (vec (rest q))
+                    (let [v (peek q) rst (pop q)
                           res (atom nil) nq (atom rst)]
                       (doseq [to (nth @g v)]
                         (when (nil? @res)

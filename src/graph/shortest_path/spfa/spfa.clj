@@ -85,12 +85,12 @@
                          (cond (> i n) true
                                :else (let [nx (nth @par x)]
                                        (cond (= nx -1) false (= nx v) true :else (recur nx (inc i)))))))]
-      (loop [q [s]]
+      (loop [q (conj clojure.lang.PersistentQueue/EMPTY s)]
         (if (empty? q)
           (println (clojure.string/join " " (map #(if (>= % (quot inf 2)) "INF" (str %)) @dist)))
-          (let [u (first q)]
+          (let [u (peek q)]
             (swap! inq assoc u false)
-            (let [neg (atom false) nq (atom (vec (rest q)))]
+            (let [neg (atom false) nq (atom (pop q))]
               (doseq [[v w] (nth adj u)]
                 (when (and (not @neg) (< (+ (nth @dist u) w) (nth @dist v)))
                   (swap! dist assoc v (+ (nth @dist u) w))

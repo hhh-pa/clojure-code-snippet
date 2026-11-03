@@ -88,22 +88,23 @@
         (loop [flow 0 tot 0]
           (let [dist (atom (assoc (vec (repeat n inf)) s 0))
                 par (atom (vec (repeat n -1)))]
-            (loop [h [[0 s]]]
-              (when (seq h)
-                (let [[[du u] & rest-h] h
-                      pushes (atom [])]
-                  (if (not= du (nth @dist u))
-                    (recur (vec rest-h))
-                    (do
-                      (doseq [v (range n)]
-                        (when (pos? (nth (nth @res u) v))
-                          (let [rc (+ (nth (nth @cost u) v) (nth @pi u) (- (nth @pi v)))
-                                nd (+ (nth @dist u) rc)]
-                            (when (< nd (nth @dist v))
-                              (swap! dist assoc v nd)
-                              (swap! par assoc v u)
-                              (swap! pushes conj [nd v])))))
-                      (recur (vec (sort (concat rest-h @pushes)))))))))
+            (let [h (java.util.PriorityQueue. 11 ^java.util.Comparator (reify java.util.Comparator (compare [_ a b] (clojure.core/compare a b))))]
+              (.add h [0 s])
+              (loop []
+                (when (pos? (.size h))
+                  (let [[du u] (.poll h)]
+                    (if (not= du (nth @dist u))
+                      (recur)
+                      (do
+                        (doseq [v (range n)]
+                          (when (pos? (nth (nth @res u) v))
+                            (let [rc (+ (nth (nth @cost u) v) (nth @pi u) (- (nth @pi v)))
+                                  nd (+ (nth @dist u) rc)]
+                              (when (< nd (nth @dist v))
+                                (swap! dist assoc v nd)
+                                (swap! par assoc v u)
+                                (.add h [nd v])))))
+                        (recur)))))))
             (if (= (nth @par t) -1)
               (println (str flow " " tot))
               (do

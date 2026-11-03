@@ -78,20 +78,20 @@
           wife (atom (vec (repeat n -1)))
           husb (atom (vec (repeat n -1)))
           nxt (atom (vec (repeat n 0)))]
-      (loop [free (vec (range n))]
+      (loop [free (into clojure.lang.PersistentQueue/EMPTY (range n))]
         (when (seq free)
-          (let [m (first free)
+          (let [m (peek free)
                 w (nth (nth mp m) (nth @nxt m))]
             (swap! nxt assoc m (inc (nth @nxt m)))
             (cond (= (nth @husb w) -1)
                   (do (swap! wife assoc m w) (swap! husb assoc w m)
-                      (recur (vec (rest free))))
+                      (recur (pop free)))
                   (< (nth (nth rank w) m) (nth (nth rank w) (nth @husb w)))
                   (let [ex (nth @husb w)]
                     (swap! wife assoc ex -1)
                     (swap! wife assoc m w)
                     (swap! husb assoc w m)
-                    (recur (vec (concat (rest free) [ex]))))
-                  :else (recur (vec (concat (rest free) [m])))))))
+                    (recur (conj (pop free) ex)))
+                  :else (recur (conj (pop free) m))))))
       (doseq [m (range n)]
         (println (str m " " (nth @wife m)))))))
