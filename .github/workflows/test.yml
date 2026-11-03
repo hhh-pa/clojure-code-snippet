@@ -230,6 +230,31 @@ jobs:
           packages: time linux-tools-common linux-tools-generic valgrind gcc
           version: 1.2
 
+      # Valgrind gate: the apt cache key embeds apt-resolved
+      # package versions, which differ across runner image
+      # builds (run 41713792243: linux-tools 7.0.0-38.38 on
+      # image 20261025 vs 7.0.0-42.42 on 20261101) — and the
+      # -38 entry is degenerate ("Restoring 0 packages"), so
+      # those legs install green yet get NO valgrind.
+      # `snip measure` then only warns and records
+      # callgrind_repeat 0: 9 of 16 shards green but vacuous.
+      # So probe exactly what snip probes (valgrind on PATH +
+      # `valgrind --version` exit 0 within 30s); on failure
+      # reinstall once from apt, and fail LOUDLY if valgrind
+      # is still unusable — never again a green vacuous shard.
+      - name: Verify valgrind usable
+        run: |
+          usable() { command -v valgrind >/dev/null && timeout 30 valgrind --version >/dev/null 2>&1; }
+          if ! usable; then
+            echo "cached valgrind unusable; reinstalling from apt"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall time linux-tools-common linux-tools-generic valgrind gcc
+          fi
+          command -v valgrind
+          ver=$(timeout 30 valgrind --version)
+          echo "$ver"
+          echo "valgrind: $ver" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Measure callgrind sweep (deterministic metrics)
         # Lean recipe: one timed run (stdout gate) + the callgrind
         # phase per case (JVM: one -Xint+EpsilonGC run; native: one
