@@ -39,8 +39,9 @@
 (def INFLL 4000000000000000000)
 
 (defn dv-round [N cost nbr dist nx]
-  (let [adv (mapv (fn [i] (mapv (fn [nb] (mapv (fn [d] (if (and (= (nth (nth nx i) d) nb) (not= d i)) INFLL (nth (nth dist i) d))) (range N))) (range N)))
-                  (range N))]
+  ;; advertised value of nb's route to d as heard by i (split horizon
+  ;; with poison reverse), computed on demand instead of an N^3 table.
+  (let [advd (fn [nb i d] (if (and (= (nth (nth nx nb) d) i) (not= d nb)) INFLL (nth (nth dist nb) d)))]
     (loop [i 0 nd dist nn nx ch false]
       (if (>= i N) [nd nn ch]
         (let [[nd2 nn2 ch2] (loop [d 0 a nd b nn c ch]
@@ -49,7 +50,7 @@
                                   (let [[best bn] (loop [nbs (nth nbr i) bst INFLL bbn -1]
                                                     (if (empty? nbs) [bst bbn]
                                                       (let [nb (first nbs)
-                                                            av (nth (nth (nth adv nb) i) d)
+                                                            av (advd nb i d)
                                                             cand (if (>= av (quot INFLL 2)) INFLL (+ (nth (nth cost i) nb) av))]
                                                         (recur (rest nbs)
                                                                (if (or (< cand bst) (and (= cand bst) (or (= bbn -1) (< nb bbn)))) cand bst)

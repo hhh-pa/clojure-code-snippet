@@ -92,7 +92,7 @@
                                               (if (< idx (count lst)) (nth lst idx) inf)))
                         best (reduce (fn [b c] (let [x (nu c) y (nu b)]
                                                  (if (or (> x y) (and (= x y) (< c b))) c b)))
-                                     (first (sort @cache)) (rest (sort @cache)))]
+                                     (first @cache) @cache)]
                     (swap! cache disj best)
                     (swap! cache conj p))))))
           (println @faults))))))

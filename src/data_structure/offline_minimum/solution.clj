@@ -56,7 +56,11 @@
         [ans has _] (loop [rs (seq ins) ans (vec (repeat m 0)) has (vec (repeat m false)) p (vec (range (+ m 1)))]
                       (if (nil? rs) [ans has p]
                         (let [[[v t] & more] rs
-                              j0 (loop [j 0] (cond (>= j m) m (> (nth epos j) t) j :else (recur (+ j 1))))
+                              ;; first extract position strictly after t (epos is sorted)
+                              j0 (loop [lo 0 hi m]
+                                   (if (>= lo hi) lo
+                                     (let [mid (quot (+ lo hi) 2)]
+                                       (if (> (nth epos mid) t) (recur lo mid) (recur (+ mid 1) hi)))))
                               [p2 j] (dsu-find p j0)]
                           (if (< j m)
                             (recur more (assoc ans j v) (assoc has j true)

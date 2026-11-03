@@ -7,9 +7,9 @@
           vals (mapv #(Double/parseDouble %) (subvec (vec toks) 3 (+ 3 n)))
           result (loop [v vals r 0]
                    (if (>= r R) v
-                     (let [nv (mapv (fn [i] (let [recvd (sort v) lo f hi (- n f)]
-                                              (if (<= hi lo) (nth v i)
-                                                (/ (reduce + (subvec (vec recvd) lo hi)) (- hi lo))))) (range n))]
+                     (let [recvd (vec (sort v)) lo f hi (- n f)
+                           avg (when (> hi lo) (/ (reduce + (subvec recvd lo hi)) (- hi lo)))
+                           nv (mapv (fn [i] (if (<= hi lo) (nth v i) avg)) (range n))]
                        (recur nv (inc r)))))]
       (doseq [i (range n)] (println (fmt "P%d: %.6f" i (nth result i)))))))
 (-main (slurp *in*))
