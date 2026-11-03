@@ -9,13 +9,19 @@ package measure
 // TimeFormat is the GNU time -f layout (TIME_FORMAT).
 const TimeFormat = "wall=%e user=%U sys=%S maxrss_kb=%M cpu_pct=%P major_faults=%F minor_faults=%R"
 
+// DefaultCallgrindXmx is the fixed EpsilonGC heap for the JVM
+// callgrind recipe (--callgrind-xmx overrides it for big-heap
+// slow legs such as beam_search).
+const DefaultCallgrindXmx = "2g"
+
 // PerfEvents are the user-space counters (PERF_EVENTS).
 const PerfEvents = "instructions:u,cycles:u"
 
 // ToolVersion tags the report; 3 adds the optional callgrind/aot
 // fields, 4 the callgrind_allocated_bytes signal, 5 the native
-// callgrind recipe plus runtime_version provenance.
-const ToolVersion = 5
+// callgrind recipe plus runtime_version provenance, 6 the
+// --exclude/--callgrind-xmx/--callgrind-include-exempt provenance.
+const ToolVersion = 6
 
 // DefaultCommandTemplate runs snippets on the JVM.
 const DefaultCommandTemplate = "java -cp {cp} clojure.main {script}"

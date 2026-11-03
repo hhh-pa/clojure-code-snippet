@@ -283,6 +283,8 @@ func IsAllocShimSkip(runErr string) bool {
 // by definition (the callgrind recipe uses the same EpsilonGC
 // flags), so they skip outright instead of OOMing. The native leg
 // has no fixed heap, so it never skips for size reasons.
+// MeasureCase ignores this reason under --callgrind-include-exempt
+// (slow legs pair it with a bigger --callgrind-xmx).
 func CallgrindSkipReason(label string, javaLeg bool) string {
 	if javaLeg && allocExempt(label) {
 		return "EpsilonGC-exempt workload exceeds the fixed callgrind heap"
@@ -294,11 +296,12 @@ func CallgrindSkipReason(label string, javaLeg bool) string {
 // returns stdout plus total Ir and total allocation, dispatching on
 // the resolved argv0: the JVM recipe (below) for java, the native
 // recipe (no JVM flags, LD_PRELOAD-counted allocation) otherwise.
-func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+// xmx sizes the JVM recipe's EpsilonGC heap (ignored off-JVM).
+func CallgrindOnce(inner []string, inputPath string, timeout int, xmx string) ([]byte, int64, int64, string) {
 	if !InnerIsJava(inner) {
 		return nativeCallgrindOnce(inner, inputPath, timeout)
 	}
-	return jvmCallgrindOnce(inner, inputPath, timeout)
+	return jvmCallgrindOnce(inner, inputPath, timeout, xmx)
 }
 
 // jvmCallgrindOnce runs inner once under valgrind callgrind with the
@@ -307,7 +310,7 @@ func CallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64
 // The allocation comes from the JVM's own GC log, not from valgrind:
 // valgrind-side heap profilers (Massif/DHAT) see only HotSpot's
 // bulk-mmaped heap reservation, never Java objects.
-func jvmCallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+func jvmCallgrindOnce(inner []string, inputPath string, timeout int, xmx string) ([]byte, int64, int64, string) {
 	input, err := os.ReadFile(inputPath)
 	if err != nil {
 		return nil, 0, 0, "open input: " + err.Error()
@@ -322,7 +325,11 @@ func jvmCallgrindOnce(inner []string, inputPath string, timeout int) ([]byte, in
 		return nil, 0, 0, "epsilon log unreadable: " + err.Error()
 	}
 	defer os.Remove(gcFile)
-	jvmFlags := append([]string{"-Xint"}, EpsilonFlags...)
+	heap, err := EpsilonHeapFlags(xmx)
+	if err != nil {
+		return nil, 0, 0, err.Error()
+	}
+	jvmFlags := append([]string{"-Xint"}, heap...)
 	jvmFlags = append(jvmFlags, "-XX:-UsePerfData", "-Xlog:gc:"+gcFile)
 	cmd := []string{"valgrind", "--tool=callgrind",
 		"--cache-sim=no", "--branch-sim=no", "--collect-jumps=no",
@@ -503,22 +510,24 @@ func (c *AOTCache) Get(label, stem, script string) (*aot.Built, error) {
 
 // CaseOpts bundles MeasureCase inputs.
 type CaseOpts struct {
-	TimeBin         string
-	UsePerf         bool
-	Template        string
-	Classpath       string
-	Label           string
-	Stem            string
-	Script          string
-	Case            string
-	InputPath       string
-	OutputPath      string
-	Repeat          int
-	AllocRepeat     int
-	CallgrindRepeat int
-	Timeout         int
-	Root            string
-	AOT             *AOTCache // nil for script mode
+	TimeBin             string
+	UsePerf             bool
+	Template            string
+	Classpath           string
+	Label               string
+	Stem                string
+	Script              string
+	Case                string
+	InputPath           string
+	OutputPath          string
+	Repeat              int
+	AllocRepeat         int
+	CallgrindRepeat     int
+	CallgrindXmx        string
+	CallgrindInclExempt bool
+	Timeout             int
+	Root                string
+	AOT                 *AOTCache // nil for script mode
 }
 
 // innerCommand resolves the snippet argv for script or AOT mode.
@@ -535,6 +544,9 @@ func (o CaseOpts) innerCommand() ([]string, error) {
 
 // MeasureCase ports measure_case with the callgrind phase appended.
 func MeasureCase(o CaseOpts) CaseResult {
+	if o.CallgrindXmx == "" {
+		o.CallgrindXmx = DefaultCallgrindXmx
+	}
 	res := CaseResult{
 		Label: o.Label, Stem: o.Stem, Case: o.Case,
 		Runs: []RunMetrics{}, AllocRuns: []int64{},
@@ -599,7 +611,7 @@ func MeasureCase(o CaseOpts) CaseResult {
 		res.Summary.AllocatedBytes = SummarizeAlloc(res.AllocRuns)
 	}
 	if o.CallgrindRepeat > 0 {
-		if reason := CallgrindSkipReason(o.Label, InnerIsJava(inner)); reason != "" {
+		if reason := CallgrindSkipReason(o.Label, InnerIsJava(inner)); reason != "" && !o.CallgrindInclExempt {
 			res.CallgrindSkipped = &reason
 			fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: callgrind skipped (%s)\n",
 				o.Label, o.Stem, o.Case, reason)
@@ -609,7 +621,7 @@ func MeasureCase(o CaseOpts) CaseResult {
 		var irs []int64
 		var cgAllocs []int64
 		for i := 0; i < o.CallgrindRepeat; i++ {
-			stdout, ir, used, runErr := CallgrindOnce(inner, o.InputPath, o.Timeout)
+			stdout, ir, used, runErr := CallgrindOnce(inner, o.InputPath, o.Timeout, o.CallgrindXmx)
 			if runErr != "" {
 				if IsCallgrindTimeout(runErr) || IsAllocShimSkip(runErr) {
 					skip := runErr

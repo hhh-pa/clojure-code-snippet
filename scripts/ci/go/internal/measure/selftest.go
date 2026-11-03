@@ -209,6 +209,8 @@ func selfChecks() []snipcore.Check {
 		bmf3["a/s"].CallgrindAllocatedBytes.Value.Float64() == 300 &&
 		bmf3["a/s"].AllocatedBytes == nil, fmt.Sprintf("%+v", bmf3["a/s"]))
 
+	checkFilter(check)
+
 	checkMerge(check)
 
 	cgOut := "# callgrind format\nversion: 1\nsummary: 6615963986\n"
@@ -336,6 +338,42 @@ func checkMerge(check func(string, bool, string)) {
 			{Label: "a", Stem: "s", Case: "c1", Ok: true, Summary: &s1},
 			{Label: "a", Stem: "s", Case: "c2", Ok: true, Summary: &s1},
 		}, cxA)), fmt.Sprintf("%v", err))
+}
+
+func checkFilter(check func(string, bool, string)) {
+	split := SplitFilterList("a/b, c/d ,,")
+	check("filter-split", equalStrings(split, []string{"a/b", "c/d"}), fmt.Sprintf("%q", split))
+	check("filter-split-empty", len(SplitFilterList("")) == 0 && len(SplitFilterList(" , ")) == 0, "")
+
+	pats := SplitFilterList("graph/shortest_path/dijkstrashortreach,search/beam_search")
+	// Full benchmark names pin one stem without catching label
+	// siblings; plain labels keep the old substring behavior.
+	matchOK := FilterMatch("graph/shortest_path", "dijkstrashortreach", pats) &&
+		FilterMatch("search/beam_search", "beam_search", pats) &&
+		!FilterMatch("graph/shortest_path", "bellman_ford", pats) &&
+		!FilterMatch("graph/shortest_path", "bfsshortreach", pats) &&
+		!FilterMatch("sort/bubble_sort", "bubble_sort", pats) &&
+		!FilterMatch("search/beam_search", "beam_search", nil)
+	check("filter-match", matchOK, "")
+
+	heap, err := EpsilonHeapFlags("8g")
+	heapOK := err == nil && equalStrings(heap, []string{
+		"-XX:+UnlockExperimentalVMOptions",
+		"-XX:+UseEpsilonGC",
+		"-Xms8g",
+		"-Xmx8g",
+	})
+	check("filter-heap-8g", heapOK, fmt.Sprintf("%q %v", heap, err))
+	defHeap, err := EpsilonHeapFlags(DefaultCallgrindXmx)
+	check("filter-heap-default", err == nil && equalStrings(defHeap, EpsilonFlags),
+		fmt.Sprintf("%q %v", defHeap, err))
+	bad := 0
+	for _, size := range []string{"", "8", "8gb", "g", "8t", "-Xmx8g"} {
+		if _, err := EpsilonHeapFlags(size); err != nil {
+			bad++
+		}
+	}
+	check("filter-heap-rejects", bad == 6, fmt.Sprintf("%d", bad))
 }
 
 func marshalBMF(bmf BMF) string {

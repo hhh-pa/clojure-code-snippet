@@ -86,7 +86,11 @@ func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 		}
 		// Callgrind noise is one-sided like allocation (cold
 		// paths only add instructions), so the minimum is the
-		// point estimate here too.
+		// point estimate here too. This sum-of-per-case-MIN Ir
+		// is the cross-repo comparison rule (issue #40): the
+		// python twin aggregates the same way, so JVM,
+		// clojure-rs, and CPython BMF values compare directly.
+		// Benchmark names stay stable across the rule change.
 		if len(cgs) == len(summaries) && len(summaries) > 0 {
 			mins := make([]pyjson.Num, 0, len(cgs))
 			maxs := make([]pyjson.Num, 0, len(cgs))

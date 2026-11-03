@@ -40,16 +40,19 @@ type Runtime struct {
 // because old reports may omit it (rendered "n/a" like Python's
 // .get default); live runs always set it.
 type Config struct {
-	Repeat          int     `json:"repeat"`
-	Jobs            int     `json:"jobs"`
-	Timeout         int     `json:"timeout"`
-	Only            string  `json:"only"`
-	Shard           *string `json:"shard"`
-	AllocRepeat     *int    `json:"alloc_repeat"`
-	Slope           bool    `json:"slope"`
-	SlopeRepeat     int     `json:"slope_repeat"`
-	CallgrindRepeat int     `json:"callgrind_repeat"`
-	Aot             bool    `json:"aot"`
+	Repeat              int     `json:"repeat"`
+	Jobs                int     `json:"jobs"`
+	Timeout             int     `json:"timeout"`
+	Only                string  `json:"only"`
+	Exclude             string  `json:"exclude"`
+	Shard               *string `json:"shard"`
+	AllocRepeat         *int    `json:"alloc_repeat"`
+	Slope               bool    `json:"slope"`
+	SlopeRepeat         int     `json:"slope_repeat"`
+	CallgrindRepeat     int     `json:"callgrind_repeat"`
+	CallgrindXmx        string  `json:"callgrind_xmx"`
+	CallgrindInclExempt bool    `json:"callgrind_include_exempt"`
+	Aot                 bool    `json:"aot"`
 }
 
 // Report is the full perf-report JSON document.

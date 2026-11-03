@@ -34,25 +34,33 @@ cpu_s, maxrss_kb, allocated_bytes, instructions/cycles, plus (under the
 new flags) callgrind instruction counts and AOT-compiled runs.
 
 Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
-                   [--only SUBSTR] [--output F] [--bmf-output F]
+                   [--only LIST] [--exclude LIST] [--output F] [--bmf-output F]
                    [--summary-file F] [--time-bin BIN] [--no-perf]
                    [--runtime NAME] [--command-template T] [--shard K/N]
                    [--alloc-repeat N | --no-alloc] [--slope]
-                   [--callgrind] [--callgrind-repeat N] [--aot]
-                   [--aot-cache DIR]
+                   [--callgrind] [--callgrind-repeat N] [--callgrind-xmx SIZE]
+                   [--callgrind-include-exempt] [--aot] [--aot-cache DIR]
 
        snip measure --merge INPUT... [--output F] [--bmf-output F]
                    [--summary-file F]
 
        snip measure --self-test
+
+--only/--exclude take comma-separated substrings; a task matches
+when its label or label/stem benchmark name contains any of them.
+--exclude drops matches (main sweep shards skip the slow legs'
+benchmarks); --callgrind-xmx sizes the JVM callgrind EpsilonGC
+heap (default 2g); --callgrind-include-exempt runs EpsilonGC-exempt
+labels in the callgrind phase instead of skipping them.
 `
 
 func runMeasure(argv []string) int {
 	root := snipcore.RepoRoot()
 	resources := filepath.Join(root, "tests", "resources")
-	var cp, only, output, bmfOutput, summaryFile, timeBin, shard, aotCache string
+	var cp, only, exclude, output, bmfOutput, summaryFile, timeBin, shard, aotCache string
 	runtimeName := "jvm"
 	template := measure.DefaultCommandTemplate
+	callgrindXmx := measure.DefaultCallgrindXmx
 	jobs := 1
 	timeout := 120
 	repeat := 5
@@ -67,13 +75,16 @@ func runMeasure(argv []string) int {
 	selfTest := false
 	aotFlag := false
 	callgrind := false
+	callgrindInclExempt := false
 	positionals, err := parseFlags("measure", argv, flagSpec{
 		Strs: map[string]*string{
 			"resources": &resources, "cp": &cp, "only": &only,
-			"output": &output, "bmf-output": &bmfOutput,
+			"exclude": &exclude,
+			"output":  &output, "bmf-output": &bmfOutput,
 			"summary-file": &summaryFile, "time-bin": &timeBin,
 			"runtime": &runtimeName, "command-template": &template,
 			"shard": &shard, "aot-cache": &aotCache,
+			"callgrind-xmx": &callgrindXmx,
 		},
 		Ints: map[string]*int{
 			"jobs": &jobs, "timeout": &timeout, "repeat": &repeat,
@@ -84,7 +95,8 @@ func runMeasure(argv []string) int {
 			"perf": &perf, "alloc": &alloc, "merge": &merge,
 			"slope": &slopeFlag, "slope-only": &slopeOnly,
 			"self-test": &selfTest, "aot": &aotFlag,
-			"callgrind": &callgrind,
+			"callgrind":                &callgrind,
+			"callgrind-include-exempt": &callgrindInclExempt,
 		},
 	})
 	if err != nil {
@@ -122,6 +134,10 @@ func runMeasure(argv []string) int {
 	}
 	if callgrindRepeat < 1 {
 		fmt.Fprintln(os.Stderr, "snip measure: --callgrind-repeat must be >= 1")
+		return 2
+	}
+	if _, err := measure.EpsilonHeapFlags(callgrindXmx); err != nil {
+		fmt.Fprintln(os.Stderr, "snip measure:", err)
 		return 2
 	}
 	var shardParsed *[2]int
@@ -169,11 +185,16 @@ func runMeasure(argv []string) int {
 	type task struct {
 		label, stem, caseName, script, inp, outp string
 	}
+	onlyPats := measure.SplitFilterList(only)
+	excludePats := measure.SplitFilterList(exclude)
 	var tasks []task
 	missing := []string{}
 	for _, entry := range found {
 		label := entry.Label
-		if only != "" && !strings.Contains(label, only) {
+		if only != "" && !measure.FilterMatch(label, entry.Stem, onlyPats) {
+			continue
+		}
+		if measure.FilterMatch(label, entry.Stem, excludePats) {
 			continue
 		}
 		if len(entry.Cases) == 0 {
@@ -249,6 +270,7 @@ func runMeasure(argv []string) int {
 					Script: t.script, Case: t.caseName, InputPath: t.inp,
 					OutputPath: t.outp, Repeat: repeat,
 					AllocRepeat: effectiveAlloc, CallgrindRepeat: effectiveCg,
+					CallgrindXmx: callgrindXmx, CallgrindInclExempt: callgrindInclExempt,
 					Timeout: timeout, Root: root, AOT: aotCacheObj,
 				})
 				n := done.Add(1)
@@ -309,7 +331,8 @@ func runMeasure(argv []string) int {
 				Script: req.Script, Case: req.CaseName, InputPath: req.InPath,
 				OutputPath: req.OutPath, Repeat: req.Repeat,
 				AllocRepeat: req.AllocRepeat, CallgrindRepeat: 0,
-				Timeout: req.Timeout, Root: root, AOT: aotCacheObj,
+				CallgrindXmx: callgrindXmx,
+				Timeout:      req.Timeout, Root: root, AOT: aotCacheObj,
 			})
 			out := slope.ScaleOutcome{Ok: res.Ok}
 			if !res.Ok {
@@ -374,9 +397,11 @@ func runMeasure(argv []string) int {
 		},
 		Config: measure.Config{
 			Repeat: repeat, Jobs: jobs, Timeout: timeout, Only: only,
-			Shard: strOrNil(shard), AllocRepeat: &effectiveAlloc,
+			Exclude: exclude,
+			Shard:   strOrNil(shard), AllocRepeat: &effectiveAlloc,
 			Slope: slopeFlag, SlopeRepeat: slopeRepeat,
-			CallgrindRepeat: effectiveCg, Aot: aotFlag,
+			CallgrindRepeat: effectiveCg, CallgrindXmx: callgrindXmx,
+			CallgrindInclExempt: callgrindInclExempt, Aot: aotFlag,
 		},
 		Results: results, Failures: failures, Missing: missing,
 		Complexity: complexity,

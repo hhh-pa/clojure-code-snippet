@@ -126,6 +126,20 @@ jobs:
   # hardware x ~220 cases/shard / 2 jobs ~= 40min per shard.
   # A valgrind/toolchain failure fails the push (unlike the
   # pilot): the sweep is a required signal.
+  #
+  # Comparison rule (issue #40): Ir is the sum of per-case MIN
+  # instruction counts (least-disturbed run) — the python twin
+  # aggregates the same way, so JVM, clojure-rs, and CPython BMF
+  # values compare directly. Benchmark names never churn for the
+  # rule: history stays continuous.
+  #
+  # The 13 callgrind-slow benchmarks (issue #40) run in the
+  # dedicated perf-callgrind-slow legs below with a 3600s/case
+  # budget; the main shards exclude them via SLOW_EXCLUDE (kept
+  # in sync with the slow matrix) instead of burning 900s
+  # timeouts each. report-callgrind merges both and fails on any
+  # remaining callgrind skip, so no benchmark stays
+  # cross-check-exempt.
   perf-callgrind:
     needs: [test, resolve-rs]
     runs-on: ubuntu-latest
@@ -230,6 +244,18 @@ jobs:
           packages: time linux-tools-common linux-tools-generic valgrind gcc
           version: 1.2
 
+      # Slow-group exclusions, one comma list per runtime; each
+      # entry pins exactly one benchmark (label/stem match) and must
+      # equal the perf-callgrind-slow matrix's --only set for that
+      # runtime, so every benchmark runs exactly once per runtime.
+      - name: Select slow-group exclusions
+        run: |
+          if [ "${{ matrix.runtime }}" = "jvm" ]; then
+            echo "SLOW_EXCLUDE=data_structure/perfect_hashing/solution,data_structure/segment_tree/range_minimum_query,dp/edit_distance/solution,graph/shortest_path/dijkstrashortreach,search/beam_search/beam_search,string_related/automata/count_strings,string_related/boyer_moore/substring_searching,string_related/trie/no_prefix_set,string_related/z_function/substring_searching" >> "$GITHUB_ENV"
+          else
+            echo "SLOW_EXCLUDE=dp/edit_distance/solution,graph/shortest_path/dijkstrashortreach,search/bfs/ctci_bfs_shortest_reach,string_related/trie/no_prefix_set" >> "$GITHUB_ENV"
+          fi
+
       - name: Measure callgrind sweep (deterministic metrics)
         # Lean recipe: one timed run (stdout gate) + the callgrind
         # phase per case (JVM: one -Xint+EpsilonGC run; native: one
@@ -244,6 +270,7 @@ jobs:
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
             --repeat 1 --no-alloc --jobs 2 --timeout 900 \
             "${flags[@]}" \
+            --exclude "$SLOW_EXCLUDE" \
             --shard ${{ matrix.shard }}/8 \
             --callgrind --callgrind-repeat 1 \
             --output sweep-results.json --bmf-output sweep-bmf.json \
@@ -306,6 +333,254 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-${{ matrix.runtime }}-shard-${{ matrix.shard }}
+          path: |
+            sweep-results.json
+            sweep-bmf.json
+            sweep-bench.json
+
+  # Slow callgrind legs (issue #40): one job per callgrind-slow
+  # (benchmark, runtime) pair, each with a 3600s/case budget (vs
+  # 900s in the main shards) so the 13 Ir-missing benchmarks
+  # recover without stalling the fast path. The main shards
+  # exclude exactly this set (SLOW_EXCLUDE above); the legs merge
+  # back in report-callgrind, which fails on any remaining skip.
+  # --jobs is 1 for the memory-heavy legs (beam_search's 8g
+  # EpsilonGC heap; dijkstrashortreach's 5.4g clojure-rs RSS) and
+  # 2 elsewhere. beam_search pairs --callgrind-include-exempt with
+  # --callgrind-xmx 8g: its allocation exceeds the default 2g
+  # EpsilonGC heap, so the default recipe skips it outright.
+  # Snippet-side cures for the trie/edit_distance-class timeouts
+  # ride PR #45; these legs recover whatever timeout budget alone
+  # can recover, and shrink once #45 lands.
+  perf-callgrind-slow:
+    needs: [test, resolve-rs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: jvm
+            benchmark: data_structure/perfect_hashing/solution
+            tag: data_structure-perfect_hashing-solution
+            jobs: 2
+            args: ''
+          - runtime: jvm
+            benchmark: data_structure/segment_tree/range_minimum_query
+            tag: data_structure-segment_tree-range_minimum_query
+            jobs: 2
+            args: ''
+          - runtime: jvm
+            benchmark: dp/edit_distance/solution
+            tag: dp-edit_distance-solution
+            jobs: 2
+            args: ''
+          - runtime: jvm
+            benchmark: graph/shortest_path/dijkstrashortreach
+            tag: graph-shortest_path-dijkstrashortreach
+            jobs: 1
+            args: ''
+          - runtime: jvm
+            benchmark: search/beam_search/beam_search
+            tag: search-beam_search-beam_search
+            jobs: 1
+            args: '--callgrind-xmx 8g --callgrind-include-exempt'
+          - runtime: jvm
+            benchmark: string_related/automata/count_strings
+            tag: string_related-automata-count_strings
+            jobs: 2
+            args: ''
+          - runtime: jvm
+            benchmark: string_related/boyer_moore/substring_searching
+            tag: string_related-boyer_moore-substring_searching
+            jobs: 2
+            args: ''
+          - runtime: jvm
+            benchmark: string_related/trie/no_prefix_set
+            tag: string_related-trie-no_prefix_set
+            jobs: 2
+            args: ''
+          - runtime: jvm
+            benchmark: string_related/z_function/substring_searching
+            tag: string_related-z_function-substring_searching
+            jobs: 2
+            args: ''
+          - runtime: clojure-rs
+            benchmark: dp/edit_distance/solution
+            tag: dp-edit_distance-solution
+            jobs: 2
+            args: ''
+          - runtime: clojure-rs
+            benchmark: graph/shortest_path/dijkstrashortreach
+            tag: graph-shortest_path-dijkstrashortreach
+            jobs: 1
+            args: ''
+          - runtime: clojure-rs
+            benchmark: search/bfs/ctci_bfs_shortest_reach
+            tag: search-bfs-ctci_bfs_shortest_reach
+            jobs: 2
+            args: ''
+          - runtime: clojure-rs
+            benchmark: string_related/trie/no_prefix_set
+            tag: string_related-trie-no_prefix_set
+            jobs: 2
+            args: ''
+    name: perf-callgrind-slow (${{ matrix.runtime }} ${{ matrix.benchmark }})
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/profile-runner
+        with:
+          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
+      - uses: ./.github/actions/snip-tools
+        with:
+          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
+
+      - name: Set up JDK 21
+        if: matrix.runtime == 'jvm'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21.0.13'
+
+      - name: Cache Clojure jars
+        if: matrix.runtime == 'jvm'
+        id: jars-cache
+        uses: actions/cache@v5
+        with:
+          path: .ci/jars
+          key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
+
+      - name: Download Clojure jars
+        if: matrix.runtime == 'jvm' && steps.jars-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .ci/jars
+          base=https://repo1.maven.org/maven2
+          curl -fsSL -o .ci/jars/clojure.jar "$base/org/clojure/clojure/1.12.0/clojure-1.12.0.jar"
+          curl -fsSL -o .ci/jars/spec.alpha.jar "$base/org/clojure/spec.alpha/0.5.238/spec.alpha-0.5.238.jar"
+          curl -fsSL -o .ci/jars/core.specs.alpha.jar "$base/org/clojure/core.specs.alpha/0.4.74/core.specs.alpha-0.4.74.jar"
+
+      - name: Install Rust toolchain
+        if: matrix.runtime == 'clojure-rs'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check out clojure-rs
+        if: matrix.runtime == 'clojure-rs'
+        uses: actions/checkout@v7
+        with:
+          repository: hhh-pa/clojure
+          ref: ${{ needs.resolve-rs.outputs.sha }}
+          path: clojure-rs
+
+      - name: Cache cargo build
+        if: matrix.runtime == 'clojure-rs'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clojure-rs/rust
+
+      - name: Build clojure-rs
+        if: matrix.runtime == 'clojure-rs'
+        run: |
+          cd clojure-rs/rust
+          cargo build --release --locked --no-default-features
+          mkdir -p "$GITHUB_WORKSPACE/cljrs-bin"
+          cp target/release/clojure-rs "$GITHUB_WORKSPACE/cljrs-bin/"
+          echo "$GITHUB_WORKSPACE/cljrs-bin" >> "$GITHUB_PATH"
+
+      - name: Decrypt and extract resources
+        env:
+          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
+        run: |
+          if [ -z "$RESOURCES_PASSPHRASE" ]; then
+            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
+            exit 1
+          fi
+          mkdir -p tests/resources
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$RESOURCES_PASSPHRASE" \
+            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
+
+      - name: Install measurement tools
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: time linux-tools-common linux-tools-generic valgrind gcc
+          version: 1.2
+
+      - name: Measure slow benchmark (3600s/case budget)
+        run: |
+          flags=(--runtime "${{ matrix.runtime }}")
+          if [ "${{ matrix.runtime }}" = "clojure-rs" ]; then
+            flags+=(--command-template 'clojure-rs run {script}')
+          fi
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
+            --repeat 1 --no-alloc --jobs ${{ matrix.jobs }} --timeout 3600 \
+            "${flags[@]}" \
+            --only '${{ matrix.benchmark }}' \
+            ${{ matrix.args }} \
+            --callgrind --callgrind-repeat 1 \
+            --output sweep-results.json --bmf-output sweep-bmf.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      # A typo'd --only would silently drop the benchmark from the
+      # merge (zero cases, exit 0); fail the leg instead.
+      - name: Require non-empty slow leg
+        run: |
+          n=$(jq '.results | length' sweep-results.json)
+          if [ "$n" = "0" ]; then
+            echo "error: --only '${{ matrix.benchmark }}' matched no cases; fix the slow matrix" >&2
+            exit 1
+          fi
+
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@main
+
+      # Same threshold policy as the main shards (see above): one
+      # benchmark x 2 measures per slow leg.
+      - name: Track callgrind benchmarks with Bencher
+        run: |
+          jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
+            sweep-bmf.json > sweep-bench.json
+          if [ "$(jq 'length' sweep-bench.json)" = "0" ]; then
+            echo "no callgrind data in leg; skipping Bencher report"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            bencher run \
+              --project clojure-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.head_ref }}" \
+              --hash "${{ github.event.pull_request.head.sha }}" \
+              --start-point "${{ github.base_ref }}" \
+              --start-point-hash "${{ github.event.pull_request.base.sha }}" \
+              --start-point-clone-thresholds \
+              --testbed ubuntu-latest-${{ matrix.runtime }} \
+              --adapter json \
+              --file sweep-bench.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          else
+            bencher run \
+              --project clojure-code-snippet \
+              --key '${{ secrets.BENCHER_API_KEY }}' \
+              --branch "${{ github.ref_name }}" \
+              --testbed ubuntu-latest-${{ matrix.runtime }} \
+              --threshold-measure callgrind_instructions \
+              --threshold-test percentage \
+              --threshold-min-sample-size 10 \
+              --threshold-max-sample-size 64 \
+              --threshold-upper-boundary 0.01 \
+              --adapter json \
+              --file sweep-bench.json \
+              --github-actions "${{ secrets.GITHUB_TOKEN }}"
+          fi
+
+      - name: Upload slow-leg results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-${{ matrix.runtime }}-slow-${{ matrix.tag }}
           path: |
             sweep-results.json
             sweep-bmf.json
@@ -391,7 +666,7 @@ jobs:
             pilot-aot-bmf.json
 
   report-callgrind:
-    needs: perf-callgrind
+    needs: [perf-callgrind, perf-callgrind-slow]
     runs-on: ubuntu-latest
     # No Bencher run here by design: one merged ~394-benchmark
     # file would re-truncate the check summary (T11).
@@ -416,6 +691,11 @@ jobs:
         with:
           pattern: sweep-results-${{ matrix.runtime }}-shard-*
 
+      - name: Download slow-leg results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: sweep-results-${{ matrix.runtime }}-slow-*
+
       - name: Merge sweep reports
         run: |
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge sweep-results-*/sweep-results.json \
@@ -424,11 +704,25 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       # The merge must equal the plain BMF union: sharding is
-      # snippet-cohesive, so no benchmark straddles two shards.
+      # snippet-cohesive, and each slow leg owns exactly one
+      # benchmark the main shards exclude, so no benchmark
+      # straddles two inputs.
       - name: Verify merge matches per-shard BMFs
         run: |
           jq -s 'add' sweep-results-*/sweep-bmf.json > sweep-bmf-jq.json
           diff <(jq -S . sweep-bmf-merged.json) <(jq -S . sweep-bmf-jq.json)
+
+      # Issue #40 acceptance: no benchmark stays cross-check-exempt.
+      # Any callgrind skip (timeout past 3600s, or an exempt label
+      # escaping its slow leg) fails the merge loudly.
+      - name: Require complete callgrind coverage
+        run: |
+          skipped=$(jq '[.results[] | select(.callgrind_skipped != null)] | length' sweep-results-merged.json)
+          if [ "$skipped" != "0" ]; then
+            echo "error: $skipped case(s) lack callgrind data; every benchmark must recover (issue #40)" >&2
+            jq -r '.results[] | select(.callgrind_skipped != null) | "\(.label)/\(.stem)/\(.case): \(.callgrind_skipped)"' sweep-results-merged.json >&2
+            exit 1
+          fi
 
       - name: Upload merged sweep results
         if: always()
