@@ -180,13 +180,23 @@ jobs:
       # `run` needs just the interpreter crates). The revision is
       # master HEAD resolved once per run (see resolve-rs); the
       # sweep diff-gates every case, so a bad upstream commit fails
-      # loudly, and Bencher shows the perf delta.
-      - name: Install Rust toolchain
+      # loudly, and Bencher shows the perf delta. The built binary is
+      # cached by resolved SHA: repeat runs on the same upstream
+      # revision skip checkout + toolchain + build on all 8 legs.
+      - name: Restore cached clojure-rs binary
+        id: cljrs-bin-cache
         if: matrix.runtime == 'clojure-rs'
+        uses: actions/cache@v5
+        with:
+          path: cljrs-bin
+          key: cljrs-bin-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
+
+      - name: Install Rust toolchain
+        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Check out clojure-rs
-        if: matrix.runtime == 'clojure-rs'
+        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v7
         with:
           repository: hhh-pa/clojure
@@ -194,18 +204,28 @@ jobs:
           path: clojure-rs
 
       - name: Cache cargo build
-        if: matrix.runtime == 'clojure-rs'
+        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: clojure-rs/rust
 
       - name: Build clojure-rs
-        if: matrix.runtime == 'clojure-rs'
+        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         run: |
           cd clojure-rs/rust
           cargo build --release --locked --no-default-features
           mkdir -p "$GITHUB_WORKSPACE/cljrs-bin"
           cp target/release/clojure-rs "$GITHUB_WORKSPACE/cljrs-bin/"
+          echo "${{ needs.resolve-rs.outputs.sha }}" > "$GITHUB_WORKSPACE/cljrs-bin/.rev"
+
+      # Runs on hit AND miss (the build step above only runs on miss):
+      # the .rev marker proves the cached binary was built from the
+      # resolved revision — a mismatch fails loudly instead of
+      # benchmarking the wrong commit.
+      - name: Use clojure-rs binary
+        if: matrix.runtime == 'clojure-rs'
+        run: |
+          test "$(cat cljrs-bin/.rev)" = "${{ needs.resolve-rs.outputs.sha }}"
           echo "$GITHUB_WORKSPACE/cljrs-bin" >> "$GITHUB_PATH"
 
       - name: Decrypt and extract resources
