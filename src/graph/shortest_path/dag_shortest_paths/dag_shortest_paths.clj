@@ -79,21 +79,22 @@
           ind (atom (vec (repeat n 0)))
           _ (doseq [i (range m)] (let [v (nth nums (+ 4 (* i 3)))] (swap! ind assoc v (inc (nth @ind v)))))
           inf (bit-shift-left 1 60)
-          topo (let [h (java.util.PriorityQueue.)
+          topo (let [h (atom (sorted-set))
                        seen (atom (vec (repeat n false)))]
                    (doseq [v (range n)]
                      (when (zero? (nth @ind v))
-                       (.add h v)
+                       (swap! h conj v)
                        (swap! seen assoc v true)))
                    (loop [acc []]
-                     (if (zero? (.size h))
+                     (if (empty? @h)
                        acc
-                       (let [u (.poll h)]
+                       (let [u (first @h)]
+                         (swap! h disj u)
                          (doseq [[v _] (nth adj u)]
                            (swap! ind assoc v (dec (nth @ind v)))
                            (when (and (zero? (nth @ind v)) (not (nth @seen v)) (not= v u))
                              (swap! seen assoc v true)
-                             (.add h v)))
+                             (swap! h conj v)))
                          (recur (conj acc u))))))
           ds (atom (assoc (vec (repeat n inf)) s 0))
           dl (atom (assoc (vec (repeat n (- inf))) s 0))]

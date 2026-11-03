@@ -27,37 +27,35 @@
                       (recur (rest d) nxt))))))))))))
 (defn read-int [tok] (parse-token tok))
 
-(defn char-at [^String s ^long d] (if (< d (count s)) (int (.charAt s d)) -1))
+(defn char-at [s d] (if (< d (count s)) (int (nth s d)) -1))
 (defn three-way-str-qsort [a d]
   (let [n (count a)]
     (if (<= n 1) a
-      (let [^objects arr (object-array a)
-            stack (java.util.ArrayDeque.)]
-        (.push stack (long-array [0 (dec n) d]))
-        (while (not (.isEmpty stack))
-          (let [^longs rng (.pop stack)
-                lo (aget rng 0) hi (aget rng 1) dd (aget rng 2)]
-            (when (< lo hi)
-              (let [pivot-c (char-at (aget arr lo) dd)]
-                (loop [lt lo i lo gt hi]
-                  (if (> i gt)
-                    (do
-                      (.push stack (long-array [lo (dec lt) dd]))
-                      (.push stack (long-array [(inc gt) hi dd]))
-                      (when (not= pivot-c -1)
-                        (.push stack (long-array [lt gt (inc dd)]))))
-                    (let [c (char-at (aget arr i) dd)]
-                      (cond
-                        (< c pivot-c)
-                        (let [t (aget arr lt)]
-                          (aset arr lt (aget arr i)) (aset arr i t)
-                          (recur (inc lt) (inc i) gt))
-                        (> c pivot-c)
-                        (let [t (aget arr gt)]
-                          (aset arr gt (aget arr i)) (aset arr i t)
-                          (recur lt i (dec gt)))
-                        :else (recur lt (inc i) gt)))))))))
-        (vec arr)))))
+      (persistent!
+       (loop [arr (transient (vec a))
+              stack (list [0 (dec n) d])]
+         (if (empty? stack)
+           arr
+           (let [[lo hi dd] (peek stack)
+                 stack (pop stack)]
+             (if (<= hi lo)
+               (recur arr stack)
+               (let [pivot-c (char-at (nth arr lo) dd)
+                     [arr lt gt]
+                     (loop [arr arr lt lo i lo gt hi]
+                       (if (> i gt)
+                         [arr lt gt]
+                         (let [c (char-at (nth arr i) dd)]
+                           (cond
+                             (< c pivot-c)
+                             (let [t (nth arr lt)]
+                               (recur (assoc! arr lt (nth arr i) i t) (inc lt) (inc i) gt))
+                             (> c pivot-c)
+                             (let [t (nth arr gt)]
+                               (recur (assoc! arr gt (nth arr i) i t) lt i (dec gt)))
+                             :else (recur arr lt (inc i) gt)))))]
+                 (recur arr (cond-> (conj stack [lo (dec lt) dd] [(inc gt) hi dd])
+                              (not= pivot-c -1) (conj [lt gt (inc dd)]))))))))))))
 
 (defn -main []
   (let [input (slurp *in*) lines (clojure.string/split-lines input)

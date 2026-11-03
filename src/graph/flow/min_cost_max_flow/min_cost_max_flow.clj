@@ -88,11 +88,11 @@
         (loop [flow 0 tot 0]
           (let [dist (atom (assoc (vec (repeat n inf)) s 0))
                 par (atom (vec (repeat n -1)))]
-            (let [h (java.util.PriorityQueue. 11 ^java.util.Comparator (reify java.util.Comparator (compare [_ a b] (clojure.core/compare a b))))]
-              (.add h [0 s])
+            (let [h (atom (sorted-set [0 s]))]
               (loop []
-                (when (pos? (.size h))
-                  (let [[du u] (.poll h)]
+                (when (seq @h)
+                  (let [[du u] (first @h)]
+                    (swap! h disj [du u])
                     (if (not= du (nth @dist u))
                       (recur)
                       (do
@@ -103,7 +103,7 @@
                               (when (< nd (nth @dist v))
                                 (swap! dist assoc v nd)
                                 (swap! par assoc v u)
-                                (.add h [nd v])))))
+                                (swap! h conj [nd v])))))
                         (recur)))))))
             (if (= (nth @par t) -1)
               (println (str flow " " tot))

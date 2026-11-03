@@ -30,37 +30,35 @@
 (defn three-way-qsort [a]
   (let [n (count a)]
     (if (<= n 1) a
-      (let [^longs arr (long-array a)
-            stack (java.util.ArrayDeque.)]
-        (.push stack (long-array [0 (dec n)]))
-        (while (not (.isEmpty stack))
-          (let [^longs rng (.pop stack)
-                lo (aget rng 0) hi (aget rng 1)]
-            (when (< lo hi)
-              (let [pivot (aget arr (+ lo (quot (inc (- hi lo)) 2)))]
-                (loop [lt lo i lo gt hi]
-                  (if (> i gt)
-                    (do
-                      ;; Push the larger side first so the smaller side is
-                      ;; processed first; stack depth stays O(log n).
-                      (let [nl (- lt lo) nr (- hi gt)]
-                        (if (< nl nr)
-                          (do (.push stack (long-array [lo (dec lt)]))
-                              (.push stack (long-array [(inc gt) hi])))
-                          (do (.push stack (long-array [(inc gt) hi]))
-                              (.push stack (long-array [lo (dec lt)]))))))
-                    (let [x (aget arr i)]
-                      (cond
-                        (< x pivot)
-                        (let [t (aget arr lt)]
-                          (aset arr lt x) (aset arr i t)
-                          (recur (inc lt) (inc i) gt))
-                        (> x pivot)
-                        (let [t (aget arr gt)]
-                          (aset arr gt x) (aset arr i t)
-                          (recur lt i (dec gt)))
-                        :else (recur lt (inc i) gt)))))))))
-        (vec arr)))))
+      (persistent!
+       (loop [arr (transient (vec a))
+              stack (list [0 (dec n)])]
+         (if (empty? stack)
+           arr
+           (let [[lo hi] (peek stack)
+                 stack (pop stack)]
+             (if (<= hi lo)
+               (recur arr stack)
+               (let [pivot (nth arr (+ lo (quot (inc (- hi lo)) 2)))
+                     [arr lt gt]
+                     (loop [arr arr lt lo i lo gt hi]
+                       (if (> i gt)
+                         [arr lt gt]
+                         (let [x (nth arr i)]
+                           (cond
+                             (< x pivot)
+                             (let [t (nth arr lt)]
+                               (recur (assoc! arr lt x i t) (inc lt) (inc i) gt))
+                             (> x pivot)
+                             (let [t (nth arr gt)]
+                               (recur (assoc! arr gt x i t) lt i (dec gt)))
+                             :else (recur arr lt (inc i) gt)))))]
+                 ;; Push the larger side first so the smaller side is
+                 ;; processed first; stack depth stays O(log n).
+                 (let [nl (- lt lo) nr (- hi gt)]
+                   (recur arr (if (< nl nr)
+                                (conj stack [(inc gt) hi] [lo (dec lt)])
+                                (conj stack [lo (dec lt)] [(inc gt) hi])))))))))))))
 
 (defn -main []
   (let [input (slurp *in*) toks (tokenize input) n (if (seq toks) (read-int (first toks)) 0)
