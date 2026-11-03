@@ -67,21 +67,26 @@
             (recur end (assoc done pick true) (assoc comp pick end) (conj order pick) (- left 1))))))))
 
 (defn sim-rr [arr burst idx n quantum]
-  (loop [now 0 ap 0 ready [] rem burst comp (vec (repeat n -1)) order [] left n]
+  ;; ready is a queue: live items are (subvec ready rh); compacted once
+  ;; the dead prefix reaches half so every op stays amortized O(1).
+  (loop [now 0 ap 0 ready [] rh 0 rem burst comp (vec (repeat n -1)) order [] left n]
     (if (zero? left) [comp order]
-      (let [[ap2 ready2] (loop [ap ap rd ready]
+      (let [[ready0 rh0] (if (and (pos? rh) (>= (* 2 rh) (count ready)))
+                           [(vec (subvec ready rh)) 0]
+                           [ready rh])
+            [ap2 ready2] (loop [ap ap rd ready0]
                            (if (and (< ap (count idx)) (<= (nth arr (nth idx ap)) now))
                              (recur (+ ap 1) (conj rd (nth idx ap))) [ap rd]))]
-        (if (empty? ready2)
-          (recur (nth arr (nth idx ap2)) ap2 ready2 rem comp order left)
-          (let [id (first ready2) rest-r (vec (rest ready2))
+        (if (>= rh0 (count ready2))
+          (recur (nth arr (nth idx ap2)) ap2 ready2 rh0 rem comp order left)
+          (let [id (nth ready2 rh0) rh1 (+ rh0 1)
                 run (min (nth rem id) quantum) now2 (+ now run) rem2 (assoc rem id (- (nth rem id) run))
-                [ap3 ready3] (loop [ap ap2 rd rest-r]
+                [ap3 ready3] (loop [ap ap2 rd ready2]
                                (if (and (< ap (count idx)) (<= (nth arr (nth idx ap)) now2))
                                  (recur (+ ap 1) (conj rd (nth idx ap))) [ap rd]))]
             (if (pos? (nth rem2 id))
-              (recur now2 ap3 (conj ready3 id) rem2 comp order left)
-              (recur now2 ap3 ready3 rem2 (assoc comp id now2) (conj order id) (- left 1)))))))))
+              (recur now2 ap3 (conj ready3 id) rh1 rem2 comp order left)
+              (recur now2 ap3 ready3 rh1 rem2 (assoc comp id now2) (conj order id) (- left 1)))))))))
 
 (defn solve [toks]
   (let [policy (read-int (nth toks 0))

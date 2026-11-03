@@ -8,36 +8,36 @@
     (if (str/blank? t) [] (vec (str/split t #"\s+")))))
 (defn parse-token [t] t)
 (defn as-long [t] (Long/parseLong t))
-(defn min-leaf [in-leaves]
-  (first (filter #(nth in-leaves %) (range (count in-leaves)))))
+(defn min-leaf [leaves]
+  (first leaves))
 (defn prufer-encode [n edges]
   (let [adj (loop [i 0 a (vec (repeat n #{}))]
               (if (>= i (count edges)) a
                 (let [[u v] (nth edges i)]
                   (recur (inc i) (assoc a u (conj (nth a u) v) v (conj (nth a v) u))))))
         deg (mapv count adj)]
-    (loop [i 0 adj adj deg deg inl (mapv #(= 1 %) deg) acc []]
+    (loop [i 0 adj adj deg deg leaves (into (sorted-set) (filter #(= 1 (nth deg %)) (range n))) acc []]
       (if (>= i (- n 2)) acc
-        (let [leaf (min-leaf inl)
-              nb (first (sort (nth adj leaf)))
+        (let [leaf (min-leaf leaves)
+              nb (first (nth adj leaf))
               adj2 (assoc adj leaf (disj (nth adj leaf) nb) nb (disj (nth adj nb) leaf))
               deg2 (assoc deg nb (dec (nth deg nb)))]
           (recur (inc i) adj2 deg2
-                 (assoc inl leaf false nb (= 1 (nth deg2 nb)))
+                 (cond-> (disj leaves leaf) (= 1 (nth deg2 nb)) (conj nb))
                  (conj acc nb)))))))
 (defn prufer-decode [n sq]
   (let [deg (loop [i 0 d (vec (repeat n 1))]
               (if (>= i (count sq)) d (recur (inc i) (assoc d (nth sq i) (inc (nth d (nth sq i)))))))]
-    (loop [i 0 deg deg inl (mapv #(= 1 %) deg) edges []]
+    (loop [i 0 deg deg leaves (into (sorted-set) (filter #(= 1 (nth deg %)) (range n))) edges []]
       (if (>= i (count sq))
-        (let [a (min-leaf inl)
-              inl2 (assoc inl a false)
-              b (min-leaf inl2)]
+        (let [a (min-leaf leaves)
+              leaves2 (disj leaves a)
+              b (min-leaf leaves2)]
           (sort (conj edges [(min a b) (max a b)])))
-        (let [v (nth sq i) leaf (min-leaf inl)
+        (let [v (nth sq i) leaf (min-leaf leaves)
               deg2 (assoc deg v (dec (nth deg v)))]
           (recur (inc i) deg2
-                 (assoc inl leaf false v (= 1 (nth deg2 v)))
+                 (cond-> (disj leaves leaf) (= 1 (nth deg2 v)) (conj v))
                  (conj edges [(min leaf v) (max leaf v)])))))))
 (defn -main []
   (let [toks (tokenize (slurp *in*))]

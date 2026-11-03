@@ -78,18 +78,41 @@
         (do (println 0) (println 0))
         (let [F (atom fr) MS (atom (vec (range n)))
               L (atom (mapv (fn [_] -1) (range n))) R (atom (mapv (fn [_] -1) (range n)))
-              key (fn [Fv MSv i] [(nth Fv i) (nth MSv i) i])
-              pq (atom (vec (sort-by (fn [i] [(nth fr i) i i]) (range n))))]
+              ;; total order on node ids: [weight, min-leaf, id]
+              lt? (fn [Fv MSv a b]
+                    (let [fa (nth Fv a) fb (nth Fv b)]
+                      (if (not= fa fb) (< fa fb)
+                        (let [ma (nth MSv a) mb (nth MSv b)]
+                          (if (not= ma mb) (< ma mb) (< a b))))))
+              hswap (fn [h i j] (let [t (nth h i)] (assoc h i (nth h j) j t)))
+              hpush (fn [h Fv MSv id]
+                      (loop [h (conj h id) i (dec (count h))]
+                        (if (zero? i) h
+                          (let [p (quot (dec i) 2)]
+                            (if (lt? Fv MSv (nth h i) (nth h p))
+                              (recur (hswap h i p) p) h)))))
+              ;; pop the minimum; returns [min-id new-heap]
+              hpop (fn [h Fv MSv]
+                     (let [top (nth h 0) last (peek h) h2 (pop h)]
+                       (if (empty? h2) [top h2]
+                         (loop [h (assoc h2 0 last) i 0]
+                           (let [l (+ 1 (* 2 i)) r (+ 2 (* 2 i)) c (count h)
+                                 m (if (and (< l c) (lt? Fv MSv (nth h l) (nth h i))) l i)
+                                 m (if (and (< r c) (lt? Fv MSv (nth h r) (nth h m))) r m)]
+                             (if (= m i) [top h] (recur (hswap h i m) m)))))))
+              ms0 (vec (range n))
+              pq (atom (reduce (fn [h i] (hpush h fr ms0 i)) [] (range n)))]
           (loop []
             (when (> (count @pq) 1)
-              (let [a (first @pq) b (second @pq)
-                    rest-pq (vec (drop 2 @pq))
-                    id (count @F)
-                    nF (conj @F (+ (nth @F a) (nth @F b)))
-                    nMS (conj @MS (min (nth @MS a) (nth @MS b)))]
+              (let [Fv @F MSv @MS
+                    [a h1] (hpop @pq Fv MSv)
+                    [b h2] (hpop h1 Fv MSv)
+                    id (count Fv)
+                    nF (conj Fv (+ (nth Fv a) (nth Fv b)))
+                    nMS (conj MSv (min (nth MSv a) (nth MSv b)))]
                 (reset! F nF) (reset! MS nMS)
                 (swap! L conj a) (swap! R conj b)
-                (reset! pq (vec (sort-by (fn [i] (key nF nMS i)) (conj rest-pq id))))
+                (reset! pq (hpush h2 nF nMS id))
                 (recur))))
           (let [root (first @pq)
                 dd (atom (mapv (fn [_] 0) (range (count @F))))]

@@ -21,7 +21,7 @@
          (norm-clause (concat (remove #(= % l1) ci) (remove #(= % l2) cj))))))
 
 (defn solve-one [clauses]
-  (loop [cls clauses round 0]
+  (loop [cls clauses seen (set clauses) round 0]
     (if (>= round 500)
       false
       (let [n (count cls)
@@ -29,11 +29,16 @@
                            r (resolvents (nth cls i) (nth cls j))] r))]
         (if (some empty? res)
           true
-          (let [added (vec (distinct (remove (fn [r] (or (taut? r) (some #(= % r) cls))) res)))]
+          (let [[added seen2] (loop [rs res seen2 seen out []]
+                                (if (empty? rs) [out seen2]
+                                  (let [r (first rs)]
+                                    (if (or (taut? r) (contains? seen2 r))
+                                      (recur (rest rs) seen2 out)
+                                      (recur (rest rs) (conj seen2 r) (conj out r))))))]
             (if (empty? added)
               false
               (let [cls2 (into cls added)]
-                (if (> (count cls2) 4000) false (recur cls2 (inc round)))))))))))
+                (if (> (count cls2) 4000) false (recur cls2 seen2 (inc round)))))))))))
 
 (defn parse-case [nums pos]
   (let [v (int (nth nums pos)) c (int (nth nums (+ pos 1)))]
@@ -53,7 +58,7 @@
         (let [[cls p] (parse-case nums pos)
               q (int (nth nums p))
               nq [(- q)]
-              cls2 (if (some #(= % nq) cls) cls (conj cls nq))]
+              cls2 (if (contains? (set cls) nq) cls (conj cls nq))]
           (.append sb (if (solve-one cls2) "RESOLUTION ENTAILED\n" "RESOLUTION NOT-ENTAILED\n"))
           (recur (inc p) (dec tcases) sb))))))
 
