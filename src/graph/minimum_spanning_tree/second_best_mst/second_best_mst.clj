@@ -103,9 +103,9 @@
                      (if (= s t) 0
                        (let [par (atom (assoc (vec (repeat n -1)) s s))
                              pw (atom (vec (repeat n 0)))]
-                         (loop [q [s]]
+                         (loop [q (conj clojure.lang.PersistentQueue/EMPTY s)]
                            (when (seq q)
-                             (let [u (first q) rst (vec (rest q))]
+                             (let [u (peek q) rst (pop q)]
                                (if (= u t)
                                  (recur rst)
                                  (let [nxt (atom rst)]
