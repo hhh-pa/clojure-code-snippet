@@ -26,6 +26,17 @@
             (reduce (fn [acc ch] (when (some? acc) (let [d (get digit-values ch)] (when (and (some? d) (<= acc (quot (- max-long d) 10))) (+ (* acc 10) d))))) 0 rest-chs)))))))
 (def BIG 4000000000000000000)
 (def BIGM 3999999999999999999)
+(defn bisect-pt
+  "First index i in id vector yv with pts[(nth yv i)][1] >= yb.
+   yv is sorted by point y, so binary search: O(log n)."
+  [yv pts yb]
+  (loop [lo 0 hi (count yv)]
+    (if (>= lo hi)
+      lo
+      (let [mid (quot (+ lo hi) 2)]
+        (if (< (nth (nth pts (nth yv mid)) 1) yb)
+          (recur (inc mid) hi)
+          (recur lo mid))))))
 (defn build-node [tree pts xs l r]
   (let [yv (vec (sort-by (fn [i] [(nth (nth pts i) 1) (nth (nth pts i) 0)]) (subvec xs l r)))]
     (if (= (- r l) 1)
@@ -35,7 +46,7 @@
             [t2 R] (build-node t1 pts xs mid r)
             ly (:yvec (nth t2 L)) ry (:yvec (nth t2 R))
             cas (fn [cy] (mapv (fn [i] (let [yb (if (< i (count yv)) (nth (nth pts (nth yv i)) 1) BIG)]
-                                          (count (take-while #( < (nth (nth pts %) 1) yb) cy)))) (range (inc (count yv)))))
+                                          (bisect-pt cy pts yb))) (range (inc (count yv)))))
             node {:l l :r r :mid mid :left L :right R :yvec yv :fcl (cas ly) :fcr (cas ry)}]
         [(conj t2 node) (count t2)]))))
 (defn query-one [tree pts xs root x1 y1 x2 y2]
@@ -51,9 +62,9 @@
       (let [pid (nth (:yvec nd) 0) p (nth pts pid)]
         (if (and (<= x1 (nth p 0) x2) (<= y1 (nth p 1) y2)) [pid] []))
       (let [syv (:yvec nd)
-            lo0 (count (take-while #( < (nth (nth pts %) 1) y1) syv))
+            lo0 (bisect-pt syv pts y1)
             y2p (if (= y2 BIGM) BIG (inc y2))
-            hi0 (count (take-while #( < (nth (nth pts %) 1) y2p) syv))
+            hi0 (bisect-pt syv pts y2p)
             lv (:left nd) rv (:right nd)
             walk (fn [u a b is-left]
                    (loop [u u a a b b acc []]

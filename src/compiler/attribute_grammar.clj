@@ -10,10 +10,10 @@
 (defn tokenize [s] (str/split (str/trim s) #"\s+"))
 (defn parse-token [t] (Long/parseLong t))
 
-(defn synth [node]
-  (if (nil? (:l node))
-    (:bit node)
-    (+ (* (synth (:l node)) 2) (:bit node))))
+(defn synth-bits [bs]
+  (loop [i 0 acc 0]
+    (if (= i (count bs)) acc
+      (recur (inc i) (+ (* acc 2) (if (= (.charAt bs i) \1) 1 0))))))
 
 (defn -main []
   (let [toks (tokenize (slurp *in*))]
@@ -22,11 +22,7 @@
         (print (str sb))
         (let [sg (nth toks pos)
               bs (nth toks (inc pos))
-              root (loop [i 0 r nil]
-                     (if (= i (count bs))
-                       r
-                       (recur (inc i) {:l r :bit (if (= (.charAt bs i) \1) 1 0)})))
-              v (synth root)]
+              v (synth-bits bs)]
           (.append sb (str "ATTR " (if (= sg "-") (- v) v) "\n"))
           (recur (+ pos 2) (dec tcases) sb))))))
 

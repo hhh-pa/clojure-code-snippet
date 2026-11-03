@@ -88,22 +88,23 @@
         (loop [flow 0 tot 0]
           (let [dist (atom (assoc (vec (repeat n inf)) s 0))
                 par (atom (vec (repeat n -1)))]
-            (loop [h [[0 s]]]
-              (when (seq h)
-                (let [[[du u] & rest-h] h
-                      pushes (atom [])]
-                  (if (not= du (nth @dist u))
-                    (recur (vec rest-h))
-                    (do
-                      (doseq [v (range n)]
-                        (when (pos? (nth (nth @res u) v))
-                          (let [rc (+ (nth (nth @cost u) v) (nth @pi u) (- (nth @pi v)))
-                                nd (+ (nth @dist u) rc)]
-                            (when (< nd (nth @dist v))
-                              (swap! dist assoc v nd)
-                              (swap! par assoc v u)
-                              (swap! pushes conj [nd v])))))
-                      (recur (vec (sort (concat rest-h @pushes)))))))))
+            (let [h (atom (sorted-set [0 s]))]
+              (loop []
+                (when (seq @h)
+                  (let [[du u] (first @h)]
+                    (swap! h disj [du u])
+                    (if (not= du (nth @dist u))
+                      (recur)
+                      (do
+                        (doseq [v (range n)]
+                          (when (pos? (nth (nth @res u) v))
+                            (let [rc (+ (nth (nth @cost u) v) (nth @pi u) (- (nth @pi v)))
+                                  nd (+ (nth @dist u) rc)]
+                              (when (< nd (nth @dist v))
+                                (swap! dist assoc v nd)
+                                (swap! par assoc v u)
+                                (swap! h conj [nd v])))))
+                        (recur)))))))
             (if (= (nth @par t) -1)
               (println (str flow " " tot))
               (do

@@ -135,22 +135,40 @@
           (< k ck) (recur (:l cur))
           :else (recur (:r cur)))))))
 
-(defn insert-node
-  "Insert key k into subtree h."
-  [h k]
-  (if (nil? h)
-    {:k k :c :red :l nil :r nil}
-    (let [ck (:k h)
-          h (cond
-              (< k ck) (assoc h :l (insert-node (:l h) k))
-              (> k ck) (assoc h :r (insert-node (:r h) k))
-              :else h)]
-      (balance h))))
-
 (defn rb-insert
-  "Insert key k into root and color root black."
+  "Insert key k into root and color root black.
+   Iterative: descends with an explicit path, attaches a red leaf,
+   then rebuilds bottom-up applying the same fixup (balance) at
+   each level, including on the duplicate path."
   [root k]
-  (assoc (insert-node root k) :c :black))
+  (if (nil? root)
+    {:k k :c :black :l nil :r nil}
+    (let [desc (loop [cur root path []]
+                 (let [path (conj path cur)
+                       ck (:k cur)]
+                   (cond
+                     (= k ck) {:path path :found true}
+                     (< k ck) (if (nil? (:l cur))
+                               {:path path :found false}
+                               (recur (:l cur) path))
+                     :else (if (nil? (:r cur))
+                             {:path path :found false}
+                             (recur (:r cur) path)))))
+          path (:path desc)
+          found (:found desc)
+          n (count path)
+          bot (nth path (dec n))
+          node (balance (if found
+                          bot
+                          (assoc bot (if (< k (:k bot)) :l :r)
+                                 {:k k :c :red :l nil :r nil})))]
+      (assoc (loop [node node idx (- n 2)]
+               (if (neg? idx)
+                 node
+                 (let [p (nth path idx)]
+                   (recur (balance (assoc p (if (< k (:k p)) :l :r) node))
+                          (dec idx)))))
+             :c :black))))
 
 (defn min-node
   "Smallest node in non-empty subtree h."

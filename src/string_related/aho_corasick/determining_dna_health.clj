@@ -3,9 +3,11 @@
 ;; first plus last plus strand triple per strand.
 ;; Output: min and max total health over the strands, one line.
 ;; Trie build plus failure links cost linear expected time in the
-;; total gene length; each strand scans in linear time plus total
-;; matches, which is optimal here. Matches inside the id range add
-;; their gene health to the strand total.
+;; total gene length; each state's output ids (ascending, since
+;; genes are inserted in gid order) carry prefix health sums, so
+;; each strand position adds its in-range matches with two binary
+;; searches: O(T log G) per strand of length T over G genes,
+;; matching the python twin.
 ;; Pure clojure with no host interop.
 (require '[clojure.string :as str])
 
@@ -114,6 +116,42 @@
                       (:next (nth states u)))]
           (recur states q (inc qi)))))))
 
+(defn- bisect-left
+  "First index i in ascending vector v with (nth v i) >= x; (count
+   v) when every entry is below x. Binary search: O(log n)."
+  [v x]
+  (loop [lo 0 hi (count v)]
+    (if (>= lo hi)
+      lo
+      (let [mid (quot (+ lo hi) 2)]
+        (if (< (nth v mid) x)
+          (recur (inc mid) hi)
+          (recur lo mid))))))
+
+(defn- bisect-right
+  "First index i in ascending vector v with (nth v i) > x; (count
+   v) when no entry exceeds x. Binary search: O(log n)."
+  [v x]
+  (loop [lo 0 hi (count v)]
+    (if (>= lo hi)
+      lo
+      (let [mid (quot (+ lo hi) 2)]
+        (if (<= (nth v mid) x)
+          (recur (inc mid) hi)
+          (recur lo mid))))))
+
+(defn- with-pref
+  "Attaches :pref prefix health sums to every state: pref[i] sums
+   health over out[0..i), so the in-range matches sum to
+   pref[r]-pref[l]. :out ids ascend (genes are inserted in gid
+   order), which is what the bisection needs."
+  [states health]
+  (mapv (fn [st]
+          (if (seq (:out st))
+            (assoc st :pref (vec (reductions +' 0 (map #(nth health %) (:out st)))))
+            (assoc st :pref [0])))
+        states))
+
 (defn- strand-health
   "Total health of strand inside first-id to last-id."
   [states health first-id last-id strand]
@@ -129,13 +167,17 @@
             nu (get (:next (nth states base)) c 0)
             add (loop [curr nu add 0]
                   (if (> curr 0)
-                    (recur (:dict (nth states curr))
-                           (reduce (fn [a gid]
-                                     (if (and (<= first-id gid) (<= gid last-id))
-                                       (+' a (nth health gid))
-                                       a))
-                                   add
-                                   (:out (nth states curr))))
+                    (let [node (nth states curr)
+                          out (:out node)]
+                      (recur (:dict node)
+                             (if (seq out)
+                               (let [l (bisect-left out first-id)
+                                     r (bisect-right out last-id)]
+                                 (if (> r l)
+                                   (+' add (- (nth (:pref node) r)
+                                              (nth (:pref node) l)))
+                                   add))
+                               add)))
                     add))]
         (recur (next cs) nu (+' acc add))))))
 
@@ -180,8 +222,9 @@
                     triples (subvec toks (+ 2 (* 2 n)))]
                 (if (< (count triples) (*' 3 strands))
                   (report "error: expected one id range plus strand per query")
-                  (let [res (summarize (build-automaton genes)
-                                       (vec hvals) triples strands)]
+                  (let [hv (vec hvals)
+                        res (summarize (with-pref (build-automaton genes) hv)
+                                       hv triples strands)]
                     (if (nil? res)
                       (report "error: expected integer ranges plus lowercase strands")
                       (let [[lo hi] res]

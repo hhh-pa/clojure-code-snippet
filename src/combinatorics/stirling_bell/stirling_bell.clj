@@ -8,25 +8,27 @@
     (if (str/blank? t) [] (vec (str/split t #"\s+")))))
 (defn parse-token [t] t)
 (defn as-long [t] (Long/parseLong t))
-(defn stirling-table [n k kind]
-  (loop [i 1 T (assoc (vec (repeat (inc n) (vec (repeat (inc k) 0)))) 0 (assoc (vec (repeat (inc k) 0)) 0 1))]
-    (if (> i n) T
-      (recur (inc i) (loop [j 1 T T]
-                       (if (or (> j k) (> j i)) T
-                         (recur (inc j) (assoc-in T [i j]
-                           (if (= kind 2)
-                             (+ (* j (nth (nth T (dec i)) j)) (nth (nth T (dec i)) (dec j)))
-                             (+ (* (- (dec i)) (nth (nth T (dec i)) j)) (nth (nth T (dec i)) (dec j))))))))))))
+(defn stirling-row [n k kind]
+  (loop [i 0 prev (assoc (vec (repeat (inc k) 0)) 0 1)]
+    (if (>= i n) prev
+      (let [i1 (inc i)
+            cur (loop [j 1 cur (vec (repeat (inc k) 0))]
+                  (if (or (> j k) (> j i1)) cur
+                    (recur (inc j) (assoc cur j
+                      (if (= kind 2)
+                        (+ (* j (nth prev j)) (nth prev (dec j)))
+                        (+ (* (- i) (nth prev j)) (nth prev (dec j))))))))]
+        (recur i1 cur)))))
 (defn -main []
   (let [toks (tokenize (slurp *in*))]
     (when (seq toks)
       (cond (= "S2" (nth toks 0))
             (let [n (as-long (nth toks 1)) k (as-long (nth toks 2))]
-              (println (nth (nth (stirling-table n k 2) n) k)))
+              (println (nth (stirling-row n k 2) k)))
             (= "S1" (nth toks 0))
             (let [n (as-long (nth toks 1)) k (as-long (nth toks 2))]
-              (println (nth (nth (stirling-table n k 1) n) k)))
+              (println (nth (stirling-row n k 1) k)))
             :else
             (let [n (as-long (nth toks 1))]
-              (println (reduce + (nth (stirling-table n n 2) n))))))))
+              (println (reduce + (stirling-row n n 2))))))))
 (-main)

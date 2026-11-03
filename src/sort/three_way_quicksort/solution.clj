@@ -28,12 +28,37 @@
 (defn read-int [tok] (parse-token tok))
 
 (defn three-way-qsort [a]
-  (if (<= (count a) 1) a
-    (let [pivot (nth a (quot (count a) 2))
-          less (filterv #(< % pivot) a)
-          equal (filterv #(= % pivot) a)
-          greater (filterv #(> % pivot) a)]
-      (vec (concat (three-way-qsort less) equal (three-way-qsort greater))))))
+  (let [n (count a)]
+    (if (<= n 1) a
+      (persistent!
+       (loop [arr (transient (vec a))
+              stack (list [0 (dec n)])]
+         (if (empty? stack)
+           arr
+           (let [[lo hi] (peek stack)
+                 stack (pop stack)]
+             (if (<= hi lo)
+               (recur arr stack)
+               (let [pivot (nth arr (+ lo (quot (inc (- hi lo)) 2)))
+                     [arr lt gt]
+                     (loop [arr arr lt lo i lo gt hi]
+                       (if (> i gt)
+                         [arr lt gt]
+                         (let [x (nth arr i)]
+                           (cond
+                             (< x pivot)
+                             (let [t (nth arr lt)]
+                               (recur (assoc! arr lt x i t) (inc lt) (inc i) gt))
+                             (> x pivot)
+                             (let [t (nth arr gt)]
+                               (recur (assoc! arr gt x i t) lt i (dec gt)))
+                             :else (recur arr lt (inc i) gt)))))]
+                 ;; Push the larger side first so the smaller side is
+                 ;; processed first; stack depth stays O(log n).
+                 (let [nl (- lt lo) nr (- hi gt)]
+                   (recur arr (if (< nl nr)
+                                (conj stack [(inc gt) hi] [lo (dec lt)])
+                                (conj stack [lo (dec lt)] [(inc gt) hi])))))))))))))
 
 (defn -main []
   (let [input (slurp *in*) toks (tokenize input) n (if (seq toks) (read-int (first toks)) 0)

@@ -55,13 +55,24 @@
     (println msg)))
 
 (defn bst-insert
-  "Insert v into the search tree, sending duplicates right."
+  "Insert v into the search tree, sending duplicates right.
+   Iterative: descends with an explicit path, then rebuilds bottom-up."
   [tree v]
   (if (nil? tree)
     {:val v :left nil :right nil}
-    (if (< v (:val tree))
-      (assoc tree :left (bst-insert (:left tree) v))
-      (assoc tree :right (bst-insert (:right tree) v)))))
+    (let [path (loop [cur tree path []]
+                 (let [side (if (< v (:val cur)) :left :right)]
+                   (if (nil? (side cur))
+                     (conj path [cur side])
+                     (recur (side cur) (conj path [cur side])))))
+          leaf {:val v :left nil :right nil}
+          n (count path)
+          [bot bside] (nth path (dec n))]
+      (loop [node (assoc bot bside leaf) idx (- n 2)]
+        (if (neg? idx)
+          node
+          (let [[p pside] (nth path idx)]
+            (recur (assoc p pside node) (dec idx))))))))
 
 (defn lowest-common-ancestor
   "Walk down from root toward the split point of lo and hi."

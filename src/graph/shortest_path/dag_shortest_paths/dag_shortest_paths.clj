@@ -79,12 +79,23 @@
           ind (atom (vec (repeat n 0)))
           _ (doseq [i (range m)] (let [v (nth nums (+ 4 (* i 3)))] (swap! ind assoc v (inc (nth @ind v)))))
           inf (bit-shift-left 1 60)
-          topo (loop [h (vec (sort (filter #(zero? (nth @ind %)) (range n)))) acc []]
-                 (if (empty? h) acc
-                   (let [u (first h)]
-                     (doseq [[v _] (nth adj u)]
-                       (swap! ind assoc v (dec (nth @ind v))))
-                     (recur (vec (sort (concat (rest h) (filter (fn [v] (and (zero? (nth @ind v)) (not (boolean (some #(= % v) acc))) (not= v u))) (map first (nth adj u)))))) (conj acc u)))))
+          topo (let [h (atom (sorted-set))
+                       seen (atom (vec (repeat n false)))]
+                   (doseq [v (range n)]
+                     (when (zero? (nth @ind v))
+                       (swap! h conj v)
+                       (swap! seen assoc v true)))
+                   (loop [acc []]
+                     (if (empty? @h)
+                       acc
+                       (let [u (first @h)]
+                         (swap! h disj u)
+                         (doseq [[v _] (nth adj u)]
+                           (swap! ind assoc v (dec (nth @ind v)))
+                           (when (and (zero? (nth @ind v)) (not (nth @seen v)) (not= v u))
+                             (swap! seen assoc v true)
+                             (swap! h conj v)))
+                         (recur (conj acc u))))))
           ds (atom (assoc (vec (repeat n inf)) s 0))
           dl (atom (assoc (vec (repeat n (- inf))) s 0))]
       (doseq [u topo [v w] (nth adj u)]

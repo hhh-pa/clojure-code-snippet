@@ -27,16 +27,35 @@
                       (recur (rest d) nxt))))))))))))
 (defn read-int [tok] (parse-token tok))
 
-(defn char-at [s d] (if (< d (count s)) (int (.charAt s d)) -1))
+(defn char-at [s d] (if (< d (count s)) (int (nth s d)) -1))
 (defn three-way-str-qsort [a d]
-  (if (<= (count a) 1) a
-    (let [pivot-c (char-at (first a) d)
-          less (filterv #(< (char-at % d) pivot-c) a)
-          equal (filterv #(= (char-at % d) pivot-c) a)
-          greater (filterv #(> (char-at % d) pivot-c) a)
-          eq-sorted (if (= pivot-c -1) equal
-                      (three-way-str-qsort equal (inc d)))]
-      (vec (concat (three-way-str-qsort less d) eq-sorted (three-way-str-qsort greater d))))))
+  (let [n (count a)]
+    (if (<= n 1) a
+      (persistent!
+       (loop [arr (transient (vec a))
+              stack (list [0 (dec n) d])]
+         (if (empty? stack)
+           arr
+           (let [[lo hi dd] (peek stack)
+                 stack (pop stack)]
+             (if (<= hi lo)
+               (recur arr stack)
+               (let [pivot-c (char-at (nth arr lo) dd)
+                     [arr lt gt]
+                     (loop [arr arr lt lo i lo gt hi]
+                       (if (> i gt)
+                         [arr lt gt]
+                         (let [c (char-at (nth arr i) dd)]
+                           (cond
+                             (< c pivot-c)
+                             (let [t (nth arr lt)]
+                               (recur (assoc! arr lt (nth arr i) i t) (inc lt) (inc i) gt))
+                             (> c pivot-c)
+                             (let [t (nth arr gt)]
+                               (recur (assoc! arr gt (nth arr i) i t) lt i (dec gt)))
+                             :else (recur arr lt (inc i) gt)))))]
+                 (recur arr (cond-> (conj stack [lo (dec lt) dd] [(inc gt) hi dd])
+                              (not= pivot-c -1) (conj [lt gt (inc dd)]))))))))))))
 
 (defn -main []
   (let [input (slurp *in*) lines (clojure.string/split-lines input)
