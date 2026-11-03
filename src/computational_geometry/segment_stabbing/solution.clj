@@ -28,6 +28,17 @@
         (and (<= ql l) (>= qr r)) (assoc t v (conj (nth t v) id))
         :else (let [m (quot (+ l r) 2)]
                 (st-insert (st-insert t (* 2 v) l m ql qr id) (inc (* 2 v)) m r ql qr id))))
+(defn bisect-right
+  "First index i in sorted vector u with (nth u i) > x; (count u)
+   when no entry exceeds x. Binary search: O(log n)."
+  [u x]
+  (loop [lo 0 hi (count u)]
+    (if (>= lo hi)
+      lo
+      (let [mid (quot (+ lo hi) 2)]
+        (if (<= (nth u mid) x)
+          (recur (inc mid) hi)
+          (recur lo mid))))))
 (defn st-query [t v l r i]
   (let [here (nth t v)]
     (if (= (- r l) 1) here
@@ -50,7 +61,7 @@
         (let [x (nth nums (+ base 1 i))
               ei (cond (< x (nth u 0)) 0
                        (> x (nth u (dec m))) (* 2 m)
-                       :else (let [k (apply max (keep-indexed (fn [j v] (when (<= v x) j)) u))]
+                       :else (let [k (dec (bisect-right u x))]
                                (if (= (nth u k) x) (inc (* 2 k)) (+ 2 (* 2 k)))))
               found (vec (sort (st-query t 1 0 N ei)))]
           (println (count found))

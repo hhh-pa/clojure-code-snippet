@@ -3,6 +3,9 @@
 ;; crossings), half-edges with twins, CCW edge order (integer angle
 ;; sort at vertices, orientation rule at crossings), next-pointer
 ;; face traversal. Output: V E F with F = cycles-C+1.
+;; Crossings group onto their edges and half-edges onto their tail
+;; vertices in single passes (no per-edge/per-vertex full scans),
+;; matching the python twin's O(n^2 log n).
 (def digit-values (zipmap "0123456789" (range)))
 (def separators #{\space \tab \newline \return \formfeed \u000B})
 (defn tokenize [s]
@@ -52,10 +55,20 @@
                   [i j (tparam a b c d) (tparam c d a b)]))
         X (count xs)
         V (+ n1 n2 X)
-        on1 (mapv (fn [i] (vec (sort-by (fn [k] (let [[nn dd] (nth (nth xs k) 2)] (/ nn dd)))
-                                        (filter #(= (nth (nth xs %) 0) i) (range X))))) (range n1))
-        on2 (mapv (fn [j] (vec (sort-by (fn [k] (let [[nn dd] (nth (nth xs k) 3)] (/ nn dd)))
-                                        (filter #(= (nth (nth xs %) 1) j) (range X))))) (range n2))
+        on1 (let [g (reduce (fn [g k] (let [i (nth (nth xs k) 0)] (assoc! g i (conj (nth g i) k))))
+                    (transient (vec (repeat n1 []))) (range X))]
+      (mapv (fn [grp] (vec (sort (fn [a b] (let [[na da] (nth (nth xs a) 2)
+                                                     [nb db] (nth (nth xs b) 2)]
+                                                 (< (*' na db) (*' nb da))))
+                                grp)))
+            (persistent! g)))
+        on2 (let [g (reduce (fn [g k] (let [j (nth (nth xs k) 1)] (assoc! g j (conj (nth g j) k))))
+                    (transient (vec (repeat n2 []))) (range X))]
+      (mapv (fn [grp] (vec (sort (fn [a b] (let [[na da] (nth (nth xs a) 3)
+                                                     [nb db] (nth (nth xs b) 3)]
+                                                 (< (*' na db) (*' nb da))))
+                                grp)))
+            (persistent! g)))
         ues (vec (concat
                   (mapcat (fn [i] (let [ch (vec (concat [i] (map #(+ n1 n2 %) (nth on1 i)) [(mod (inc i) n1)]))]
                                             (map (fn [a b] [a b 1 i]) ch (rest ch)))) (range n1))
@@ -65,7 +78,8 @@
         hes (vec (mapcat (fn [k [u v poly e]] [[u v (inc (* 2 k)) poly e] [v u (* 2 k) poly e]])
                          (range E) ues))
         H (count hes)
-        out (mapv (fn [v] (filterv #(= (nth (nth hes %) 0) v) (range H))) (range V))
+        out (persistent! (reduce (fn [o h] (let [u (nth (nth hes h) 0)] (assoc! o u (conj (nth o u) h))))
+                               (transient (vec (repeat V []))) (range H)))
         dir-of (fn [v h]
                  (let [[_ _ _ poly e] (nth hes h)]
                    (if (= poly 1)
@@ -99,8 +113,8 @@
                         (if (pos? (cross a b c)) [hB hC hA hD] [hB hD hA hC])))
                     (range X))
         ccw (vec (concat ccw-orig ccw-x))
-        pos (reduce (fn [p v] (reduce (fn [p [i h]] (assoc p h i)) p (map-indexed vector (nth ccw v))))
-                    (vec (repeat H -1)) (range V))
+        pos (persistent! (reduce (fn [p v] (reduce (fn [p [i h]] (assoc! p h i)) p (map-indexed vector (nth ccw v))))
+                    (transient (vec (repeat H -1))) (range V)))
         nxt (mapv (fn [h] (let [w (nth (nth hes h) 1) tw (nth (nth hes h) 2) cyc (nth ccw w)]
                              (nth cyc (mod (dec (nth pos tw)) (count cyc))))) (range H))
         cycles (loop [h 0 vis #{} cyc 0]
