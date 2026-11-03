@@ -27,16 +27,37 @@
                       (recur (rest d) nxt))))))))))))
 (defn read-int [tok] (parse-token tok))
 
-(defn char-at [s d] (if (< d (count s)) (int (.charAt s d)) -1))
+(defn char-at [^String s ^long d] (if (< d (count s)) (int (.charAt s d)) -1))
 (defn three-way-str-qsort [a d]
-  (if (<= (count a) 1) a
-    (let [pivot-c (char-at (first a) d)
-          less (filterv #(< (char-at % d) pivot-c) a)
-          equal (filterv #(= (char-at % d) pivot-c) a)
-          greater (filterv #(> (char-at % d) pivot-c) a)
-          eq-sorted (if (= pivot-c -1) equal
-                      (three-way-str-qsort equal (inc d)))]
-      (vec (concat (three-way-str-qsort less d) eq-sorted (three-way-str-qsort greater d))))))
+  (let [n (count a)]
+    (if (<= n 1) a
+      (let [^objects arr (object-array a)
+            stack (java.util.ArrayDeque.)]
+        (.push stack (long-array [0 (dec n) d]))
+        (while (not (.isEmpty stack))
+          (let [^longs rng (.pop stack)
+                lo (aget rng 0) hi (aget rng 1) dd (aget rng 2)]
+            (when (< lo hi)
+              (let [pivot-c (char-at (aget arr lo) dd)]
+                (loop [lt lo i lo gt hi]
+                  (if (> i gt)
+                    (do
+                      (.push stack (long-array [lo (dec lt) dd]))
+                      (.push stack (long-array [(inc gt) hi dd]))
+                      (when (not= pivot-c -1)
+                        (.push stack (long-array [lt gt (inc dd)]))))
+                    (let [c (char-at (aget arr i) dd)]
+                      (cond
+                        (< c pivot-c)
+                        (let [t (aget arr lt)]
+                          (aset arr lt (aget arr i)) (aset arr i t)
+                          (recur (inc lt) (inc i) gt))
+                        (> c pivot-c)
+                        (let [t (aget arr gt)]
+                          (aset arr gt (aget arr i)) (aset arr i t)
+                          (recur lt i (dec gt)))
+                        :else (recur lt (inc i) gt)))))))))
+        (vec arr)))))
 
 (defn -main []
   (let [input (slurp *in*) lines (clojure.string/split-lines input)

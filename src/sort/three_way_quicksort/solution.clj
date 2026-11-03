@@ -28,12 +28,39 @@
 (defn read-int [tok] (parse-token tok))
 
 (defn three-way-qsort [a]
-  (if (<= (count a) 1) a
-    (let [pivot (nth a (quot (count a) 2))
-          less (filterv #(< % pivot) a)
-          equal (filterv #(= % pivot) a)
-          greater (filterv #(> % pivot) a)]
-      (vec (concat (three-way-qsort less) equal (three-way-qsort greater))))))
+  (let [n (count a)]
+    (if (<= n 1) a
+      (let [^longs arr (long-array a)
+            stack (java.util.ArrayDeque.)]
+        (.push stack (long-array [0 (dec n)]))
+        (while (not (.isEmpty stack))
+          (let [^longs rng (.pop stack)
+                lo (aget rng 0) hi (aget rng 1)]
+            (when (< lo hi)
+              (let [pivot (aget arr (+ lo (quot (inc (- hi lo)) 2)))]
+                (loop [lt lo i lo gt hi]
+                  (if (> i gt)
+                    (do
+                      ;; Push the larger side first so the smaller side is
+                      ;; processed first; stack depth stays O(log n).
+                      (let [nl (- lt lo) nr (- hi gt)]
+                        (if (< nl nr)
+                          (do (.push stack (long-array [lo (dec lt)]))
+                              (.push stack (long-array [(inc gt) hi])))
+                          (do (.push stack (long-array [(inc gt) hi]))
+                              (.push stack (long-array [lo (dec lt)]))))))
+                    (let [x (aget arr i)]
+                      (cond
+                        (< x pivot)
+                        (let [t (aget arr lt)]
+                          (aset arr lt x) (aset arr i t)
+                          (recur (inc lt) (inc i) gt))
+                        (> x pivot)
+                        (let [t (aget arr gt)]
+                          (aset arr gt x) (aset arr i t)
+                          (recur lt i (dec gt)))
+                        :else (recur lt (inc i) gt)))))))))
+        (vec arr)))))
 
 (defn -main []
   (let [input (slurp *in*) toks (tokenize input) n (if (seq toks) (read-int (first toks)) 0)

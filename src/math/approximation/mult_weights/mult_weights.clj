@@ -16,10 +16,10 @@
             T (long (Double/parseDouble (nth toks 1)))
             eta (parse-token (nth toks 2))
             vals (mapv parse-token (drop 3 toks))
-            g (vec (for [tt (range T)] (vec (for [i (range n)] (nth vals (+ (* tt n) i))))))
             w (loop [tt 0 w (vec (repeat n 1.0))]
                 (if (>= tt T) w
-                  (recur (inc tt) (mapv (fn [i] (* (nth w i) (+ 1 (* eta (nth (nth g tt) i))))) (range n)))))
+                  (let [base (* tt n)]
+                    (recur (inc tt) (mapv (fn [i] (* (nth w i) (+ 1 (* eta (nth vals (+ base i)))))) (range n))))))
             s (reduce + w)]
         (println (str/join " " (map (fn [v] (fmt (/ v s))) w)))))))
 (-main)
