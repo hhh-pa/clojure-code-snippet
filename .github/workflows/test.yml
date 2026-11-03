@@ -5,6 +5,11 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+    inputs:
+      clojure_rs_sha:
+        description: 'Pin clojure-rs to this revision instead of master HEAD (40-char SHA; empty = float)'
+        required: false
+        default: ''
 
 # Test data (recipes superproject resource/shared) ships as an encrypted
 # bundle, tests/resources.tar.xz.asc (tar.xz, AES-256, ASCII-armored).
@@ -12,16 +17,38 @@ on:
 # To rotate: run `snip bundle` with a fresh passphrase and set
 # the secret to the same value (see `snip bundle --help`).
 
-env:
-  # Pinned clojure-rs revision for the perf-callgrind native leg
-  # (interpreter-only build; `run` needs no LLVM). Bump
-  # deliberately: the sweep diff-gates every case, so a bad pin
-  # fails loudly, and Bencher shows the perf delta. Currently the
-  # #209 perf-gap fixes (2-20x faster), validated locally with
-  # byte-identical outputs before pinning.
-  CLOJURE_RS_SHA: 7e13b3e799f830d086e47636386e6383af6384c9
+# The perf-callgrind native leg always builds clojure-rs master HEAD
+# (interpreter-only build; `run` needs no LLVM), resolved once per
+# run by the resolve-rs job below. A bad upstream commit fails
+# loudly (the sweep diff-gates every case), and Bencher shows the
+# delta; to bisect or repro, dispatch manually with `clojure_rs_sha`.
 
 jobs:
+  # Resolve the clojure-rs revision ONCE per run so all 16 sweep
+  # legs build the same commit even if upstream master moves
+  # mid-sweep (a ~6h window). Default: master HEAD (float); a
+  # manual dispatch may pin `clojure_rs_sha` instead.
+  resolve-rs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - id: resolve
+        run: |
+          if [ -n "${{ inputs.clojure_rs_sha }}" ]; then
+            sha="${{ inputs.clojure_rs_sha }}"
+            echo "using dispatch-pinned revision"
+          else
+            sha=$(git ls-remote https://github.com/hhh-pa/clojure HEAD | awk '{print $1}')
+          fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "error: resolved clojure-rs revision is not a 40-char SHA: '$sha'" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "clojure-rs revision: \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
   test-shard:
     runs-on: ubuntu-latest
     strategy:
@@ -100,7 +127,7 @@ jobs:
   # A valgrind/toolchain failure fails the push (unlike the
   # pilot): the sweep is a required signal.
   perf-callgrind:
-    needs: test
+    needs: [test, resolve-rs]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -151,9 +178,9 @@ jobs:
 
       # clojure-rs leg: interpreter-only release build (no LLVM:
       # `run` needs just the interpreter crates). The revision is
-      # pinned in CLOJURE_RS_SHA (see the workflow env); bump it
-      # deliberately — the sweep diff-gates every case, so a bad
-      # pin fails loudly, and Bencher shows the perf delta.
+      # master HEAD resolved once per run (see resolve-rs); the
+      # sweep diff-gates every case, so a bad upstream commit fails
+      # loudly, and Bencher shows the perf delta.
       - name: Install Rust toolchain
         if: matrix.runtime == 'clojure-rs'
         uses: dtolnay/rust-toolchain@stable
@@ -163,7 +190,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: hhh-pa/clojure
-          ref: ${{ env.CLOJURE_RS_SHA }}
+          ref: ${{ needs.resolve-rs.outputs.sha }}
           path: clojure-rs
 
       - name: Cache cargo build
