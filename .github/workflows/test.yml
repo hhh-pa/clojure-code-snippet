@@ -20,9 +20,11 @@ concurrency:
 
 # Test data (recipes superproject resource/shared) ships as an encrypted
 # bundle, tests/resources.tar.xz.asc (tar.xz, AES-256, ASCII-armored).
-# The passphrase lives in the RESOURCES_PASSPHRASE repository secret.
-# To rotate: run `snip bundle` with a fresh passphrase and set
-# the secret to the same value (see `snip bundle --help`).
+# The passphrase lives in the RESOURCES_PASSPHRASE organization secret,
+# shared by the clojure/python/ocaml snippet repos (one passphrase,
+# identical bundles). To rotate: run `snip bundle` with a fresh
+# passphrase, set the organization secret to the same value, and
+# rebuild the sibling bundles too (see `snip bundle --help`).
 
 # The perf-callgrind native leg always builds clojure-rs master HEAD
 # (interpreter-only build; `run` needs no LLVM), resolved once per

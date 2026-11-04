@@ -28,7 +28,7 @@ For automated validation, the shared test cases from the recipes superproject (`
 
 ### CI/CD Pipeline
 
-`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, decrypts the bundle with the `RESOURCES_PASSPHRASE` repository secret, builds the `snip` tool once (cached per source hash), and runs:
+`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, decrypts the bundle with the `RESOURCES_PASSPHRASE` organization secret (shared with the python/ocaml snippet repos), builds the `snip` tool once (cached per source hash), and runs:
 
 ```sh
 snip test --resources tests/resources --jobs 4 --timeout 300
