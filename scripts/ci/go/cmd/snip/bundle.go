@@ -15,7 +15,9 @@ superproject, and print the rotation instructions.
 Usage: snip bundle <resource/shared dir> [passphrase-file]
 
 With no passphrase file, a fresh 64-char passphrase is generated and
-printed ONCE (save it, then set it as the RESOURCES_PASSPHRASE secret).
+printed ONCE (save it, then set it as the RESOURCES_PASSPHRASE
+organization secret, shared by the clojure/python/ocaml snippet repos;
+rebuild their bundles too).
 With a passphrase file, the bundle is re-encrypted under the existing
 secret value (use after resource/shared changes, no rotation needed).
 
