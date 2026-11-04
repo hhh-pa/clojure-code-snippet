@@ -1,8 +1,9 @@
 ;; page-replacement: FIFO, LRU and randomized marking
 ;;
-;; Simulates FIFO and LRU plus the randomized marking algorithm with
-;; a fixed-seed LCG so the eviction choices are deterministic. Emits
-;; the three fault counts.
+;; Simulates FIFO (PersistentQueue, O(1) amortized ops), LRU
+;; (timestamp-indexed map + sorted-set, O(log f) ops), and the
+;; randomized marking algorithm with a fixed-seed LCG so the eviction
+;; choices are deterministic. Emits the three fault counts.
 ;; Reads stdin tokens, writes the answer to stdout.
 
 (def digit-values
@@ -76,31 +77,38 @@
           rq (mapv #(nth nums (+ 2 %)) (range m))
           rng (atom 42)
           rnd (fn [] (swap! rng (fn [x] (mod (+ (* 1103515245 x) 12345) (bit-shift-left 1 31)))) @rng)]
-      (let [ff (loop [rs rq q [] s #{} acc 0]
-                 (if (empty? rs) acc
-                   (let [p (first rs)]
-                     (cond (<= f 0) (recur (rest rs) q s (inc acc))
-                           (contains? s p) (recur (rest rs) q s acc)
-                           :else (let [[q2 s2] (if (>= (count q) f) [(vec (rest q)) (disj s (first q))] [q s])]
-                                   (recur (rest rs) (conj q2 p) (conj s2 p) (inc acc)))))))
-            lru-res (loop [rs rq lru [] acc 0]
-                      (if (empty? rs) acc
-                        (let [p (first rs)]
-                          (cond (<= f 0) (recur (rest rs) lru (inc acc))
-                                (boolean (some #(= % p) lru))
-                                (recur (rest rs) (conj (vec (remove #(= % p) lru)) p) acc)
-                                :else (let [lru2 (if (>= (count lru) f) (vec (rest lru)) lru)]
-                                        (recur (rest rs) (conj lru2 p) (inc acc)))))))
-            mf (loop [rs rq cache #{} marked #{} acc 0]
-                 (if (empty? rs) acc
-                   (let [p (first rs)]
-                     (cond (<= f 0) (recur (rest rs) cache marked (inc acc))
-                           (contains? cache p) (recur (rest rs) cache (conj marked p) acc)
-                           (< (count cache) f) (recur (rest rs) (conj cache p) (conj marked p) (inc acc))
+      (let [ff (loop [i 0 q clojure.lang.PersistentQueue/EMPTY s #{} acc 0]
+                 (if (>= i m) acc
+                   (let [p (nth rq i)]
+                     (cond (<= f 0) (recur (inc i) q s (inc acc))
+                           (contains? s p) (recur (inc i) q s acc)
+                           :else (let [[q2 s2] (if (>= (count q) f)
+                                                 [(pop q) (disj s (peek q))]
+                                                 [q s])]
+                                   (recur (inc i) (conj q2 p) (conj s2 p) (inc acc)))))))
+            lru-res (loop [i 0 p->t {} t-set (sorted-set) acc 0]
+                      (if (>= i m) acc
+                        (let [p (nth rq i)]
+                          (cond (<= f 0) (recur (inc i) p->t t-set (inc acc))
+                                (contains? p->t p)
+                                (let [old-t (get p->t p)]
+                                  (recur (inc i) (assoc p->t p i) (-> t-set (disj [old-t p]) (conj [i p])) acc))
+                                :else
+                                (let [[p->t2 t-set2] (if (>= (count p->t) f)
+                                                       (let [[ev-t ev-p] (first t-set)]
+                                                         [(dissoc p->t ev-p) (disj t-set [ev-t ev-p])])
+                                                       [p->t t-set])]
+                                  (recur (inc i) (assoc p->t2 p i) (conj t-set2 [i p]) (inc acc)))))))
+            mf (loop [i 0 cache #{} marked #{} acc 0]
+                 (if (>= i m) acc
+                   (let [p (nth rq i)]
+                     (cond (<= f 0) (recur (inc i) cache marked (inc acc))
+                           (contains? cache p) (recur (inc i) cache (conj marked p) acc)
+                           (< (count cache) f) (recur (inc i) (conj cache p) (conj marked p) (inc acc))
                            :else (let [mk (if (>= (count marked) (count cache)) #{} marked)
                                        cands (vec (sort (remove #(contains? mk %) cache)))
                                        ev (nth cands (mod (rnd) (count cands)))]
-                                   (recur (rest rs) (conj (disj cache ev) p) (conj (disj mk ev) p) (inc acc)))))))]
+                                   (recur (inc i) (conj (disj cache ev) p) (conj (disj mk ev) p) (inc acc)))))))]
         (println ff)
         (println lru-res)
         (println mf)))))
