@@ -133,7 +133,7 @@ jobs:
   # values compare directly. Benchmark names never churn for the
   # rule: history stays continuous.
   #
-  # The 13 callgrind-slow benchmarks (issue #40) run in the
+  # The 16 callgrind-slow benchmarks (issues #40, hhh-pa/clojure#227) run in the
   # dedicated perf-callgrind-slow legs below with a 3600s/case
   # budget; the main shards exclude them via SLOW_EXCLUDE (kept
   # in sync with the slow matrix) instead of burning 900s
@@ -253,7 +253,7 @@ jobs:
           if [ "${{ matrix.runtime }}" = "jvm" ]; then
             echo "SLOW_EXCLUDE=data_structure/perfect_hashing/solution,data_structure/segment_tree/range_minimum_query,dp/edit_distance/solution,graph/shortest_path/dijkstrashortreach,search/beam_search/beam_search,string_related/automata/count_strings,string_related/boyer_moore/substring_searching,string_related/trie/no_prefix_set,string_related/z_function/substring_searching" >> "$GITHUB_ENV"
           else
-            echo "SLOW_EXCLUDE=dp/edit_distance/solution,graph/shortest_path/dijkstrashortreach,search/bfs/ctci_bfs_shortest_reach,string_related/trie/no_prefix_set" >> "$GITHUB_ENV"
+            echo "SLOW_EXCLUDE=data_structure/segment_tree/range_minimum_query,dp/edit_distance/solution,graph/shortest_path/dijkstrashortreach,search/bfs/ctci_bfs_shortest_reach,string_related/boyer_moore/substring_searching,string_related/suffix_tree/string_function_calculation,string_related/trie/no_prefix_set" >> "$GITHUB_ENV"
           fi
 
       - name: Measure callgrind sweep (deterministic metrics)
@@ -340,7 +340,7 @@ jobs:
 
   # Slow callgrind legs (issue #40): one job per callgrind-slow
   # (benchmark, runtime) pair, each with a 3600s/case budget (vs
-  # 900s in the main shards) so the 13 Ir-missing benchmarks
+  # 900s in the main shards) so the 16 Ir-missing benchmarks
   # recover without stalling the fast path. The main shards
   # exclude exactly this set (SLOW_EXCLUDE above); the legs merge
   # back in report-callgrind, which fails on any remaining skip.
@@ -410,6 +410,11 @@ jobs:
             jobs: 2
             args: ''
           - runtime: clojure-rs
+            benchmark: data_structure/segment_tree/range_minimum_query
+            tag: data_structure-segment_tree-range_minimum_query
+            jobs: 2
+            args: ''
+          - runtime: clojure-rs
             benchmark: dp/edit_distance/solution
             tag: dp-edit_distance-solution
             jobs: 2
@@ -422,6 +427,16 @@ jobs:
           - runtime: clojure-rs
             benchmark: search/bfs/ctci_bfs_shortest_reach
             tag: search-bfs-ctci_bfs_shortest_reach
+            jobs: 2
+            args: ''
+          - runtime: clojure-rs
+            benchmark: string_related/boyer_moore/substring_searching
+            tag: string_related-boyer_moore-substring_searching
+            jobs: 2
+            args: ''
+          - runtime: clojure-rs
+            benchmark: string_related/suffix_tree/string_function_calculation
+            tag: string_related-suffix_tree-string_function_calculation
             jobs: 2
             args: ''
           - runtime: clojure-rs
