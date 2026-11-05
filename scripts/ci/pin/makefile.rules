@@ -3,6 +3,6 @@
 #
 # Single-file tool, so Pin's makefile.default.rules compiles and
 # links it with no special build rules: `make PIN_ROOT=<kit>
-# TARGET=intel64` yields obj-intel64/inscount_alloc.so.
+# TARGET=intel64` yields obj-intel64/inscount.so.
 
-TOOL_ROOTS := inscount_alloc
+TOOL_ROOTS := inscount

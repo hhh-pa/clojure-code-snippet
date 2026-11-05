@@ -14,7 +14,7 @@ const ssaUsage = `Focused regression test: ssa_dominance stdout contract (issue 
 
 Pins the exact idom/phi-block output of src/compiler/ssa_dominance.clj on
 loopy graphs, including the reference's order-dependent single-pass DF
-quirk. Comparison ignores trailing whitespace per line, same as snip test.
+quirk. Comparison ignores trailing whitespace per line, same as snip test-instrumentation.
 
 Usage: snip ssa [--cp CLASSPATH] [--timeout S]
 `

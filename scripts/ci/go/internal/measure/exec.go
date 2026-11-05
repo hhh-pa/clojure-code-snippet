@@ -331,102 +331,6 @@ func PinVersion(pinBin string) *string {
 	return nil
 }
 
-// IsPinTimeout reports whether a PinOnce error text is a deadline
-// timeout rather than a crash: timeouts mean the input exceeds
-// the instrument's budget, so the case degrades to a skip.
-func IsPinTimeout(runErr string) bool {
-	return strings.Contains(runErr, "TIMEOUT")
-}
-
-// PinOnce runs inner once under Intel Pin with the inscount tool
-// and returns stdout plus the total instruction count and the
-// cumulative malloc-family bytes, dispatching on the resolved
-// argv0: the JVM recipe (below) for java, the plain recipe (no JVM
-// flags) otherwise.
-func PinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
-	if !InnerIsJava(inner) {
-		return nativePinOnce(pinBin, tool, inner, inputPath, timeout)
-	}
-	return jvmPinOnce(pinBin, tool, inner, inputPath, timeout)
-}
-
-// parsePinOutput reads the Count/Alloc pair from one tool run.
-func parsePinOutput(outFile string) (int64, int64, string) {
-	raw, err := os.ReadFile(outFile)
-	if err != nil {
-		return 0, 0, "pin output unreadable: " + err.Error()
-	}
-	count, err := ParsePinCount(string(raw))
-	if err != nil {
-		return 0, 0, err.Error()
-	}
-	alloc, err := ParsePinAlloc(string(raw))
-	if err != nil {
-		return 0, 0, err.Error()
-	}
-	return count, alloc, ""
-}
-
-// jvmPinOnce runs a JVM argv once under Pin with PinJVMFlags
-// injected right after the resolved java binary (JVM options must
-// precede -cp and the main class).
-func jvmPinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
-	input, err := os.ReadFile(inputPath)
-	if err != nil {
-		return nil, 0, 0, "open input: " + err.Error()
-	}
-	outFile, err := tempFile("snip-pin-")
-	if err != nil {
-		return nil, 0, 0, "pin output unreadable: " + err.Error()
-	}
-	defer os.Remove(outFile)
-	cmd := []string{pinBin, "-t", tool, "-o", outFile, "--", ResolveArgv0(inner[0])}
-	cmd = append(cmd, PinJVMFlags...)
-	cmd = append(cmd, inner[1:]...)
-	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
-	var timeoutErr *snipcore.TimeoutError
-	if errors.As(err, &timeoutErr) {
-		return nil, 0, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
-	}
-	if err != nil {
-		return nil, 0, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
-	}
-	count, alloc, runErr := parsePinOutput(outFile)
-	if runErr != "" {
-		return nil, 0, 0, runErr
-	}
-	return stdout, count, alloc, ""
-}
-
-// nativePinOnce runs a native argv once under Pin with the
-// inscount tool (same -o plumbing, no JVM flags).
-func nativePinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
-	input, err := os.ReadFile(inputPath)
-	if err != nil {
-		return nil, 0, 0, "open input: " + err.Error()
-	}
-	outFile, err := tempFile("snip-pin-")
-	if err != nil {
-		return nil, 0, 0, "pin output unreadable: " + err.Error()
-	}
-	defer os.Remove(outFile)
-	cmd := []string{pinBin, "-t", tool, "-o", outFile, "--", ResolveArgv0(inner[0])}
-	cmd = append(cmd, inner[1:]...)
-	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
-	var timeoutErr *snipcore.TimeoutError
-	if errors.As(err, &timeoutErr) {
-		return nil, 0, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
-	}
-	if err != nil {
-		return nil, 0, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
-	}
-	count, alloc, runErr := parsePinOutput(outFile)
-	if runErr != "" {
-		return nil, 0, 0, runErr
-	}
-	return stdout, count, alloc, ""
-}
-
 // CallgrindOnce runs inner once under valgrind callgrind and
 // returns stdout plus total Ir and total allocation, dispatching on
 // the resolved argv0: the JVM recipe (below) for java, the native
@@ -653,10 +557,6 @@ type CaseOpts struct {
 	Repeat          int
 	AllocRepeat     int
 	CallgrindRepeat int
-	PinBin          string
-	PinTool         string
-	PinRepeat       int
-	PinTimeout      int
 	Timeout         int
 	Root            string
 	AOT             *AOTCache // nil for script mode
@@ -719,11 +619,11 @@ func MeasureCase(o CaseOpts) CaseResult {
 		res.Runs = append(res.Runs, *metrics)
 	}
 	res.Summary = SummarizeCase(res.Runs)
-	if res.Summary == nil && (o.AllocRepeat > 0 || o.CallgrindRepeat > 0 || o.PinRepeat > 0) {
+	if res.Summary == nil && (o.AllocRepeat > 0 || o.CallgrindRepeat > 0) {
 		// --repeat 0 skips the timed phase; the instrument
 		// phases still need a summary to hang their signals
 		// on (Runs stays 0, which table/BMF renderers use to
-		// tell pin-only results from timed ones).
+		// tell instrument-only results from timed ones).
 		res.Summary = &CaseSummary{}
 	}
 	if o.AllocRepeat > 0 && !allocExempt(o.Label) {
@@ -785,40 +685,6 @@ func MeasureCase(o CaseOpts) CaseResult {
 			s := SummarizeInts(irs)
 			res.Summary.CallgrindInstructions = &s
 			res.Summary.CallgrindAllocatedBytes = SummarizeAlloc(cgAllocs)
-		}
-	}
-	if o.PinRepeat > 0 {
-		var counts, allocs []int64
-		for i := 0; i < o.PinRepeat; i++ {
-			stdout, count, alloc, runErr := PinOnce(o.PinBin, o.PinTool, inner, o.InputPath, o.PinTimeout)
-			if runErr != "" {
-				if IsPinTimeout(runErr) {
-					skip := runErr
-					res.PinSkipped = &skip
-					fmt.Fprintf(os.Stderr, "warning: %s/%s/%s: pin skipped (%s)\n",
-						o.Label, o.Stem, o.Case, runErr)
-					break
-				}
-				msg := fmt.Sprintf("%s/%s: pin: %s", o.Label, o.Case, runErr)
-				res.Error = &msg
-				return res
-			}
-			if i == 0 && string(snipcore.Normalize(stdout)) != string(want) {
-				got := snipcore.TruncateChars(decodeIgnore(snipcore.Normalize(stdout)), 200)
-				wantT := snipcore.TruncateChars(decodeIgnore(want), 200)
-				msg := fmt.Sprintf("%s/%s: pin output mismatch: expected %s got %s",
-					o.Label, o.Case, snipcore.PyRepr(wantT), snipcore.PyRepr(got))
-				res.Error = &msg
-				return res
-			}
-			counts = append(counts, count)
-			allocs = append(allocs, alloc)
-		}
-		if res.PinSkipped == nil {
-			s := SummarizeInts(counts)
-			res.Summary.PinInstructions = &s
-			a := SummarizeInts(allocs)
-			res.Summary.PinAllocatedBytes = &a
 		}
 	}
 	res.Ok = true

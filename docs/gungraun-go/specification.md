@@ -66,7 +66,7 @@ Acceptance criteria:
   (`summary.callgrind_allocated_bytes`, BMF
   `callgrind_allocated_bytes`, `cg_alloc` summary column): the
   memory metric of the deterministic run, read from the JVM's GC
-  log. Each `perf-instrumentation` shard reports both gungraun-run
+  log. Each `perf-callgrind` shard reports both gungraun-run
   measures to Bencher (other measures stripped to avoid polluting
   the perf shards' histories), with a 1% percentage threshold on
   `callgrind_instructions`; `callgrind_allocated_bytes` is tracked
@@ -91,7 +91,7 @@ Acceptance criteria:
   by OS + source hash, setup-go + `CGO_ENABLED=0 go build` on miss
   only, no `working-directory` key); CI jobs use the cached `snip`
   binary instead of `python3`.
-- CI runs a full-matrix `perf-instrumentation` sweep per push (4 shards,
+- CI runs a full-matrix `perf-callgrind` sweep per push (4 shards,
   lean `--repeat 1 --no-alloc` recipe, ~1h per shard parallel with
   `perf`): the pilot-only constraint was calibrated on a slow dev
   box (~90s/case); CI hardware measures ~21s/case all-in, so the
@@ -224,7 +224,7 @@ Acceptance criteria:
   `Install measurement tools` gains `valgrind` (apt cache
   action) so `--callgrind` pilots can run.
 - CI cost policy: `perf` keeps equivalent flags (no callgrind);
-  a parallel 4-shard `perf-instrumentation` sweep measures the full
+  a parallel 4-shard `perf-callgrind` sweep measures the full
   matrix with the lean recipe and reports stripped per-shard
   BMFs to Bencher; `--aot` stays a one-benchmark non-blocking
   `perf-pilot` job (own job with the cached binary, allowed to

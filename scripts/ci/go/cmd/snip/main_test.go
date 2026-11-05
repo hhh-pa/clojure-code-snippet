@@ -13,7 +13,7 @@ func TestParseFlags(t *testing.T) {
 	var s, cp string
 	jobs := 4
 	perf := true
-	pos, err := parseFlags("test", []string{"--resources", "r", "--cp=x.jar", "--jobs", "2", "--no-perf", "a", "b"},
+	pos, err := parseFlags("test-instrumentation", []string{"--resources", "r", "--cp=x.jar", "--jobs", "2", "--no-perf", "a", "b"},
 		flagSpec{
 			Strs:  map[string]*string{"resources": &s, "cp": &cp},
 			Ints:  map[string]*int{"jobs": &jobs},

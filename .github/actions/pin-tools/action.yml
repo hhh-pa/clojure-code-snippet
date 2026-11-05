@@ -1,9 +1,10 @@
 name: pin-tools
 description: >
-  Provide Intel Pin 4.4 plus the snip inscount_alloc pintool from the
+  Provide Intel Pin 4.4 plus the snip inscount pintool from the
   Actions cache (downloaded and built on miss). Callers pass the
-  outputs as snip measure --pin-bin/--pin-tool. Linux-only (Pin
-  ships no macOS/Windows kit); used only on ubuntu-latest.
+  outputs as snip test-instrumentation --pin-bin/--pin-tool.
+  Linux-only (Pin ships no macOS/Windows kit); used only on
+  ubuntu-latest.
 inputs:
   cache-key:
     description: >
@@ -21,7 +22,7 @@ outputs:
     description: Absolute path to the Pin launcher (PIN_ROOT/pin).
     value: ${{ steps.paths.outputs.pin-bin }}
   pin-tool:
-    description: Absolute path to the built inscount_alloc.so.
+    description: Absolute path to the built inscount.so.
     value: ${{ steps.paths.outputs.pin-tool }}
 runs:
   using: composite
@@ -30,7 +31,7 @@ runs:
       uses: actions/cache@v5
       with:
         # The whole dir: pin/ (extracted kit root) plus tool/ (tool
-        # sources + obj-intel64/inscount_alloc.so). Relative on
+        # sources + obj-intel64/inscount.so). Relative on
         # purpose, like snip-bin: an absolute workspace path fails
         # post-save validation. See snip-tools for the full story.
         path: pin-kit
@@ -49,7 +50,7 @@ runs:
         PIN_ROOT="$KIT/pin"
         TOOL_DIR="$KIT/tool"
         PIN_BIN="$PIN_ROOT/pin"
-        PIN_TOOL="$TOOL_DIR/obj-intel64/inscount_alloc.so"
+        PIN_TOOL="$TOOL_DIR/obj-intel64/inscount.so"
         usable() {
           [ -x "$PIN_BIN" ] && [ -f "$PIN_TOOL" ] && timeout 30 "$PIN_BIN" -version >/dev/null 2>&1
         }
@@ -63,7 +64,7 @@ runs:
           mv "$KIT"/dl/pin-external-4.4-* "$PIN_ROOT"
           rmdir "$KIT/dl"
           mkdir -p "$TOOL_DIR"
-          cp "$GITHUB_WORKSPACE/scripts/ci/pin/inscount_alloc.cpp" \
+          cp "$GITHUB_WORKSPACE/scripts/ci/pin/inscount.cpp" \
              "$GITHUB_WORKSPACE/scripts/ci/pin/makefile" \
              "$GITHUB_WORKSPACE/scripts/ci/pin/makefile.rules" "$TOOL_DIR/"
           make -C "$TOOL_DIR" PIN_ROOT="$PIN_ROOT" TARGET=intel64 tools
@@ -90,4 +91,4 @@ runs:
       shell: bash
       run: |
         echo "pin-bin=$GITHUB_WORKSPACE/pin-kit/pin/pin" >> "$GITHUB_OUTPUT"
-        echo "pin-tool=$GITHUB_WORKSPACE/pin-kit/tool/obj-intel64/inscount_alloc.so" >> "$GITHUB_OUTPUT"
+        echo "pin-tool=$GITHUB_WORKSPACE/pin-kit/tool/obj-intel64/inscount.so" >> "$GITHUB_OUTPUT"

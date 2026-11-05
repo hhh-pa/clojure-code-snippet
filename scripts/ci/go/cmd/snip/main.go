@@ -2,7 +2,7 @@
 // statically built binary (profile-runner fashion: built once per
 // source hash, cached, never rebuilt redundantly):
 //
-//	snip test     correctness runner (tests/run_tests.py)
+//	snip test-instrumentation  instrumented correctness runner
 //	snip ssa      SSA DF regression test (tests/ssa_df_regression.py)
 //	snip measure  load-independent perf measurement (tools/measure.py)
 //	snip bundle   encrypted resource-bundle builder (tools/build_bundle.sh)
@@ -29,8 +29,8 @@ func dispatch(argv []string) int {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return 0
-	case "test":
-		return runTest(argv[1:])
+	case "test-instrumentation":
+		return runTestInstrumentation(argv[1:])
 	case "ssa":
 		return runSSA(argv[1:])
 	case "measure":
@@ -46,7 +46,8 @@ func dispatch(argv []string) int {
 const usage = `Usage: snip <subcommand> [flags]
 
 Subcommands:
-  test      run every src/**/*.clj script against the shared test cases
+  test-instrumentation  run every src/**/*.clj script against the shared
+                        test cases, once each under Pin + GNU time
   ssa       focused ssa_dominance stdout regression test
   measure   load-independent performance measurement
   bundle    build the encrypted test-resource bundle

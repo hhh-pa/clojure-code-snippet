@@ -39,9 +39,10 @@ type AllocSummary struct {
 }
 
 // CaseSummary aggregates one case's runs. Field order matches
-// summarize_case plus the appended allocated_bytes, the
-// callgrind_instructions / callgrind_allocated_bytes signals,
-// and the pin_instructions signal.
+// summarize_case plus the appended allocated_bytes and the
+// callgrind_instructions / callgrind_allocated_bytes signals.
+// (Pin instruction counts live in snip test-instrumentation, not
+// in measure reports.)
 type CaseSummary struct {
 	CpuS                    MinMedMax     `json:"cpu_s"`
 	MaxRSSKb                MinMedMax     `json:"maxrss_kb"`
@@ -52,15 +53,12 @@ type CaseSummary struct {
 	AllocatedBytes          *AllocSummary `json:"allocated_bytes"`
 	CallgrindInstructions   *MinMedMax    `json:"callgrind_instructions"`
 	CallgrindAllocatedBytes *AllocSummary `json:"callgrind_allocated_bytes"`
-	PinInstructions         *MinMedMax    `json:"pin_instructions"`
-	PinAllocatedBytes       *MinMedMax    `json:"pin_allocated_bytes"`
 }
 
 // CaseResult is one measured case. Error is nil (null) on success.
 // CallgrindSkipped records a degraded callgrind phase: the timed
 // data is valid (Ok stays true) but the case exceeded the callgrind
-// budget, so no callgrind summaries were recorded. PinSkipped is
-// the same degradation for the Pin count phase.
+// budget, so no callgrind summaries were recorded.
 type CaseResult struct {
 	Label            string       `json:"label"`
 	Stem             string       `json:"stem"`
@@ -72,7 +70,6 @@ type CaseResult struct {
 	AllocRuns        []int64      `json:"alloc_runs"`
 	Summary          *CaseSummary `json:"summary"`
 	CallgrindSkipped *string      `json:"callgrind_skipped,omitempty"`
-	PinSkipped       *string      `json:"pin_skipped,omitempty"`
 }
 
 // SummarizeFloats aggregates floats (odd counts keep the middle

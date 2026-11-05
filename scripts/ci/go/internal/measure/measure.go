@@ -15,8 +15,10 @@ const PerfEvents = "instructions:u,cycles:u"
 // ToolVersion tags the report; 3 adds the optional callgrind/aot
 // fields, 4 the callgrind_allocated_bytes signal, 5 the native
 // callgrind recipe plus runtime_version provenance, 6 the
-// pin_instructions signal plus pin_version provenance.
-const ToolVersion = 6
+// pin_instructions signal plus pin_version provenance, 7 drops
+// the pin_* fields again (Pin runs in snip test-instrumentation
+// now, once per case, not as a measure phase).
+const ToolVersion = 7
 
 // DefaultCommandTemplate runs snippets on the JVM.
 const DefaultCommandTemplate = "java -cp {cp} clojure.main {script}"
@@ -34,11 +36,6 @@ const AllocRepeatDefault = 3
 
 // CallgrindRepeatDefault mirrors the one-shot gungraun default.
 const CallgrindRepeatDefault = 1
-
-// PinRepeatDefault runs two Pin counts per case: native counts
-// agree to ~0.1% and JVM counts to a few percent, enough to
-// catch instrument flakiness without paying for more slow runs.
-const PinRepeatDefault = 2
 
 // AllocExempt labels skip EpsilonGC runs (see measure_case).
 var AllocExempt = map[string]bool{"search/beam_search": true}

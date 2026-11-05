@@ -24,14 +24,15 @@ Some code examples have been moved to a **private repository** as a precautionar
 
 To respect the rights of original content creators, **test cases are not included** in this repository in plain form. Instead, they can be found on the websites where the referenced problems originate.
 
-For automated validation, the shared test cases from the recipes superproject (`resource/shared`) ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz, AES-256, ASCII-armored). `snip test` runs every `src/**/*.clj` script against the decrypted cases and diff-compares stdout against the expected output (trailing whitespace per line ignored).
+For automated validation, the shared test cases from the recipes superproject (`resource/shared`) ship as an encrypted bundle, `tests/resources.tar.xz.asc` (tar.xz, AES-256, ASCII-armored). `snip test-instrumentation` runs every `src/**/*.clj` script once against the decrypted cases and diff-compares stdout against the expected output (trailing whitespace per line ignored) — under Intel Pin plus GNU time when `--pin-bin`/`--pin-tool` point at the Pin kit, recording the dynamic instruction count and peak RSS per case; natively (correctness only) otherwise. Memory is benchmarked via RSS directly; Pin counts instructions only.
 
 ### CI/CD Pipeline
 
 `.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, decrypts the bundle with the `RESOURCES_PASSPHRASE` organization secret (shared with the python/ocaml snippet repos), builds the `snip` tool once (cached per source hash), and runs:
 
 ```sh
-snip test --resources tests/resources --jobs 4 --timeout 300
+snip test-instrumentation --resources tests/resources --jobs 2 --timeout 900 \
+  --pin-bin pin-kit/pin/pin --pin-tool pin-kit/tool/obj-intel64/inscount.so
 ```
 
 To test locally, build `snip` (`go build -o snip ./cmd/snip` in
@@ -95,18 +96,18 @@ snip measure --resources tests/resources --repeat 5 \
 snip measure --self-test  # parser checks, no JVM needed
 ```
 
-CI runs correctness in the `test` job, then measures every snippet
-with `--callgrind --pin` in a sharded matrix `perf-instrumentation`
-sweep job (`needs: test`, 8 shards x 2 runtimes via `snip measure
---shard K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard
-callgrind-only baseline). Each
+CI runs instrumented correctness in the `test-instrumentation` job,
+then measures every snippet with `--callgrind` in a sharded matrix
+`perf-callgrind` sweep job (`needs: test-instrumentation`, 8 shards x
+2 runtimes via `snip measure --shard K/N`, lean `--repeat 1
+--no-alloc` recipe, ~40min per shard). Each
 shard reports its own BMF subset to Bencher (`bencher run --adapter
 json --file sweep-bench.json`, carrying only the two gungraun-run
 measures: `callgrind_instructions` thresholded at 1% plus
 unthresholded `callgrind_allocated_bytes`) — per-shard reports keep
 every check under GitHub's check-summary limit, where one merged
 report would re-truncate it — and uploads per-shard artifacts; a
-fan-in `report-instrumentation` job merges the full reports per runtime
+fan-in `report-callgrind` job merges the full reports per runtime
 (`snip measure --merge`), uploads the merged bundles, and appends
 a combined results table to its step summary. A non-blocking
 `perf-pilot` job keeps one `--aot` measurement per push as a
@@ -133,7 +134,7 @@ Bencher shows the delta; a manual dispatch may pin
 `clojure_rs_sha` to bisect or repro. To add a compiler:
 
 1. Add a `runtime` entry in `.github/workflows/test.yml`
-   (perf-instrumentation + report-instrumentation matrices, testbed
+   (perf-callgrind + report-callgrind matrices, testbed
    `ubuntu-latest-<runtime>`) with whatever build steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
    --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes);

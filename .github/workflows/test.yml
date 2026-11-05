@@ -26,7 +26,7 @@ concurrency:
 # passphrase, set the organization secret to the same value, and
 # rebuild the sibling bundles too (see `snip bundle --help`).
 
-# The perf-instrumentation native leg always builds clojure-rs master HEAD
+# The perf-callgrind native leg always builds clojure-rs master HEAD
 # (interpreter-only build; `run` needs no LLVM), resolved once per
 # run by the resolve-rs job below. A bad upstream commit fails
 # loudly (the sweep diff-gates every case), and Bencher shows the
@@ -58,13 +58,19 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "clojure-rs revision: \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
-  test-shard:
+  # Instrumented correctness gate: every case runs exactly once,
+  # under Intel Pin plus GNU time, checking stdout while recording
+  # the dynamic instruction count (Pin counts instructions only)
+  # and peak RSS (the memory benchmark; nothing traces allocation).
+  # 8 shards: a cold JVM under Pin is an order of magnitude slower
+  # than native, so the old 4-shard split would gate too slowly.
+  test-instrumentation-shard:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-    name: test (shard ${{ matrix.shard }}/4)
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    name: test-instrumentation (shard ${{ matrix.shard }}/8)
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner
@@ -73,6 +79,10 @@ jobs:
       - uses: ./.github/actions/snip-tools
         with:
           cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
+      - id: pin
+        uses: ./.github/actions/pin-tools
+        with:
+          cache-key: pin-${{ runner.os }}-${{ hashFiles('.github/actions/pin-tools/**', 'scripts/ci/pin/**') }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@v6
@@ -109,36 +119,45 @@ jobs:
             --passphrase "$RESOURCES_PASSPHRASE" \
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
+      - name: Install measurement tools
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          # time reports peak RSS around the Pin run; gcc, g++ and
+          # make build the Pin inscount tool on pin-kit cache miss.
+          # All preinstalled on the hosted image, listed here so
+          # the dependencies are explicit.
+          packages: time gcc g++ make
+          version: 1.0
+
       - name: Run Clojure snippet tests
-        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4'
+        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test-instrumentation --resources tests/resources --jobs 2 --timeout 900 --shard ${{ matrix.shard }}/8 --pin-bin "${{ steps.pin.outputs.pin-bin }}" --pin-tool "${{ steps.pin.outputs.pin-tool }}"'
 
       - name: Run SSA DF regression test
         run: '"$GITHUB_WORKSPACE/snip-bin/snip" ssa'
 
-  # Aggregator: branch policy requires a check literally named "test",
-  # which the sharded matrix above no longer produces on its own.
-  test:
-    needs: test-shard
+  # Aggregator: branch policy requires a check literally named
+  # "test-instrumentation", which the sharded matrix above no longer
+  # produces on its own.
+  test-instrumentation:
+    needs: test-instrumentation-shard
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Require all shards green
         run: |
-          if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
+          if [ "${{ needs.test-instrumentation-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
 
-  # Full-matrix instrumentation sweep: every snippet's deterministic
-  # measures (callgrind_instructions + callgrind_allocated_bytes,
-  # plus pin_instructions + pin_allocated_bytes) on every push, for
-  # JVM Clojure and clojure-rs alike. This is the only perf signal
-  # (the timed perf job was removed in T1211).
-  # Lean recipe (--repeat 1, --no-alloc since the instrument phases
-  # themselves yield allocation, no slope): ~21s/case all-in on CI
-  # hardware x ~220 cases/shard / 2 jobs ~= 40min per shard
-  # (callgrind-only baseline; the pin phase adds its own share).
-  # A valgrind/Pin/toolchain failure fails the push (unlike the
+  # Full-matrix callgrind sweep: every snippet's gungraun-run
+  # measures (callgrind_instructions + callgrind_allocated_bytes) on
+  # every push, for JVM Clojure and clojure-rs alike. This is the
+  # only perf signal (the timed perf job was removed in T1211).
+  # Lean recipe (--repeat 1, --no-alloc since the callgrind phase
+  # itself yields allocation, no slope): ~21s/case all-in on CI
+  # hardware x ~220 cases/shard / 2 jobs ~= 40min per shard.
+  # A valgrind/toolchain failure fails the push (unlike the
   # pilot): the sweep is a required signal.
-  perf-instrumentation:
-    needs: [test, resolve-rs]
+  perf-callgrind:
+    needs: [test-instrumentation, resolve-rs]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -151,7 +170,7 @@ jobs:
         # One entry per compiler/runtime; benchmark names stay
         # identical across runtimes (Bencher compares via testbeds,
         # derived below as ubuntu-latest-<runtime>). Keep the
-        # runtime list in sync with the report-instrumentation job below.
+        # runtime list in sync with the report-callgrind job below.
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
         runtime: [jvm, clojure-rs]
     steps:
@@ -162,10 +181,6 @@ jobs:
       - uses: ./.github/actions/snip-tools
         with:
           cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
-      - id: pin
-        uses: ./.github/actions/pin-tools
-        with:
-          cache-key: pin-${{ runner.os }}-${{ hashFiles('.github/actions/pin-tools/**', 'scripts/ci/pin/**') }}
 
       - name: Set up JDK 21
         if: matrix.runtime == 'jvm'
@@ -260,12 +275,10 @@ jobs:
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
           # gcc builds snip's LD_PRELOAD allocation-counting shim
-          # on demand (native legs); g++ and make build the Pin
-          # inscount tool on pin-kit cache miss. All three are
-          # preinstalled on the hosted image, listed here so the
-          # dependencies are explicit.
-          packages: time linux-tools-common linux-tools-generic valgrind gcc g++ make
-          version: 1.3
+          # on demand (native legs); preinstalled on the hosted
+          # image, listed here so the dependency is explicit.
+          packages: time linux-tools-common linux-tools-generic valgrind gcc
+          version: 1.2
 
       # Valgrind gate: the apt cache key embeds apt-resolved
       # package versions, which differ across runner image
@@ -285,22 +298,21 @@ jobs:
           if ! usable; then
             echo "cached valgrind unusable; reinstalling from apt"
             sudo DEBIAN_FRONTEND=noninteractive apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall time linux-tools-common linux-tools-generic valgrind gcc g++ make
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall time linux-tools-common linux-tools-generic valgrind gcc
           fi
           command -v valgrind
           ver=$(timeout 30 valgrind --version)
           echo "$ver"
           echo "valgrind: $ver" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Measure instrumentation sweep (deterministic metrics)
+      - name: Measure callgrind sweep (deterministic metrics)
         # Lean recipe: one timed run (stdout gate) + the callgrind
         # phase per case (JVM: one -Xint+EpsilonGC run; native: one
-        # plain callgrind run plus one LD_PRELOAD counting run) +
-        # the Pin phase (one inscount run per case; the pin-tools
-        # action above fails loudly when Pin is unusable, so no
-        # vacuous pin_instructions here). No --alloc (the instrument
-        # phases themselves yield allocation), no --slope (slope fits
-        # timed runs).
+        # plain callgrind run plus one LD_PRELOAD counting run).
+        # No --alloc (the callgrind phase itself yields
+        # allocation), no --slope (slope fits timed runs). Pin
+        # instruction counts come from the test-instrumentation job
+        # instead (one instrumented run per case during tests).
         run: |
           flags=(--runtime "${{ matrix.runtime }}")
           if [ "${{ matrix.runtime }}" = "clojure-rs" ]; then
@@ -311,9 +323,6 @@ jobs:
             "${flags[@]}" \
             --shard ${{ matrix.shard }}/8 \
             --callgrind --callgrind-repeat 1 \
-            --pin --pin-bin "${{ steps.pin.outputs.pin-bin }}" \
-            --pin-tool "${{ steps.pin.outputs.pin-tool }}" \
-            --pin-repeat 1 --pin-timeout 900 \
             --output sweep-results.json --bmf-output sweep-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
@@ -385,7 +394,7 @@ jobs:
   # hosted runner must never fail the push; pilot evidence lands
   # in the uploaded artifacts either way.
   perf-pilot:
-    needs: test
+    needs: test-instrumentation
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -458,14 +467,14 @@ jobs:
             pilot-aot.json
             pilot-aot-bmf.json
 
-  report-instrumentation:
-    needs: perf-instrumentation
+  report-callgrind:
+    needs: perf-callgrind
     runs-on: ubuntu-latest
     # No Bencher run here by design: one merged ~394-benchmark
     # file would re-truncate the check summary (T11).
     permissions:
       contents: read
-    # One merge per runtime; keep in sync with the perf-instrumentation
+    # One merge per runtime; keep in sync with the perf-callgrind
     # job's runtime list above.
     strategy:
       matrix:
