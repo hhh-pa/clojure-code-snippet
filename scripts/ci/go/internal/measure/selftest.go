@@ -401,6 +401,20 @@ func checkSummary(check func(string, bool, string)) {
 		check("summary-cg-column", strings.Contains(text, "| cg_insn |") &&
 			strings.Contains(text, "| a/s | 0 | 1.000 | 1.0 | 2.0 | n/a | 6200111758 | 0.000 |"), text)
 	}
+	withPin := BMF{
+		"a/s": {CpuTime: withCxp["a/s"].CpuTime, PeakMemory: withCxp["a/s"].PeakMemory,
+			AllocatedBytes:  withCxp["a/s"].AllocatedBytes,
+			PinInstructions: &Measure{Value: pyjson.IntNum(846018869)}},
+	}
+	os.Remove(path)
+	if err := AppendSummary(path, rep, withPin); err != nil {
+		check("summary-pin-column", false, err.Error())
+	} else {
+		raw, _ := os.ReadFile(path)
+		text := string(raw)
+		check("summary-pin-column", strings.Contains(text, "| pin_insn |") &&
+			strings.Contains(text, "| a/s | 0 | 1.000 | 1.0 | 2.0 | n/a | 846018869 | 0.000 |"), text)
+	}
 	block := SlopeFileLines(map[string]slope.Entry{
 		"a/s": {Ok: true, Fit: &slope.Fit{Ok: true, Slope: numPtr(1.5), Lower: numPtr(1.4),
 			Upper: numPtr(1.6), RSquared: numPtr(0.99)}},
