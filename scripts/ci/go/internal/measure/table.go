@@ -37,6 +37,10 @@ func PrintTable(out io.Writer, results []CaseResult, failures, missing []string)
 				parts = append(parts, fmt.Sprintf("pin_min=%s pin_med=%s pin_max=%s",
 					numPlain(s.PinInstructions.Min), numPlain(s.PinInstructions.Median), numPlain(s.PinInstructions.Max)))
 			}
+			if s.PinAllocatedBytes != nil {
+				parts = append(parts, fmt.Sprintf("alloc_min=%s alloc_med=%s alloc_max=%s",
+					numPlain(s.PinAllocatedBytes.Min), numPlain(s.PinAllocatedBytes.Median), numPlain(s.PinAllocatedBytes.Max)))
+			}
 			if s.CallgrindInstructions != nil {
 				parts = append(parts, fmt.Sprintf("cg_min=%s cg_med=%s cg_max=%s",
 					numPlain(s.CallgrindInstructions.Min), numPlain(s.CallgrindInstructions.Median), numPlain(s.CallgrindInstructions.Max)))
