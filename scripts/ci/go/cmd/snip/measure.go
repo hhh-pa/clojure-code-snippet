@@ -31,7 +31,8 @@ const measureUsage = `Load-independent performance measurement for the Clojure s
 
 Runs every src/**/*.clj script against the shared test cases and records
 cpu_s, maxrss_kb, allocated_bytes, instructions/cycles, plus (under the
-new flags) callgrind instruction counts and AOT-compiled runs.
+new flags) callgrind instruction counts, Pin instruction counts,
+and AOT-compiled runs.
 
 Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                    [--only SUBSTR] [--output F] [--bmf-output F]
@@ -40,6 +41,8 @@ Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                    [--alloc-repeat N | --no-alloc] [--slope]
                    [--callgrind] [--callgrind-repeat N] [--aot]
                    [--aot-cache DIR]
+                   [--pin] [--pin-bin BIN] [--pin-tool SO] [--pin-repeat N]
+                   [--pin-timeout S]
 
        snip measure --merge INPUT... [--output F] [--bmf-output F]
                    [--summary-file F]
@@ -50,7 +53,7 @@ Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
 func runMeasure(argv []string) int {
 	root := snipcore.RepoRoot()
 	resources := filepath.Join(root, "tests", "resources")
-	var cp, only, output, bmfOutput, summaryFile, timeBin, shard, aotCache string
+	var cp, only, output, bmfOutput, summaryFile, timeBin, shard, aotCache, pinBin, pinTool string
 	runtimeName := "jvm"
 	template := measure.DefaultCommandTemplate
 	jobs := 1
@@ -59,6 +62,8 @@ func runMeasure(argv []string) int {
 	allocRepeat := measure.AllocRepeatDefault
 	slopeRepeat := 3
 	callgrindRepeat := measure.CallgrindRepeatDefault
+	pinRepeat := measure.PinRepeatDefault
+	pinTimeout := 600
 	perf := true
 	alloc := true
 	merge := false
@@ -67,6 +72,7 @@ func runMeasure(argv []string) int {
 	selfTest := false
 	aotFlag := false
 	callgrind := false
+	pin := false
 	positionals, err := parseFlags("measure", argv, flagSpec{
 		Strs: map[string]*string{
 			"resources": &resources, "cp": &cp, "only": &only,
@@ -74,17 +80,19 @@ func runMeasure(argv []string) int {
 			"summary-file": &summaryFile, "time-bin": &timeBin,
 			"runtime": &runtimeName, "command-template": &template,
 			"shard": &shard, "aot-cache": &aotCache,
+			"pin-bin": &pinBin, "pin-tool": &pinTool,
 		},
 		Ints: map[string]*int{
 			"jobs": &jobs, "timeout": &timeout, "repeat": &repeat,
 			"alloc-repeat": &allocRepeat, "slope-repeat": &slopeRepeat,
-			"callgrind-repeat": &callgrindRepeat,
+			"callgrind-repeat": &callgrindRepeat, "pin-repeat": &pinRepeat,
+			"pin-timeout": &pinTimeout,
 		},
 		Bools: map[string]*bool{
 			"perf": &perf, "alloc": &alloc, "merge": &merge,
 			"slope": &slopeFlag, "slope-only": &slopeOnly,
 			"self-test": &selfTest, "aot": &aotFlag,
-			"callgrind": &callgrind,
+			"callgrind": &callgrind, "pin": &pin,
 		},
 	})
 	if err != nil {
@@ -124,6 +132,14 @@ func runMeasure(argv []string) int {
 		fmt.Fprintln(os.Stderr, "snip measure: --callgrind-repeat must be >= 1")
 		return 2
 	}
+	if pinRepeat < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --pin-repeat must be >= 1")
+		return 2
+	}
+	if pinTimeout < 1 {
+		fmt.Fprintln(os.Stderr, "snip measure: --pin-timeout must be >= 1")
+		return 2
+	}
 	var shardParsed *[2]int
 	if shard != "" {
 		idx, total, err := snipcore.ParseMeasureShard(shard)
@@ -150,6 +166,18 @@ func runMeasure(argv []string) int {
 	useCallgrind := callgrind && measure.CallgrindUsable()
 	if callgrind && !useCallgrind {
 		fmt.Fprintln(os.Stderr, "warning: valgrind unavailable; callgrind_instructions will be null")
+	}
+	usePin := pin && measure.PinUsable(pinBin, pinTool)
+	if pin && !usePin {
+		fmt.Fprintln(os.Stderr, "warning: pin unavailable (need --pin-bin launcher and --pin-tool inscount .so); pin_instructions will be null")
+	}
+	var pinVersion *string
+	if usePin {
+		pinVersion = measure.PinVersion(pinBin)
+	}
+	if usePin && measure.TemplateHeadIsJava(template) && !measure.PinNoASLRUsable() {
+		fmt.Fprintln(os.Stderr, "snip measure: jvm pin legs need setarch (util-linux) to fix the address layout")
+		return 2
 	}
 	classpath, err := snipcore.ResolveClasspath(root, cp)
 	if err != nil {
@@ -219,6 +247,10 @@ func runMeasure(argv []string) int {
 	if useCallgrind {
 		effectiveCg = callgrindRepeat
 	}
+	effectivePin := 0
+	if usePin {
+		effectivePin = pinRepeat
+	}
 	var aotCacheObj *measure.AOTCache
 	if aotFlag {
 		java := "unknown"
@@ -249,7 +281,9 @@ func runMeasure(argv []string) int {
 					Script: t.script, Case: t.caseName, InputPath: t.inp,
 					OutputPath: t.outp, Repeat: repeat,
 					AllocRepeat: effectiveAlloc, CallgrindRepeat: effectiveCg,
-					Timeout: timeout, Root: root, AOT: aotCacheObj,
+					PinBin: pinBin, PinTool: pinTool, PinRepeat: effectivePin,
+					PinTimeout: pinTimeout,
+					Timeout:    timeout, Root: root, AOT: aotCacheObj,
 				})
 				n := done.Add(1)
 				printMu.Lock()
@@ -371,12 +405,14 @@ func runMeasure(argv []string) int {
 			JavaVersion: javaVersion, RuntimeVersion: runtimeVersion,
 			Classpath: classpath,
 			TimeBin:   timeBinPath, PerfUsed: usePerf, CallgrindUsed: effectiveCg > 0,
+			PinUsed: effectivePin > 0, PinVersion: pinVersion,
 		},
 		Config: measure.Config{
 			Repeat: repeat, Jobs: jobs, Timeout: timeout, Only: only,
 			Shard: strOrNil(shard), AllocRepeat: &effectiveAlloc,
 			Slope: slopeFlag, SlopeRepeat: slopeRepeat,
-			CallgrindRepeat: effectiveCg, Aot: aotFlag,
+			CallgrindRepeat: effectiveCg, PinRepeat: effectivePin, PinTimeout: pinTimeout,
+			Aot: aotFlag,
 		},
 		Results: results, Failures: failures, Missing: missing,
 		Complexity: complexity,
@@ -434,6 +470,8 @@ func formatCaseProgress(done, total int, res measure.CaseResult) string {
 		}
 	} else if res.CallgrindSkipped != nil {
 		outcome = "ok (callgrind skipped: " + *res.CallgrindSkipped + ")"
+	} else if res.PinSkipped != nil {
+		outcome = "ok (pin skipped: " + *res.PinSkipped + ")"
 	}
 	return fmt.Sprintf("measure [%d/%d] %s/%s/%s: %s",
 		done, total, res.Label, res.Stem, res.Case, outcome)

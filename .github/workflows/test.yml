@@ -26,7 +26,7 @@ concurrency:
 # passphrase, set the organization secret to the same value, and
 # rebuild the sibling bundles too (see `snip bundle --help`).
 
-# The perf-callgrind native leg always builds clojure-rs master HEAD
+# The perf-pin native leg always builds clojure-rs master HEAD
 # (interpreter-only build; `run` needs no LLVM), resolved once per
 # run by the resolve-rs job below. A bad upstream commit fails
 # loudly (the sweep diff-gates every case), and Bencher shows the
@@ -126,16 +126,16 @@ jobs:
         run: |
           if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
 
-  # Full-matrix callgrind sweep: every snippet's gungraun-run
-  # measures (callgrind_instructions + callgrind_allocated_bytes) on
-  # every push, for JVM Clojure and clojure-rs alike. This is the
-  # only perf signal (the timed perf job was removed in T1211).
-  # Lean recipe (--repeat 1, --no-alloc since the callgrind phase
-  # itself yields allocation, no slope): ~21s/case all-in on CI
-  # hardware x ~220 cases/shard / 2 jobs ~= 40min per shard.
-  # A valgrind/toolchain failure fails the push (unlike the
-  # pilot): the sweep is a required signal.
-  perf-callgrind:
+  # Full-matrix pin sweep: every snippet's deterministic measures
+  # (pin_instructions + peak RSS) on every push, for JVM Clojure
+  # and clojure-rs alike. This is the only perf signal (the timed
+  # perf job was removed in T1211; Pin replaced valgrind as the
+  # instrument). Lean recipe (--repeat 1, --no-alloc since memory
+  # is benchmarked via RSS directly, no slope): one timed run
+  # (stdout gate + RSS) plus one Pin inscount run per case. A
+  # Pin/toolchain failure fails the push (unlike the pilot): the
+  # sweep is a required signal.
+  perf-pin:
     needs: [test, resolve-rs]
     runs-on: ubuntu-latest
     permissions:
@@ -149,7 +149,7 @@ jobs:
         # One entry per compiler/runtime; benchmark names stay
         # identical across runtimes (Bencher compares via testbeds,
         # derived below as ubuntu-latest-<runtime>). Keep the
-        # runtime list in sync with the report-callgrind job below.
+        # runtime list in sync with the report-pin job below.
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
         runtime: [jvm, clojure-rs]
     steps:
@@ -160,6 +160,10 @@ jobs:
       - uses: ./.github/actions/snip-tools
         with:
           cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
+      - id: pin
+        uses: ./.github/actions/pin-tools
+        with:
+          cache-key: pin-${{ runner.os }}-${{ hashFiles('.github/actions/pin-tools/**', 'scripts/ci/pin/**') }}
 
       - name: Set up JDK 21
         if: matrix.runtime == 'jvm'
@@ -253,43 +257,22 @@ jobs:
       - name: Install measurement tools
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
-          # gcc builds snip's LD_PRELOAD allocation-counting shim
-          # on demand (native legs); preinstalled on the hosted
-          # image, listed here so the dependency is explicit.
-          packages: time linux-tools-common linux-tools-generic valgrind gcc
-          version: 1.2
+          # gcc, g++ and make build the Pin inscount tool on
+          # pin-kit cache miss; util-linux provides setarch, which
+          # fixes the address layout for JVM pin legs. All
+          # preinstalled on the hosted image, listed here so the
+          # dependencies are explicit. (The pin-tools action above
+          # fails loudly when Pin itself is unusable, so no
+          # vacuous pin_instructions here.)
+          packages: time linux-tools-common linux-tools-generic gcc g++ make util-linux
+          version: 1.3
 
-      # Valgrind gate: the apt cache key embeds apt-resolved
-      # package versions, which differ across runner image
-      # builds (run 41713792243: linux-tools 7.0.0-38.38 on
-      # image 20261025 vs 7.0.0-42.42 on 20261101) — and the
-      # -38 entry is degenerate ("Restoring 0 packages"), so
-      # those legs install green yet get NO valgrind.
-      # `snip measure` then only warns and records
-      # callgrind_repeat 0: 9 of 16 shards green but vacuous.
-      # So probe exactly what snip probes (valgrind on PATH +
-      # `valgrind --version` exit 0 within 30s); on failure
-      # reinstall once from apt, and fail LOUDLY if valgrind
-      # is still unusable — never again a green vacuous shard.
-      - name: Verify valgrind usable
-        run: |
-          usable() { command -v valgrind >/dev/null && timeout 30 valgrind --version >/dev/null 2>&1; }
-          if ! usable; then
-            echo "cached valgrind unusable; reinstalling from apt"
-            sudo DEBIAN_FRONTEND=noninteractive apt-get update
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall time linux-tools-common linux-tools-generic valgrind gcc
-          fi
-          command -v valgrind
-          ver=$(timeout 30 valgrind --version)
-          echo "$ver"
-          echo "valgrind: $ver" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Measure callgrind sweep (deterministic metrics)
-        # Lean recipe: one timed run (stdout gate) + the callgrind
-        # phase per case (JVM: one -Xint+EpsilonGC run; native: one
-        # plain callgrind run plus one LD_PRELOAD counting run).
-        # No --alloc (the callgrind phase itself yields
-        # allocation), no --slope (slope fits timed runs).
+      - name: Measure pin sweep (deterministic metrics)
+        # Lean recipe: one timed run (stdout gate + RSS) + one Pin
+        # inscount run per case (JVM legs run under setarch -R with
+        # -Xrs -XX:+AllowUserSignalHandlers; native legs run plain).
+        # No --alloc (memory is benchmarked via RSS directly),
+        # no --slope (slope fits timed runs).
         run: |
           flags=(--runtime "${{ matrix.runtime }}")
           if [ "${{ matrix.runtime }}" = "clojure-rs" ]; then
@@ -299,31 +282,31 @@ jobs:
             --repeat 1 --no-alloc --jobs 2 --timeout 900 \
             "${flags[@]}" \
             --shard ${{ matrix.shard }}/8 \
-            --callgrind --callgrind-repeat 1 \
+            --pin --pin-bin "${{ steps.pin.outputs.pin-bin }}" \
+            --pin-tool "${{ steps.pin.outputs.pin-tool }}" \
+            --pin-repeat 1 --pin-timeout 900 \
             --output sweep-results.json --bmf-output sweep-bmf.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main
 
-      # Threshold policy: callgrind_instructions (percentage) only,
-      # same flags on both testbeds (the clojure-rs testbed starts
-      # with empty history and arms after 10 samples). Both
-      # gungraun-run measures are tracked; the overlapping
-      # cpu_time/peak_memory entries are stripped before reporting
-      # (the sweep is repeat-1 timing, not a timing signal; no
-      # allocated_bytes here: --no-alloc). A fixed 1% upper
-      # boundary sits far above the ~0.0006% observed callgrind
-      # wobble; min/max sample 10/64. callgrind_allocated_bytes
-      # rides threshold-free until its own wobble is characterized.
-      # Each shard reports its own stripped subset (~50
-      # benchmarks x 2 measures).
-      - name: Track callgrind benchmarks with Bencher
+      # Threshold policy: pin_instructions (percentage) only, same
+      # flags on both testbeds (fresh histories arm after 10
+      # samples). Both sweep measures are tracked; cpu_time is
+      # stripped before reporting (the sweep is repeat-1 timing,
+      # not a timing signal; no allocated_bytes here: --no-alloc).
+      # A fixed 1% upper boundary sits far above instrument
+      # wobble (native Pin counts agree to ~0.1%); min/max sample
+      # 10/64. peak_memory rides threshold-free until its own
+      # wobble is characterized. Each shard reports its own
+      # stripped subset (~50 benchmarks x 2 measures).
+      - name: Track pin benchmarks with Bencher
         run: |
-          jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
+          jq 'with_entries(select(.value.pin_instructions != null and .value.peak_memory != null) | .value |= {pin_instructions, peak_memory})' \
             sweep-bmf.json > sweep-bench.json
           if [ "$(jq 'length' sweep-bench.json)" = "0" ]; then
-            echo "no callgrind data in shard; skipping Bencher report"
+            echo "no pin data in shard; skipping Bencher report"
             exit 0
           fi
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -345,7 +328,7 @@ jobs:
               --key '${{ secrets.BENCHER_API_KEY }}' \
               --branch "${{ github.ref_name }}" \
               --testbed ubuntu-latest-${{ matrix.runtime }} \
-              --threshold-measure callgrind_instructions \
+              --threshold-measure pin_instructions \
               --threshold-test percentage \
               --threshold-min-sample-size 10 \
               --threshold-max-sample-size 64 \
@@ -366,7 +349,7 @@ jobs:
             sweep-bench.json
 
   # AOT pilot: one benchmark per push as a cheap AOT stdout-gate
-  # canary (the callgrind half moved to the full-matrix sweep
+  # canary (the instrumented half moved to the full-matrix sweep
   # above). continue-on-error: an AOT/JDK toolchain skew on the
   # hosted runner must never fail the push; pilot evidence lands
   # in the uploaded artifacts either way.
@@ -423,8 +406,8 @@ jobs:
       - name: Install measurement tools
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
-          packages: time linux-tools-common linux-tools-generic valgrind
-          version: 1.1
+          packages: time linux-tools-common linux-tools-generic
+          version: 1.2
 
       - name: Measure AOT pilot
         run: |
@@ -444,14 +427,14 @@ jobs:
             pilot-aot.json
             pilot-aot-bmf.json
 
-  report-callgrind:
-    needs: perf-callgrind
+  report-pin:
+    needs: perf-pin
     runs-on: ubuntu-latest
     # No Bencher run here by design: one merged ~394-benchmark
     # file would re-truncate the check summary (T11).
     permissions:
       contents: read
-    # One merge per runtime; keep in sync with the perf-callgrind
+    # One merge per runtime; keep in sync with the perf-pin
     # job's runtime list above.
     strategy:
       matrix:

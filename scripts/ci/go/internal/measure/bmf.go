@@ -23,6 +23,7 @@ type Benchmark struct {
 	AllocatedBytes          *Measure `json:"allocated_bytes,omitempty"`
 	CallgrindInstructions   *Measure `json:"callgrind_instructions,omitempty"`
 	CallgrindAllocatedBytes *Measure `json:"callgrind_allocated_bytes,omitempty"`
+	PinInstructions         *Measure `json:"pin_instructions,omitempty"`
 	ComplexityExponent      *Measure `json:"complexity_exponent,omitempty"`
 }
 
@@ -31,8 +32,9 @@ type BMF map[string]Benchmark
 
 // BuildBMF ports build_bmf: one Benchmark per snippet with
 // cpu_time/peak_memory plus allocated_bytes, callgrind_instructions,
-// and callgrind_allocated_bytes when every case reports them, plus
-// the sparse complexity_exponent for successful slope fits.
+// callgrind_allocated_bytes, and pin_instructions when every case
+// reports them, plus the sparse complexity_exponent for successful
+// slope fits.
 func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 	perSnippet := map[string][]*CaseSummary{}
 	for i := range results {
@@ -60,6 +62,7 @@ func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 		var allocs []*AllocSummary
 		var cgs []*MinMedMax
 		var cgAllocs []*AllocSummary
+		var pins []*MinMedMax
 		for _, s := range summaries {
 			if s.AllocatedBytes != nil {
 				allocs = append(allocs, s.AllocatedBytes)
@@ -69,6 +72,9 @@ func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 			}
 			if s.CallgrindAllocatedBytes != nil {
 				cgAllocs = append(cgAllocs, s.CallgrindAllocatedBytes)
+			}
+			if s.PinInstructions != nil {
+				pins = append(pins, s.PinInstructions)
 			}
 		}
 		if len(allocs) == len(summaries) && len(summaries) > 0 {
@@ -108,6 +114,22 @@ func BuildBMF(results []CaseResult, complexity map[string]slope.Entry) BMF {
 				maxs = append(maxs, pyjson.IntNum(a.Max))
 			}
 			bench.CallgrindAllocatedBytes = &Measure{
+				Value:      pyjson.Sum(mins),
+				LowerValue: pyjson.Sum(mins),
+				UpperValue: pyjson.Sum(maxs),
+			}
+		}
+		// Pin noise is one-sided like callgrind's (cold paths
+		// only add instructions), so the minimum is the point
+		// estimate here too.
+		if len(pins) == len(summaries) && len(summaries) > 0 {
+			mins := make([]pyjson.Num, 0, len(pins))
+			maxs := make([]pyjson.Num, 0, len(pins))
+			for _, p := range pins {
+				mins = append(mins, p.Min)
+				maxs = append(maxs, p.Max)
+			}
+			bench.PinInstructions = &Measure{
 				Value:      pyjson.Sum(mins),
 				LowerValue: pyjson.Sum(mins),
 				UpperValue: pyjson.Sum(maxs),

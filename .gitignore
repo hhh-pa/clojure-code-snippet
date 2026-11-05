@@ -1,3 +1,5 @@
 .ci/
 tests/resources/
 __pycache__/
+pin-kit/
+scripts/ci/pin/obj-*/

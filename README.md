@@ -69,6 +69,12 @@ optionally `perf`):
   the JVM's GC log on JVM legs (valgrind-side heap profilers
   cannot see Java objects), or the `LD_PRELOAD` counting shim's
   malloc-request total on native legs
+- `pin_instructions` (`--pin` only, needs Intel Pin + the inscount
+  tool) — deterministic dynamic instruction count, replacing
+  valgrind in CI (JVM: under `setarch -R` with `-Xrs` +
+  `-XX:+AllowUserSignalHandlers`; native: plain Pin, no JVM
+  flags). Pin counts instructions only; memory is benchmarked
+  via RSS (`maxrss_kb`).
 - `wall_s` — secondary; not load-independent
 
 Each case runs `--repeat` times (default 5) plus dedicated
@@ -82,12 +88,13 @@ per benchmark, not bit-comparable absolutes. `--aot` measures the
 AOT-compiled classes instead of `clojure.main` interpretation
 (gen-class transform, cached per source hash under
 `.ci/aot-cache/`); `--callgrind` adds the one-shot deterministic
-instrumentation (~21s per case all-in on CI hardware, measured
-for all snippets by the sweep job). Cases exceeding the callgrind
-budget, EpsilonGC-exempt workloads (JVM leg only), and native-leg
-counter problems degrade to `callgrind_skipped` with a warning
-instead of failing (the timed data stays valid); crashes and
-output mismatches still fail.
+valgrind instrumentation. `--pin` is the CI instrument instead:
+one inscount run per case, measured for all snippets by the sweep
+job. Cases exceeding an instrument budget, EpsilonGC-exempt
+workloads (JVM callgrind leg only), and native-leg counter
+problems degrade to `callgrind_skipped`/`pin_skipped` with a
+warning instead of failing (the timed data stays valid); crashes
+and output mismatches still fail.
 
 ```sh
 snip measure --resources tests/resources --repeat 5 \
@@ -96,26 +103,27 @@ snip measure --self-test  # parser checks, no JVM needed
 ```
 
 CI runs correctness in the `test` job, then measures every snippet
-with `--callgrind` in a sharded matrix `perf-callgrind` sweep job
+with `--pin` in a sharded matrix `perf-pin` sweep job
 (`needs: test`, 8 shards x 2 runtimes via `snip measure --shard
-K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard). Each
+K/N`, lean `--repeat 1 --no-alloc` recipe). Each
 shard reports its own BMF subset to Bencher (`bencher run --adapter
-json --file sweep-bench.json`, carrying only the two gungraun-run
-measures: `callgrind_instructions` thresholded at 1% plus
-unthresholded `callgrind_allocated_bytes`) — per-shard reports keep
+json --file sweep-bench.json`, carrying only the two sweep
+measures: `pin_instructions` thresholded at 1% plus
+unthresholded `peak_memory`) — per-shard reports keep
 every check under GitHub's check-summary limit, where one merged
 report would re-truncate it — and uploads per-shard artifacts; a
-fan-in `report-callgrind` job merges the full reports per runtime
+fan-in `report-pin` job merges the full reports per runtime
 (`snip measure --merge`), uploads the merged bundles, and appends
 a combined results table to its step summary. A non-blocking
 `perf-pilot` job keeps one `--aot` measurement per push as a
 stdout-gate canary. Bencher plots each snippet's
-`callgrind_instructions`/`callgrind_allocated_bytes` per commit
+`pin_instructions`/`peak_memory` per commit
 for both runtimes and posts a check per shard on the head commit
 (full metrics stay in the uploaded `sweep-results.json`
 artifacts). The Bencher project API key lives in the
 `BENCHER_API_KEY` repository secret. Clojure jars, apt packages,
-and the cargo build are cached between runs.
+the cargo build, and the Pin kit + built inscount tool are cached
+between runs.
 
 ## Comparing compilers
 
@@ -131,11 +139,11 @@ Bencher shows the delta; a manual dispatch may pin
 `clojure_rs_sha` to bisect or repro. To add a compiler:
 
 1. Add a `runtime` entry in `.github/workflows/test.yml`
-   (perf-callgrind + report-callgrind matrices, testbed
+   (perf-pin + report-pin matrices, testbed
    `ubuntu-latest-<runtime>`) with whatever build steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
    --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes);
    the same GNU `time` + `perf` harness measures every runtime,
-   and non-`java` commands automatically take the native
-   callgrind recipe (plain callgrind + `LD_PRELOAD` counting),
+   and non-`java` commands automatically take the native Pin
+   recipe (plain inscount, no JVM flags),
    keeping numbers comparable.

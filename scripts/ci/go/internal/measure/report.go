@@ -34,6 +34,8 @@ type Runtime struct {
 	TimeBin         string  `json:"time_bin"`
 	PerfUsed        bool    `json:"perf_used"`
 	CallgrindUsed   bool    `json:"callgrind_used"`
+	PinUsed         bool    `json:"pin_used"`
+	PinVersion      *string `json:"pin_version"`
 }
 
 // Config records the run configuration. AllocRepeat is a pointer
@@ -49,6 +51,8 @@ type Config struct {
 	Slope           bool    `json:"slope"`
 	SlopeRepeat     int     `json:"slope_repeat"`
 	CallgrindRepeat int     `json:"callgrind_repeat"`
+	PinRepeat       int     `json:"pin_repeat"`
+	PinTimeout      int     `json:"pin_timeout"`
 	Aot             bool    `json:"aot"`
 }
 
