@@ -1,0 +1,93 @@
+name: pin-tools
+description: >
+  Provide Intel Pin 4.4 plus the snip inscount_alloc pintool from the
+  Actions cache (downloaded and built on miss). Callers pass the
+  outputs as snip measure --pin-bin/--pin-tool. Linux-only (Pin
+  ships no macOS/Windows kit); used only on ubuntu-latest.
+inputs:
+  cache-key:
+    description: >
+      Full cache key for the extracted Pin kit plus the built tool,
+      shared by every job on the OS: pin-<os>-<hash>, where the hash
+      covers this action's sources plus scripts/ci/pin/**. A Pin
+      version bump edits this manifest (PIN_URL below), which
+      re-keys automatically; stale entries from older designs can
+      never shadow a fresh install. (Callers build the key from the
+      runner and hashFiles contexts, which exist in workflows but
+      not in this manifest.)
+    required: true
+outputs:
+  pin-bin:
+    description: Absolute path to the Pin launcher (PIN_ROOT/pin).
+    value: ${{ steps.paths.outputs.pin-bin }}
+  pin-tool:
+    description: Absolute path to the built inscount_alloc.so.
+    value: ${{ steps.paths.outputs.pin-tool }}
+runs:
+  using: composite
+  steps:
+    - id: cache
+      uses: actions/cache@v5
+      with:
+        # The whole dir: pin/ (extracted kit root) plus tool/ (tool
+        # sources + obj-intel64/inscount_alloc.so). Relative on
+        # purpose, like snip-bin: an absolute workspace path fails
+        # post-save validation. See snip-tools for the full story.
+        path: pin-kit
+        key: ${{ inputs.cache-key }}
+    # One script, not install/verify/repair steps: a bad cache hit
+    # (restored yet unusable) wipes pin-kit and reinstalls for this
+    # run, exactly like the valgrind gate reinstalls from apt. The
+    # fixed content is not written back to the hit entry (the cache
+    # action only saves on miss), so a poisoned entry reinstalls
+    # every run until its key ages out — loud in the logs, never
+    # silently vacuous. A fresh install that still fails exits 1.
+    - shell: bash
+      run: |
+        PIN_URL="https://software.intel.com/sites/landingpage/pintool/downloads/pin-external-4.4-99977-g54fbb8814-gcc-linux.tar.gz"
+        KIT="$GITHUB_WORKSPACE/pin-kit"
+        PIN_ROOT="$KIT/pin"
+        TOOL_DIR="$KIT/tool"
+        PIN_BIN="$PIN_ROOT/pin"
+        PIN_TOOL="$TOOL_DIR/obj-intel64/inscount_alloc.so"
+        usable() {
+          [ -x "$PIN_BIN" ] && [ -f "$PIN_TOOL" ] && timeout 30 "$PIN_BIN" -version >/dev/null 2>&1
+        }
+        install_pin() {
+          rm -rf "$KIT"
+          mkdir -p "$KIT"
+          curl -fsSL --retry 3 --retry-all-errors -o /tmp/pin-kit.tgz "$PIN_URL"
+          mkdir -p "$KIT/dl"
+          tar -xzf /tmp/pin-kit.tgz -C "$KIT/dl"
+          rm -f /tmp/pin-kit.tgz
+          mv "$KIT"/dl/pin-external-4.4-* "$PIN_ROOT"
+          rmdir "$KIT/dl"
+          mkdir -p "$TOOL_DIR"
+          cp "$GITHUB_WORKSPACE/scripts/ci/pin/inscount_alloc.cpp" \
+             "$GITHUB_WORKSPACE/scripts/ci/pin/makefile" \
+             "$GITHUB_WORKSPACE/scripts/ci/pin/makefile.rules" "$TOOL_DIR/"
+          make -C "$TOOL_DIR" PIN_ROOT="$PIN_ROOT" TARGET=intel64 tools
+        }
+        if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+          if usable; then
+            echo "restored cached Pin"
+          else
+            echo "cached Pin unusable; reinstalling"
+            install_pin
+          fi
+        else
+          install_pin
+        fi
+        if ! usable; then
+          echo "error: Intel Pin 4.4 install is unusable (need $PIN_BIN -version exit 0 and $PIN_TOOL)" >&2
+          exit 1
+        fi
+        ver=$(timeout 30 "$PIN_BIN" -version | head -n 1)
+        echo "$ver"
+        echo "pin: $ver" >> "$GITHUB_STEP_SUMMARY"
+        echo "tool: $PIN_TOOL" >> "$GITHUB_STEP_SUMMARY"
+    - id: paths
+      shell: bash
+      run: |
+        echo "pin-bin=$GITHUB_WORKSPACE/pin-kit/pin/pin" >> "$GITHUB_OUTPUT"
+        echo "pin-tool=$GITHUB_WORKSPACE/pin-kit/tool/obj-intel64/inscount_alloc.so" >> "$GITHUB_OUTPUT"

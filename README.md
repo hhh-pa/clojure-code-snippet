@@ -96,9 +96,10 @@ snip measure --self-test  # parser checks, no JVM needed
 ```
 
 CI runs correctness in the `test` job, then measures every snippet
-with `--callgrind` in a sharded matrix `perf-instrumentation` sweep job
-(`needs: test`, 8 shards x 2 runtimes via `snip measure --shard
-K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard). Each
+with `--callgrind --pin` in a sharded matrix `perf-instrumentation`
+sweep job (`needs: test`, 8 shards x 2 runtimes via `snip measure
+--shard K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard
+callgrind-only baseline). Each
 shard reports its own BMF subset to Bencher (`bencher run --adapter
 json --file sweep-bench.json`, carrying only the two gungraun-run
 measures: `callgrind_instructions` thresholded at 1% plus
@@ -115,7 +116,8 @@ for both runtimes and posts a check per shard on the head commit
 (full metrics stay in the uploaded `sweep-results.json`
 artifacts). The Bencher project API key lives in the
 `BENCHER_API_KEY` repository secret. Clojure jars, apt packages,
-and the cargo build are cached between runs.
+the cargo build, and the Pin kit + built inscount tool are cached
+between runs.
 
 ## Comparing compilers
 
