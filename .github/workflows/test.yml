@@ -128,11 +128,11 @@ jobs:
 
   # Full-matrix instrumentation sweep: every snippet's deterministic
   # measures (callgrind_instructions + callgrind_allocated_bytes,
-  # plus pin_instructions + pin_allocated_bytes) on every push, for
-  # JVM Clojure and clojure-rs alike. This is the only perf signal
-  # (the timed perf job was removed in T1211).
-  # Lean recipe (--repeat 1, --no-alloc since the instrument phases
-  # themselves yield allocation, no slope): ~21s/case all-in on CI
+  # plus pin_instructions) on every push, for JVM Clojure and
+  # clojure-rs alike. This is the only perf signal (the timed perf
+  # job was removed in T1211).
+  # Lean recipe (--repeat 1, --no-alloc since the callgrind phase
+  # itself yields allocation, no slope): ~21s/case all-in on CI
   # hardware x ~220 cases/shard / 2 jobs ~= 40min per shard
   # (callgrind-only baseline; the pin phase adds its own share).
   # A valgrind/Pin/toolchain failure fails the push (unlike the
@@ -298,8 +298,8 @@ jobs:
         # plain callgrind run plus one LD_PRELOAD counting run) +
         # the Pin phase (one inscount run per case; the pin-tools
         # action above fails loudly when Pin is unusable, so no
-        # vacuous pin_instructions here). No --alloc (the instrument
-        # phases themselves yield allocation), no --slope (slope fits
+        # vacuous pin_instructions here). No --alloc (the callgrind
+        # phase itself yields allocation), no --slope (slope fits
         # timed runs).
         run: |
           flags=(--runtime "${{ matrix.runtime }}")

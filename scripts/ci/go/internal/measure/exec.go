@@ -366,45 +366,41 @@ func PinNoASLRUsable() bool {
 }
 
 // PinOnce runs inner once under Intel Pin with the inscount tool
-// and returns stdout plus the total instruction count and the
-// cumulative malloc-family bytes, dispatching on the resolved
-// argv0: the JVM recipe (below) for java, the plain recipe (no JVM
-// flags) otherwise.
-func PinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+// and returns stdout plus the total instruction count,
+// dispatching on the resolved argv0: the JVM recipe (below) for
+// java, the plain recipe (no JVM flags) otherwise. The tool
+// counts instructions only; memory is benchmarked via RSS.
+func PinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, string) {
 	if !InnerIsJava(inner) {
 		return nativePinOnce(pinBin, tool, inner, inputPath, timeout)
 	}
 	return jvmPinOnce(pinBin, tool, inner, inputPath, timeout)
 }
 
-// parsePinOutput reads the Count/Alloc pair from one tool run.
-func parsePinOutput(outFile string) (int64, int64, string) {
+// parsePinOutput reads the Count line from one tool run.
+func parsePinOutput(outFile string) (int64, string) {
 	raw, err := os.ReadFile(outFile)
 	if err != nil {
-		return 0, 0, "pin output unreadable: " + err.Error()
+		return 0, "pin output unreadable: " + err.Error()
 	}
 	count, err := ParsePinCount(string(raw))
 	if err != nil {
-		return 0, 0, err.Error()
+		return 0, err.Error()
 	}
-	alloc, err := ParsePinAlloc(string(raw))
-	if err != nil {
-		return 0, 0, err.Error()
-	}
-	return count, alloc, ""
+	return count, ""
 }
 
 // jvmPinOnce runs a JVM argv once under Pin with PinJVMFlags
 // injected right after the resolved java binary (JVM options must
 // precede -cp and the main class).
-func jvmPinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+func jvmPinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, string) {
 	input, err := os.ReadFile(inputPath)
 	if err != nil {
-		return nil, 0, 0, "open input: " + err.Error()
+		return nil, 0, "open input: " + err.Error()
 	}
 	outFile, err := tempFile("snip-pin-")
 	if err != nil {
-		return nil, 0, 0, "pin output unreadable: " + err.Error()
+		return nil, 0, "pin output unreadable: " + err.Error()
 	}
 	defer os.Remove(outFile)
 	cmd := pinLauncher(pinBin)
@@ -414,28 +410,28 @@ func jvmPinOnce(pinBin, tool string, inner []string, inputPath string, timeout i
 	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
 	var timeoutErr *snipcore.TimeoutError
 	if errors.As(err, &timeoutErr) {
-		return nil, 0, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
+		return nil, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
 	}
 	if err != nil {
-		return nil, 0, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
+		return nil, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
 	}
-	count, alloc, runErr := parsePinOutput(outFile)
+	count, runErr := parsePinOutput(outFile)
 	if runErr != "" {
-		return nil, 0, 0, runErr
+		return nil, 0, runErr
 	}
-	return stdout, count, alloc, ""
+	return stdout, count, ""
 }
 
 // nativePinOnce runs a native argv once under Pin with the
 // inscount tool (same -o plumbing, no JVM flags).
-func nativePinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, int64, string) {
+func nativePinOnce(pinBin, tool string, inner []string, inputPath string, timeout int) ([]byte, int64, string) {
 	input, err := os.ReadFile(inputPath)
 	if err != nil {
-		return nil, 0, 0, "open input: " + err.Error()
+		return nil, 0, "open input: " + err.Error()
 	}
 	outFile, err := tempFile("snip-pin-")
 	if err != nil {
-		return nil, 0, 0, "pin output unreadable: " + err.Error()
+		return nil, 0, "pin output unreadable: " + err.Error()
 	}
 	defer os.Remove(outFile)
 	cmd := []string{pinBin, "-t", tool, "-o", outFile, "--", ResolveArgv0(inner[0])}
@@ -443,16 +439,16 @@ func nativePinOnce(pinBin, tool string, inner []string, inputPath string, timeou
 	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
 	var timeoutErr *snipcore.TimeoutError
 	if errors.As(err, &timeoutErr) {
-		return nil, 0, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
+		return nil, 0, fmt.Sprintf("TIMEOUT (>%ds)", timeout)
 	}
 	if err != nil {
-		return nil, 0, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
+		return nil, 0, fmt.Sprintf("exit %d: %s", snipcore.ExitCode(err), snipcore.LastLine(stderr))
 	}
-	count, alloc, runErr := parsePinOutput(outFile)
+	count, runErr := parsePinOutput(outFile)
 	if runErr != "" {
-		return nil, 0, 0, runErr
+		return nil, 0, runErr
 	}
-	return stdout, count, alloc, ""
+	return stdout, count, ""
 }
 
 // CallgrindOnce runs inner once under valgrind callgrind and
@@ -816,9 +812,9 @@ func MeasureCase(o CaseOpts) CaseResult {
 		}
 	}
 	if o.PinRepeat > 0 {
-		var counts, allocs []int64
+		var counts []int64
 		for i := 0; i < o.PinRepeat; i++ {
-			stdout, count, alloc, runErr := PinOnce(o.PinBin, o.PinTool, inner, o.InputPath, o.PinTimeout)
+			stdout, count, runErr := PinOnce(o.PinBin, o.PinTool, inner, o.InputPath, o.PinTimeout)
 			if runErr != "" {
 				if IsPinTimeout(runErr) {
 					skip := runErr
@@ -840,13 +836,10 @@ func MeasureCase(o CaseOpts) CaseResult {
 				return res
 			}
 			counts = append(counts, count)
-			allocs = append(allocs, alloc)
 		}
 		if res.PinSkipped == nil {
 			s := SummarizeInts(counts)
 			res.Summary.PinInstructions = &s
-			a := SummarizeInts(allocs)
-			res.Summary.PinAllocatedBytes = &a
 		}
 	}
 	res.Ok = true
