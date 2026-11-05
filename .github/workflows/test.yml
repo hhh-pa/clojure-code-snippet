@@ -26,7 +26,7 @@ concurrency:
 # passphrase, set the organization secret to the same value, and
 # rebuild the sibling bundles too (see `snip bundle --help`).
 
-# The perf-callgrind native leg always builds clojure-rs master HEAD
+# The perf-instrumentation native leg always builds clojure-rs master HEAD
 # (interpreter-only build; `run` needs no LLVM), resolved once per
 # run by the resolve-rs job below. A bad upstream commit fails
 # loudly (the sweep diff-gates every case), and Bencher shows the
@@ -135,7 +135,7 @@ jobs:
   # hardware x ~220 cases/shard / 2 jobs ~= 40min per shard.
   # A valgrind/toolchain failure fails the push (unlike the
   # pilot): the sweep is a required signal.
-  perf-callgrind:
+  perf-instrumentation:
     needs: [test, resolve-rs]
     runs-on: ubuntu-latest
     permissions:
@@ -149,7 +149,7 @@ jobs:
         # One entry per compiler/runtime; benchmark names stay
         # identical across runtimes (Bencher compares via testbeds,
         # derived below as ubuntu-latest-<runtime>). Keep the
-        # runtime list in sync with the report-callgrind job below.
+        # runtime list in sync with the report-instrumentation job below.
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
         runtime: [jvm, clojure-rs]
     steps:
@@ -444,14 +444,14 @@ jobs:
             pilot-aot.json
             pilot-aot-bmf.json
 
-  report-callgrind:
-    needs: perf-callgrind
+  report-instrumentation:
+    needs: perf-instrumentation
     runs-on: ubuntu-latest
     # No Bencher run here by design: one merged ~394-benchmark
     # file would re-truncate the check summary (T11).
     permissions:
       contents: read
-    # One merge per runtime; keep in sync with the perf-callgrind
+    # One merge per runtime; keep in sync with the perf-instrumentation
     # job's runtime list above.
     strategy:
       matrix:

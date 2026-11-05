@@ -96,7 +96,7 @@ snip measure --self-test  # parser checks, no JVM needed
 ```
 
 CI runs correctness in the `test` job, then measures every snippet
-with `--callgrind` in a sharded matrix `perf-callgrind` sweep job
+with `--callgrind` in a sharded matrix `perf-instrumentation` sweep job
 (`needs: test`, 8 shards x 2 runtimes via `snip measure --shard
 K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard). Each
 shard reports its own BMF subset to Bencher (`bencher run --adapter
@@ -105,7 +105,7 @@ measures: `callgrind_instructions` thresholded at 1% plus
 unthresholded `callgrind_allocated_bytes`) — per-shard reports keep
 every check under GitHub's check-summary limit, where one merged
 report would re-truncate it — and uploads per-shard artifacts; a
-fan-in `report-callgrind` job merges the full reports per runtime
+fan-in `report-instrumentation` job merges the full reports per runtime
 (`snip measure --merge`), uploads the merged bundles, and appends
 a combined results table to its step summary. A non-blocking
 `perf-pilot` job keeps one `--aot` measurement per push as a
@@ -131,7 +131,7 @@ Bencher shows the delta; a manual dispatch may pin
 `clojure_rs_sha` to bisect or repro. To add a compiler:
 
 1. Add a `runtime` entry in `.github/workflows/test.yml`
-   (perf-callgrind + report-callgrind matrices, testbed
+   (perf-instrumentation + report-instrumentation matrices, testbed
    `ubuntu-latest-<runtime>`) with whatever build steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
    --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes);
