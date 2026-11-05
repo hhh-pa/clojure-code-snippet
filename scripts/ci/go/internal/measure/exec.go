@@ -709,6 +709,13 @@ func MeasureCase(o CaseOpts) CaseResult {
 		res.Runs = append(res.Runs, *metrics)
 	}
 	res.Summary = SummarizeCase(res.Runs)
+	if res.Summary == nil && (o.AllocRepeat > 0 || o.CallgrindRepeat > 0 || o.PinRepeat > 0) {
+		// --repeat 0 skips the timed phase; the instrument
+		// phases still need a summary to hang their signals
+		// on (Runs stays 0, which table/BMF renderers use to
+		// tell pin-only results from timed ones).
+		res.Summary = &CaseSummary{}
+	}
 	if o.AllocRepeat > 0 && !allocExempt(o.Label) {
 		for i := 0; i < o.AllocRepeat; i++ {
 			stdout, used, runErr := MeasureAllocOnce(inner, o.InputPath, o.Timeout)

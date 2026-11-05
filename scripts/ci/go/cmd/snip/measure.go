@@ -32,7 +32,8 @@ const measureUsage = `Load-independent performance measurement for the Clojure s
 Runs every src/**/*.clj script against the shared test cases and records
 cpu_s, maxrss_kb, allocated_bytes, instructions/cycles, plus (under the
 new flags) callgrind instruction counts, Pin instruction counts,
-and AOT-compiled runs.
+and AOT-compiled runs. --repeat 0 skips the timed phase and runs
+only the instrument phases (pin-only legs).
 
 Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                    [--only SUBSTR] [--output F] [--bmf-output F]
@@ -109,8 +110,8 @@ func runMeasure(argv []string) int {
 	if merge {
 		return runMerge(positionals, output, bmfOutput, summaryFile)
 	}
-	if repeat < 1 {
-		fmt.Fprintln(os.Stderr, "snip measure: --repeat must be >= 1")
+	if repeat < 0 {
+		fmt.Fprintln(os.Stderr, "snip measure: --repeat must be >= 0")
 		return 2
 	}
 	if allocRepeat < 1 {
@@ -246,6 +247,10 @@ func runMeasure(argv []string) int {
 	effectivePin := 0
 	if usePin {
 		effectivePin = pinRepeat
+	}
+	if repeat == 0 && effectiveAlloc == 0 && effectiveCg == 0 && effectivePin == 0 {
+		fmt.Fprintln(os.Stderr, "snip measure: --repeat 0 needs a measurement phase (--alloc, --callgrind, or --pin)")
+		return 2
 	}
 	var aotCacheObj *measure.AOTCache
 	if aotFlag {

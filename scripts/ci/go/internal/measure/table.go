@@ -25,6 +25,28 @@ func PrintTable(out io.Writer, results []CaseResult, failures, missing []string)
 			continue
 		}
 		s := res.Summary
+		if s == nil {
+			fmt.Fprintf(out, "%s: ok no timed runs\n", tag)
+			continue
+		}
+		if s.Runs == 0 {
+			// Pin-only (--repeat 0): no timed signals, so
+			// report the instrument counts instead of zeros.
+			var parts []string
+			if s.PinInstructions != nil {
+				parts = append(parts, fmt.Sprintf("pin_min=%s pin_med=%s pin_max=%s",
+					numPlain(s.PinInstructions.Min), numPlain(s.PinInstructions.Median), numPlain(s.PinInstructions.Max)))
+			}
+			if s.CallgrindInstructions != nil {
+				parts = append(parts, fmt.Sprintf("cg_min=%s cg_med=%s cg_max=%s",
+					numPlain(s.CallgrindInstructions.Min), numPlain(s.CallgrindInstructions.Median), numPlain(s.CallgrindInstructions.Max)))
+			}
+			if len(parts) == 0 {
+				parts = append(parts, "no timed runs")
+			}
+			fmt.Fprintf(out, "%s: ok %s\n", tag, strings.Join(parts, " "))
+			continue
+		}
 		insn := "None"
 		if s.Instructions != nil {
 			insn = numPlain(s.Instructions.Median)
@@ -167,7 +189,7 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 	perSnippetWall := map[string]float64{}
 	perSnippetInsn := map[string][]*pyjson.Num{}
 	for _, res := range report.Results {
-		if !res.Ok {
+		if !res.Ok || res.Summary == nil {
 			continue
 		}
 		key := res.Label + "/" + res.Stem
