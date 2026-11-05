@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -338,6 +339,32 @@ func IsPinTimeout(runErr string) bool {
 	return strings.Contains(runErr, "TIMEOUT")
 }
 
+// pinLauncher prefixes the Pin command with setarch -R on Linux:
+// HotSpot's heap reserve otherwise loses an ASLR lottery against
+// Pin 4.4's mappings (mmap-overlap exit 127 on ~half the runs),
+// while the fixed no-ASLR layout places them deterministically
+// apart. Every compared leg runs the same fixed layout, so
+// layout can never bias a comparison either way.
+func pinLauncher(pinBin string) []string {
+	if runtime.GOOS == "linux" {
+		if setarch, err := exec.LookPath("setarch"); err == nil {
+			return []string{setarch, "-R", pinBin}
+		}
+	}
+	return []string{pinBin}
+}
+
+// PinNoASLRUsable reports whether JVM pin legs can fix the
+// address layout (Linux setarch present; non-Linux has no Pin
+// legs to protect).
+func PinNoASLRUsable() bool {
+	if runtime.GOOS != "linux" {
+		return true
+	}
+	_, err := exec.LookPath("setarch")
+	return err == nil
+}
+
 // PinOnce runs inner once under Intel Pin with the inscount tool
 // and returns stdout plus the total instruction count and the
 // cumulative malloc-family bytes, dispatching on the resolved
@@ -380,7 +407,8 @@ func jvmPinOnce(pinBin, tool string, inner []string, inputPath string, timeout i
 		return nil, 0, 0, "pin output unreadable: " + err.Error()
 	}
 	defer os.Remove(outFile)
-	cmd := []string{pinBin, "-t", tool, "-o", outFile, "--", ResolveArgv0(inner[0])}
+	cmd := pinLauncher(pinBin)
+	cmd = append(cmd, "-t", tool, "-o", outFile, "--", ResolveArgv0(inner[0]))
 	cmd = append(cmd, PinJVMFlags...)
 	cmd = append(cmd, inner[1:]...)
 	stdout, stderr, err := snipcore.Run(cmd, input, timeout)
