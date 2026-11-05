@@ -179,7 +179,7 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 		}
 	}
 	lines := []string{
-		"## Perf measurement (`tools/measure.py`)",
+		"## Perf measurement (`snip measure`)",
 		"",
 		fmt.Sprintf("- %s (%s), java: %s", report.TimestampUTC, cpuModel, javaVersion),
 		fmt.Sprintf("- runtime: %s, perf counters: %s, repeat: %d, jobs: %d, alloc_repeat: %s",
