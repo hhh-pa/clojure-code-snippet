@@ -2,7 +2,9 @@ package measure
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -110,6 +112,79 @@ func TestPinOnlySummary(t *testing.T) {
 		t.Fatalf("nil-summary table line wrong:\n%s", nilBuf.String())
 	}
 }
+
+func TestBuildBMFPin(t *testing.T) {
+	timed := func(pin *MinMedMax) CaseResult {
+		return CaseResult{Label: "l", Stem: "s", Case: "c", Ok: true,
+			Summary: &CaseSummary{
+				Runs:            1,
+				CpuS:            MinMedMax{Min: pyjson.FloatNum(1), Median: pyjson.FloatNum(1), Max: pyjson.FloatNum(1)},
+				MaxRSSKb:        MinMedMax{Min: pyjson.IntNum(8), Median: pyjson.IntNum(8), Max: pyjson.IntNum(8)},
+				WallS:           MinMedMax{Min: pyjson.FloatNum(1), Median: pyjson.FloatNum(1), Max: pyjson.FloatNum(1)},
+				PinInstructions: pin,
+			}}
+	}
+	pin1 := MinMedMax{Min: pyjson.IntNum(100), Median: pyjson.IntNum(150), Max: pyjson.IntNum(200)}
+	pin2 := MinMedMax{Min: pyjson.IntNum(300), Median: pyjson.IntNum(350), Max: pyjson.IntNum(400)}
+	bmf := BuildBMF([]CaseResult{timed(&pin1), timed(&pin2)}, nil)
+	bench, ok := bmf["l/s"]
+	if !ok {
+		t.Fatal("timed results with pin counts must land in BMF")
+	}
+	if bench.PinInstructions == nil || bench.PinInstructions.Value != pyjson.IntNum(400) {
+		t.Fatalf("pin_instructions must sum the minima: %+v", bench.PinInstructions)
+	}
+	if bench.PinInstructions.UpperValue != pyjson.IntNum(600) {
+		t.Fatalf("pin_instructions upper must sum the maxima: %+v", bench.PinInstructions)
+	}
+	// Without pin counts the field stays absent (omitempty keeps
+	// old pin-less reports byte-identical).
+	bench = BuildBMF([]CaseResult{timed(nil)}, nil)["l/s"]
+	if bench.PinInstructions != nil {
+		t.Fatalf("pin field must be absent without pin counts: %+v", bench)
+	}
+}
+
+func TestAppendSummaryPinColumns(t *testing.T) {
+	pin := MinMedMax{Min: pyjson.IntNum(100), Median: pyjson.IntNum(150), Max: pyjson.IntNum(200)}
+	results := []CaseResult{{Label: "l", Stem: "s", Case: "c", Ok: true,
+		Summary: &CaseSummary{
+			Runs:            1,
+			CpuS:            MinMedMax{Min: pyjson.FloatNum(1), Median: pyjson.FloatNum(1), Max: pyjson.FloatNum(1)},
+			MaxRSSKb:        MinMedMax{Min: pyjson.IntNum(8), Median: pyjson.IntNum(8), Max: pyjson.IntNum(8)},
+			WallS:           MinMedMax{Min: pyjson.FloatNum(2), Median: pyjson.FloatNum(2), Max: pyjson.FloatNum(2)},
+			PinInstructions: &pin,
+		}}}
+	report := Report{
+		Tool: "snip measure", TimestampUTC: "t",
+		Host:    Host{CpuModel: strptr("cpu")},
+		Runtime: Runtime{Name: "jvm", JavaVersion: strptr("21")},
+		Config:  Config{Repeat: 1, Jobs: 1},
+		Results: results,
+	}
+	path := filepath.Join(t.TempDir(), "summary.md")
+	if err := AppendSummary(path, report, BuildBMF(results, nil)); err != nil {
+		t.Fatalf("AppendSummary: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	text := string(raw)
+	for _, want := range []string{"pin_insn", "| l/s |", " 100 |"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("summary must contain %q:\n%s", want, text)
+		}
+	}
+	results[0].Summary.PinInstructions = nil
+	plain := filepath.Join(t.TempDir(), "summary.md")
+	if err := AppendSummary(plain, report, BuildBMF(results, nil)); err != nil {
+		t.Fatalf("AppendSummary: %v", err)
+	}
+	raw, _ = os.ReadFile(plain)
+	if strings.Contains(string(raw), "pin_insn") {
+		t.Fatalf("summary must not contain a pin_insn column without pin counts:\n%s", raw)
+	}
+}
+
+func strptr(s string) *string { return &s }
 
 func TestCallgrindSkipReason(t *testing.T) {
 	if r := CallgrindSkipReason("search/beam_search", true); r == "" {

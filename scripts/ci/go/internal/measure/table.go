@@ -121,6 +121,7 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 	showCxp := false
 	showCg := false
 	showCgAlloc := false
+	showPin := false
 	for _, m := range bmf {
 		if m.ComplexityExponent != nil {
 			showCxp = true
@@ -131,6 +132,9 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 		if m.CallgrindAllocatedBytes != nil {
 			showCgAlloc = true
 		}
+		if m.PinInstructions != nil {
+			showPin = true
+		}
 	}
 	header := "| snippet | cases | cpu total (s) | peak RSS (MB) | alloc total (MB) | instructions |"
 	sep := "| --- | ---: | ---: | ---: | ---: | ---: |"
@@ -140,6 +144,10 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 	}
 	if showCgAlloc {
 		header += " cg_alloc (MB) |"
+		sep += " ---: |"
+	}
+	if showPin {
+		header += " pin_insn |"
 		sep += " ---: |"
 	}
 	header += " wall total (s) |"
@@ -246,6 +254,13 @@ func AppendSummary(path string, report Report, bmf BMF) error {
 				cga = fmt.Sprintf("%.1f", m.CallgrindAllocatedBytes.Value.Float64()/1048576)
 			}
 			row += fmt.Sprintf(" %s |", cga)
+		}
+		if showPin {
+			pi := "n/a"
+			if m.PinInstructions != nil {
+				pi = numPlain(m.PinInstructions.Value)
+			}
+			row += fmt.Sprintf(" %s |", pi)
 		}
 		row += fmt.Sprintf(" %.3f |", perSnippetWall[name])
 		if showCxp {
