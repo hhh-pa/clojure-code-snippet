@@ -67,6 +67,10 @@ func runTestInstrumentation(argv []string) int {
 			fmt.Fprintln(os.Stderr, "snip test-instrumentation: pin unavailable (need --pin-bin launcher and --pin-tool inscount .so)")
 			return 1
 		}
+		if !measure.PinNoASLRUsable() {
+			fmt.Fprintln(os.Stderr, "snip test-instrumentation: jvm pin legs need setarch (util-linux) to fix the address layout")
+			return 1
+		}
 		timeBinPath, err = measure.ResolveTimeBin(timeBin)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)

@@ -123,10 +123,11 @@ jobs:
         uses: awalsh128/cache-apt-pkgs-action@v1.6.3
         with:
           # time reports peak RSS around the Pin run; gcc, g++ and
-          # make build the Pin inscount tool on pin-kit cache miss.
-          # All preinstalled on the hosted image, listed here so
-          # the dependencies are explicit.
-          packages: time gcc g++ make
+          # make build the Pin inscount tool on pin-kit cache miss;
+          # util-linux provides setarch, which fixes the address
+          # layout for JVM pin legs. All preinstalled on the hosted
+          # image, listed here so the dependencies are explicit.
+          packages: time gcc g++ make util-linux
           version: 1.0
 
       - name: Run Clojure snippet tests

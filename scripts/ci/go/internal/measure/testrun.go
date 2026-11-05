@@ -4,9 +4,37 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 
 	"github.com/hhh-pa/clojure/scripts/ci/go/internal/snipcore"
 )
+
+// pinLauncher prefixes the Pin command with setarch -R on Linux:
+// HotSpot's heap reserve otherwise loses an ASLR lottery against
+// Pin 4.4's mappings (mmap-overlap exit 127 on ~half the runs),
+// while the fixed no-ASLR layout places them deterministically
+// apart. Every compared leg runs the same fixed layout, so
+// layout can never bias a comparison either way.
+func pinLauncher(pinBin string) []string {
+	if runtime.GOOS == "linux" {
+		if setarch, err := exec.LookPath("setarch"); err == nil {
+			return []string{setarch, "-R", pinBin}
+		}
+	}
+	return []string{pinBin}
+}
+
+// PinNoASLRUsable reports whether JVM pin legs can fix the
+// address layout (Linux setarch present; non-Linux has no Pin
+// legs to protect).
+func PinNoASLRUsable() bool {
+	if runtime.GOOS != "linux" {
+		return true
+	}
+	_, err := exec.LookPath("setarch")
+	return err == nil
+}
 
 // RunInstrumented runs inner once under GNU time and Intel Pin with
 // the inscount tool, so one execution yields stdout plus the dynamic
@@ -38,7 +66,13 @@ func RunInstrumented(timeBin, pinBin, tool string, inner []string, inputPath str
 		return nil, 0, 0, "time output unreadable: " + err.Error()
 	}
 	defer os.Remove(timeOut)
-	pinCmd := []string{pinBin, "-t", tool, "-o", pinOut, "--", ResolveArgv0(inner[0])}
+	var pinCmd []string
+	if InnerIsJava(inner) {
+		pinCmd = pinLauncher(pinBin)
+	} else {
+		pinCmd = []string{pinBin}
+	}
+	pinCmd = append(pinCmd, "-t", tool, "-o", pinOut, "--", ResolveArgv0(inner[0]))
 	if InnerIsJava(inner) {
 		pinCmd = append(pinCmd, PinJVMFlags...)
 	}
