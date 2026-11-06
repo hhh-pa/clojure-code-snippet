@@ -5,6 +5,7 @@
 //	snip test     correctness runner (tests/run_tests.py)
 //	snip ssa      SSA DF regression test (tests/ssa_df_regression.py)
 //	snip measure  load-independent perf measurement (tools/measure.py)
+//	snip compare  from/to perf-report comparison (CI comparison mode)
 //	snip bundle   encrypted resource-bundle builder (tools/build_bundle.sh)
 //
 // Every subcommand keeps the flags, outputs, and exit codes of the
@@ -35,6 +36,8 @@ func dispatch(argv []string) int {
 		return runSSA(argv[1:])
 	case "measure":
 		return runMeasure(argv[1:])
+	case "compare":
+		return runCompare(argv[1:])
 	case "bundle":
 		return runBundle(argv[1:])
 	default:
@@ -49,6 +52,7 @@ Subcommands:
   test      run every src/**/*.clj script against the shared test cases
   ssa       focused ssa_dominance stdout regression test
   measure   load-independent performance measurement
+  compare   compare two measure reports (from/to legs)
   bundle    build the encrypted test-resource bundle
 
 Run from the repository root. Each subcommand accepts -h/--help.

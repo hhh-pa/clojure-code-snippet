@@ -106,42 +106,48 @@ snip measure --self-test  # parser checks, no JVM needed
 CI runs correctness in the `test` job, then measures every snippet
 in a sharded `perf-instrumentation` sweep job (`needs: test`, 8
 shard jobs via `snip measure --shard K/N`, lean `--repeat 1
---no-alloc` recipe). The sweep is timed-only by default for
-speed — one timed run per case (cpu/wall time, peak RSS, perf
-counters) — and a manual dispatch may add instrumentation via
-the `instrument` input (`none`, `callgrind`, `pin`, or `both`)
-when deterministic counts are needed. Each shard job runs both
-runtime legs sequentially on the same runner — same hardware,
-same checkout, same resources — and a step verifies both legs
-measured exactly the same cases. Each shard uploads per-runtime
-artifacts; a fan-in `report-instrumentation` job merges the full
-reports per runtime (`snip measure --merge`), uploads the merged
-bundles, and appends a combined results table to its step
-summary. A non-blocking `perf-pilot` job keeps one `--aot`
-measurement per push as a stdout-gate canary. Nothing reports
-to Bencher: repeat-1 timing is not a threshold signal, so the
-stats live in the `sweep-results-*.json` artifacts and the
-summary tables. Clojure jars, apt packages, and the cargo build
-are cached between runs (the Pin kit + built inscount tool only
-materialize on `pin` dispatches, via their own cache).
+--no-alloc` recipe, timed-only: one timed run per case —
+cpu/wall time, peak RSS, perf counters).
+Pushes and PRs run in comparison mode: each shard job measures a
+from-tree and a to-tree (PR: base vs head; push: previous vs
+current commit) for both runtimes sequentially on the same
+runner — same hardware, same resources, one harness build — and
+a step verifies the runtime legs of each tree measured exactly
+the same cases. A fan-in `report-instrumentation` job merges
+each side per runtime (`snip measure --merge`) and matches them
+case by case (`snip compare`); correspondence gaps yield missing
+stats, never an error, and the comparison is report-only (top
+slowdowns/speedups plus added/removed cases in the summary, full
+data in `sweep-compare-*.json`). A manual dispatch runs the
+single-run mode instead — this tree only, timed-only by default,
+with an `instrument` input (`none`, `callgrind`, `pin`, or
+`both`) for on-demand deterministic counts. A non-blocking
+`perf-pilot` job keeps one `--aot` measurement per push as a
+stdout-gate canary. Nothing reports to Bencher: repeat-1 timing
+is not a threshold signal, so the stats live in the
+`sweep-results-*.json` artifacts and the summary tables. Clojure
+jars, apt packages, and the cargo build are cached between runs
+(the Pin kit + built inscount tool only materialize on `pin`
+dispatches, via their own cache).
 
 ## Comparing compilers
 
 Benchmark names stay identical across compilers (`jvm` for JVM
-Clojure, `clojure-rs` for the Rust port), and both legs of a
-shard run on the same runner, so compare them side by side in
-the merged summary tables or the downloaded JSONs. The native
-leg always builds clojure-rs master HEAD (resolved once
-per run so all 8 shard jobs share one revision; interpreter-only
-`cargo build --release --locked --no-default-features` — `run`
-needs no LLVM), since the sweep diff-gates every case; a manual
-dispatch may pin `clojure_rs_sha` to bisect or repro, and may
-add `instrument: callgrind`/`pin` for deterministic counts. To
-add a compiler:
+Clojure, `clojure-rs` for the Rust port). Each runtime gets its
+own from/to comparison (both legs of a shard on the same
+runner), so version regressions show per runtime in the merged
+comparison tables, and the runtime legs stay directly comparable
+within each tree. The native leg always builds clojure-rs master
+HEAD (resolved once per run so all 8 shard jobs share one
+revision; interpreter-only `cargo build --release --locked
+--no-default-features` — `run` needs no LLVM), since the sweep
+diff-gates every case; a manual dispatch may pin `clojure_rs_sha`
+to bisect or repro, and may add `instrument: callgrind`/`pin`
+for deterministic counts. To add a compiler:
 
 1. Add a leg in `.github/workflows/test.yml` (another `snip
-   measure` invocation plus upload step in perf-instrumentation,
-   extend its verify `jvm clojure-rs` loop, and a
+   measure` invocation per mode plus upload steps in
+   perf-instrumentation, extend its verify pair list, and a
    `report-instrumentation` matrix entry) with whatever build
    steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
