@@ -34,14 +34,14 @@
     (if (pos? e)
       (assoc st :frame-tx (+ (:frame-tx st) 1) :sent (assoc (:sent st) j now) :floss (assoc (:floss st) j (- e 1)))
       (assoc st :frame-tx (+ (:frame-tx st) 1) :sent (assoc (:sent st) j now)
-             :farr (assoc (:farr st) (+ now 1) (conj (nth (:farr st) (+ now 1)) j))))))
+             :farr (assoc (:farr st) (+ now 1) (conj (get (:farr st) (+ now 1) []) j))))))
 
 (defn send-ack [st j now]
   (let [e (get (:aloss st) j 0)]
     (if (pos? e)
       (assoc st :ack-tx (+ (:ack-tx st) 1) :aloss (assoc (:aloss st) j (- e 1)))
       (assoc st :ack-tx (+ (:ack-tx st) 1)
-             :aarr (assoc (:aarr st) (+ now 1) (conj (nth (:aarr st) (+ now 1)) j))))))
+             :aarr (assoc (:aarr st) (+ now 1) (conj (get (:aarr st) (+ now 1) []) j))))))
 
 (defn solve [toks]
   (let [policy (read-int (nth toks 0))
@@ -55,11 +55,13 @@
                               (recur (+ i 1) fl (assoc al s (+ (get al s 0) 1)))))))
         init {:base 0 :next 0 :sent (vec (repeat N -1000000)) :acked (vec (repeat N false))
               :expected 0 :buffered (vec (repeat N false))
-              :farr (vec (repeat TSIZE [])) :aarr (vec (repeat TSIZE []))
+              :farr {} :aarr {}
               :floss floss :aloss aloss :frame-tx 0 :ack-tx 0}]
     (loop [now 0 st init]
       (if (>= now TMAX) (str (:frame-tx st) " " (:ack-tx st))
-        (let [st1 (loop [fs (nth (:farr st) now) st2 st]
+        (let [fs (get (:farr st) now [])
+              st-f (if (contains? (:farr st) now) (assoc st :farr (dissoc (:farr st) now)) st)
+              st1 (loop [fs fs st2 st-f]
                     (if (empty? fs) st2
                       (let [j (first fs) more (rest fs)]
                         (if (or (< j 0) (>= j N)) (recur more st2)
@@ -76,7 +78,9 @@
                               (recur more (send-ack st3 j now)))
                             (let [st3 (if (= j (:expected st2)) (assoc st2 :expected (+ (:expected st2) 1)) st2)]
                               (recur more (if (pos? (:expected st3)) (send-ack st3 (- (:expected st3) 1) now) st3))))))))
-              st2 (loop [as (nth (:aarr st1) now) st3 st1]
+              as (get (:aarr st1) now [])
+              st-a (if (contains? (:aarr st1) now) (assoc st1 :aarr (dissoc (:aarr st1) now)) st1)
+              st2 (loop [as as st3 st-a]
                     (if (empty? as) st3
                       (let [j (first as) more (rest as)]
                         (recur more

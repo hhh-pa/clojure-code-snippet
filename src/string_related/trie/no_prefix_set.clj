@@ -85,12 +85,14 @@
         leaf (nth chain n)
         bad (or mid-bad
                 (boolean (:end leaf))
-                (boolean (seq (dissoc leaf :end))))
-        rebuilt (loop [i (dec n) child (assoc leaf :end true)]
-                  (if (neg? i)
-                    child
-                    (recur (dec i) (assoc (nth chain i) (nth w i) child))))]
-    [rebuilt bad]))
+                (if (:end leaf) (> (count leaf) 1) (pos? (count leaf))))]
+    (if bad
+      [nil true]
+      (let [rebuilt (loop [i (dec n) child (assoc leaf :end true)]
+                      (if (neg? i)
+                        child
+                        (recur (dec i) (assoc (nth chain i) (nth w i) child))))]
+        [rebuilt false]))))
 
 (defn- first-bad-word
   "First word of words, in input order, that duplicates, prefixes,

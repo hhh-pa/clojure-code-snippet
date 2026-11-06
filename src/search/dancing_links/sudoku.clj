@@ -82,77 +82,85 @@
   [r c]
   (+ (* (quot r 3) 3) (quot c 3)))
 
-(defn row-cols
-  "Four exact cover columns for cell idx holding digit d from 1 to 9."
-  [idx d]
-  (let [r (quot idx 9) c (rem idx 9) e (dec d)]
-    [idx (+ 81 (* r 9) e) (+ 162 (* c 9) e) (+ 243 (* (box-index r c) 9) e)]))
-
-(defn cell-options
-  "Digits 1 to 9 whose four columns all stay open for cell idx."
-  [idx open]
-  (loop [d 1 out []]
+(defn candidates
+  "Legal digit mask and count for a used digit mask."
+  [used]
+  (loop [d 1 mask 0 cnt 0]
     (if (> d 9)
-      out
-      (recur (inc d)
-             (if (every? open (row-cols idx d)) (conj out d) out)))))
+      [mask cnt]
+      (if (zero? (bit-and used (bit-shift-left 1 d)))
+        (recur (inc d) (bit-or mask (bit-shift-left 1 d)) (inc cnt))
+        (recur (inc d) mask cnt)))))
 
-(defn choose-cell
-  "Open cell with fewest options as [idx opts], nil when done, :dead."
-  [open]
-  (loop [cs (seq (filter open (range 81))) best nil]
+(defn best-cell
+  "Empty cell with fewest cands as [r c mask cnt], nil when full or :dead."
+  [board rows cols boxes]
+  (loop [r 0 best nil]
     (cond
       (= best :dead) :dead
-      (nil? cs) best
+      (or (>= r 9) (and (vector? best) (= (nth best 3) 1))) best
       :else
-      (let [idx (first cs)
-            opts (cell-options idx open)]
-        (cond
-          (empty? opts) :dead
-          (or (nil? best) (< (count opts) (count (nth best 1))))
-          (recur (next cs) [idx opts])
-          :else (recur (next cs) best))))))
+      (let [res (loop [c 0 best best]
+                  (cond
+                    (= best :dead) :dead
+                    (or (>= c 9) (and (vector? best) (= (nth best 3) 1))) best
+                    :else
+                    (let [i (+ (* r 9) c)]
+                      (if (not (zero? (nth board i)))
+                        (recur (inc c) best)
+                        (let [used (bit-or (nth rows r) (nth cols c)
+                                           (nth boxes (box-index r c)))
+                              [mask cnt] (candidates used)]
+                          (cond
+                            (zero? cnt) :dead
+                            (or (nil? best) (< cnt (nth best 3)))
+                            (recur (inc c) [r c mask cnt])
+                            :else (recur (inc c) best)))))))]
+        (recur (inc r) res)))))
 
-(defn search-cover
-  "Exact cover search over open cols, returning placed rows or nil."
-  [open placed]
-  (let [choice (choose-cell open)]
+(defn solve-board
+  "Solve board vectors, returning a solved board or nil when stuck."
+  [board rows cols boxes]
+  (let [b (best-cell board rows cols boxes)]
     (cond
-      (= choice :dead) nil
-      (nil? choice) placed
+      (= b :dead) nil
+      (nil? b) board
       :else
-      (let [[idx opts] choice]
-        (loop [ds (seq opts)]
-          (when ds
-            (let [d (first ds)
-                  cols (row-cols idx d)
-                  res (search-cover (reduce disj open cols)
-                                    (conj placed [idx d]))]
-              (or res (recur (next ds))))))))))
+      (let [[br bc mask _] b
+            bi (+ (* br 9) bc)
+            bx (box-index br bc)]
+        (loop [d 1]
+          (when (<= d 9)
+            (if (zero? (bit-and mask (bit-shift-left 1 d)))
+              (recur (inc d))
+              (let [bit (bit-shift-left 1 d)
+                    res (solve-board (assoc board bi d)
+                                     (assoc rows br (bit-or (nth rows br) bit))
+                                     (assoc cols bc (bit-or (nth cols bc) bit))
+                                     (assoc boxes bx (bit-or (nth boxes bx) bit)))]
+                (or res (recur (inc d)))))))))))
 
 (defn solve-puzzle
   "Solve one 81 cell puzzle vector, returning the solved or given board."
   [cells]
   (let [board (vec cells)
-        givens (vec (for [idx (range 81)
-                          :let [v (nth board idx)]
-                          :when (not (zero? v))]
-                      [idx v]))
-        full-open (into (sorted-set) (range 324))
-        covered (loop [gs (seq givens) open full-open]
-                  (if (nil? gs)
-                    open
-                    (let [[idx d] (first gs)
-                          cols (row-cols idx d)]
-                      (if (every? open cols)
-                        (recur (next gs) (reduce disj open cols))
-                        :conflict))))]
-    (if (= covered :conflict)
-      board
-      (let [sol (search-cover covered givens)]
-        (if (nil? sol)
-          board
-          (reduce (fn [b [idx d]] (assoc b idx d)) board sol))))))
+        masks (loop [k 0 rows (vec (repeat 9 0))
+                     cols (vec (repeat 9 0)) boxes (vec (repeat 9 0))]
+                (if (>= k 81)
+                  [rows cols boxes]
+                  (let [v (nth board k)]
+                    (if (zero? v)
+                      (recur (inc k) rows cols boxes)
+                      (let [r (quot k 9)
+                            c (rem k 9)
+                            bit (bit-shift-left 1 v)
+                            bx (box-index r c)]
+                        (recur (inc k)
+                               (assoc rows r (bit-or (nth rows r) bit))
+                               (assoc cols c (bit-or (nth cols c) bit))
+                               (assoc boxes bx (bit-or (nth boxes bx) bit))))))))
+        [rows cols boxes] masks]
+    (or (solve-board board rows cols boxes) board)))
 
 (defn print-board
   "Print one board as nine rows of digits with a trailing blank each."
