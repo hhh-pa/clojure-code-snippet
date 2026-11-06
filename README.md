@@ -69,6 +69,11 @@ optionally `perf`):
   the JVM's GC log on JVM legs (valgrind-side heap profilers
   cannot see Java objects), or the `LD_PRELOAD` counting shim's
   malloc-request total on native legs
+- `pin_instructions` (`--pin` only, needs Intel Pin + the inscount
+  tool) — deterministic dynamic instruction count (JVM legs run
+  under `setarch -R` with `-Xrs` +
+  `-XX:+AllowUserSignalHandlers`; native legs run plain Pin).
+  Pin counts instructions only; memory comes from RSS
 - `wall_s` — secondary; not load-independent
 
 Each case runs `--repeat` times (default 5) plus dedicated
@@ -82,12 +87,15 @@ per benchmark, not bit-comparable absolutes. `--aot` measures the
 AOT-compiled classes instead of `clojure.main` interpretation
 (gen-class transform, cached per source hash under
 `.ci/aot-cache/`); `--callgrind` adds the one-shot deterministic
-instrumentation (~21s per case all-in on CI hardware, measured
-for all snippets by the sweep job). Cases exceeding the callgrind
-budget, EpsilonGC-exempt workloads (JVM leg only), and native-leg
-counter problems degrade to `callgrind_skipped` with a warning
-instead of failing (the timed data stays valid); crashes and
-output mismatches still fail.
+instrumentation (~21s per case all-in on CI hardware), and
+`--pin` adds one inscount run per case. Both are opt-in: the
+sweep runs timed-only unless a manual dispatch sets the
+`instrument` input. Cases exceeding an instrument budget,
+EpsilonGC-exempt workloads (callgrind JVM leg only), and
+native-leg counter problems degrade to
+`callgrind_skipped`/`pin_skipped` with a warning instead of
+failing (the timed data stays valid); crashes and output
+mismatches still fail.
 
 ```sh
 snip measure --resources tests/resources --repeat 5 \
@@ -95,49 +103,62 @@ snip measure --resources tests/resources --repeat 5 \
 snip measure --self-test  # parser checks, no JVM needed
 ```
 
-CI runs correctness in the `test` job, then measures every snippet
-with `--callgrind --pin` in a sharded matrix `perf-instrumentation`
-sweep job (`needs: test`, 8 shards x 2 runtimes via `snip measure
---shard K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard
-callgrind-only baseline). Each
-shard reports its own BMF subset to Bencher (`bencher run --adapter
-json --file sweep-bench.json`, carrying only the two gungraun-run
-measures: `callgrind_instructions` thresholded at 1% plus
-unthresholded `callgrind_allocated_bytes`) — per-shard reports keep
-every check under GitHub's check-summary limit, where one merged
-report would re-truncate it — and uploads per-shard artifacts; a
-fan-in `report-instrumentation` job merges the full reports per runtime
-(`snip measure --merge`), uploads the merged bundles, and appends
-a combined results table to its step summary. A non-blocking
+CI measures every snippet in a sharded `perf-instrumentation`
+sweep job (`needs: test`, 8 shard jobs via `snip measure
+--shard K/N`, lean `--repeat 1 --no-alloc` recipe, timed-only:
+one timed run per case — cpu/wall time, peak RSS, perf
+counters). The sweep doubles as the correctness gate: each timed
+leg diff-gates stdout exactly like `snip test` (same command,
+same normalization, same 300s timeout, missing resources fail),
+so every algorithm must pass for both runtimes; the small `test`
+job keeps only the focused SSA DF regression test.
+Pushes and PRs run the single-run mode: this tree only, both
+runtimes sequentially on the same runner per shard. A manual
+dispatch may instead tick `compare` for comparison mode: each
+shard job then measures a from-tree and a to-tree (open PR
+base/head, else previous commit vs dispatched HEAD) for both
+runtimes, and the
+fan-in `report-instrumentation` job merges each side per runtime
+(`snip measure --merge`) and matches them case by case (`snip
+compare`); correspondence gaps yield missing stats, never an
+error, and the comparison is report-only (top slowdowns/speedups
+plus added/removed cases in the summary, full data in
+`sweep-compare-*.json`). A step verifies the runtime legs of
+each measured tree ran exactly the same cases. Dispatches may
+also add instrumentation via the `instrument` input (`none`,
+`callgrind`, `pin`, or `both`) in either mode. A non-blocking
 `perf-pilot` job keeps one `--aot` measurement per push as a
-stdout-gate canary. Bencher plots each snippet's
-`callgrind_instructions`/`callgrind_allocated_bytes` per commit
-for both runtimes and posts a check per shard on the head commit
-(full metrics stay in the uploaded `sweep-results.json`
-artifacts). The Bencher project API key lives in the
-`BENCHER_API_KEY` repository secret. Clojure jars, apt packages,
-the cargo build, and the Pin kit + built inscount tool are cached
-between runs.
+stdout-gate canary. Nothing reports to Bencher: repeat-1 timing
+is not a threshold signal, so the stats live in the
+`sweep-results-*.json` artifacts and the summary tables. Clojure
+jars, apt packages, and the cargo build are cached between runs
+(the Pin kit + built inscount tool only materialize on `pin`
+dispatches, via their own cache).
 
 ## Comparing compilers
 
-Each compiler is a Bencher testbed (`ubuntu-latest-jvm` for JVM
-Clojure, `ubuntu-latest-clojure-rs` for the Rust port);
-benchmark names stay identical across compilers, so overlay the
-testbeds on Bencher's perf page to compare them visually. The
-native leg always builds clojure-rs master HEAD (resolved once
-per run so all 16 legs share one revision; interpreter-only
+Benchmark names stay identical across compilers (`jvm` for JVM
+Clojure, `clojure-rs` for the Rust port), and both legs of a
+shard run on the same runner, so the runtime legs stay directly
+comparable within each measured tree. A comparison dispatch adds
+a from/to comparison per runtime, so version regressions show
+per runtime in the merged comparison tables. The native leg
+always builds clojure-rs master HEAD (resolved once per run so
+all 8 shard jobs share one revision; interpreter-only
 `cargo build --release --locked --no-default-features` — `run`
-needs no LLVM), since the sweep diff-gates every case and
-Bencher shows the delta; a manual dispatch may pin
-`clojure_rs_sha` to bisect or repro. To add a compiler:
+needs no LLVM), since the sweep diff-gates every case; a manual
+dispatch may pin `clojure_rs_sha` to bisect or repro, and may
+add `instrument: callgrind`/`pin` for deterministic counts. To
+add a compiler:
 
-1. Add a `runtime` entry in `.github/workflows/test.yml`
-   (perf-instrumentation + report-instrumentation matrices, testbed
-   `ubuntu-latest-<runtime>`) with whatever build steps it needs.
+1. Add a leg in `.github/workflows/test.yml` (another `snip
+   measure` invocation per mode plus upload steps in
+   perf-instrumentation, extend its verify pair list, and a
+   `report-instrumentation` matrix entry) with whatever build
+   steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
    --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes);
    the same GNU `time` + `perf` harness measures every runtime,
    and non-`java` commands automatically take the native
-   callgrind recipe (plain callgrind + `LD_PRELOAD` counting),
-   keeping numbers comparable.
+   callgrind recipe (plain callgrind + `LD_PRELOAD` counting) on
+   instrumented dispatches, keeping numbers comparable.
