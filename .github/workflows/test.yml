@@ -17,18 +17,10 @@ on:
         type: choice
         options: [none, callgrind, pin, both]
       compare:
-        description: 'Performance comparison mode: measure from/to instead of a single run'
+        description: 'Performance comparison mode: open PR base/head, else previous commit, vs dispatched HEAD'
         required: false
         default: false
         type: boolean
-      from:
-        description: 'Compare from this revision (40-char SHA; empty = parent of to)'
-        required: false
-        default: ''
-      to:
-        description: 'Compare to this revision (40-char SHA; empty = dispatched HEAD)'
-        required: false
-        default: ''
 
 # One run per branch: a new push supersedes the previous commit's run
 # (stale sweeps cancel instead of burning runners for hours each).
@@ -78,13 +70,14 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "clojure-rs revision: \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
-  test-shard:
+  # Snippet correctness lives in the sweep below (its timed legs
+  # run the same command with the same stdout gate and timeout on
+  # both runtimes, so every algorithm must pass for both). This job
+  # keeps only the focused SSA DF regression test, which the sweep
+  # does not run — and keeps branch policy's `test` context green
+  # with no admin change.
+  test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    name: test (shard ${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner
@@ -129,35 +122,24 @@ jobs:
             --passphrase "$RESOURCES_PASSPHRASE" \
             -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
 
-      - name: Run Clojure snippet tests
-        run: '"$GITHUB_WORKSPACE/snip-bin/snip" test --resources tests/resources --jobs 4 --timeout 300 --shard ${{ matrix.shard }}/4'
-
       - name: Run SSA DF regression test
         run: '"$GITHUB_WORKSPACE/snip-bin/snip" ssa'
 
-  # Aggregator: branch policy requires a check literally named "test",
-  # which the sharded matrix above no longer produces on its own.
-  test:
-    needs: test-shard
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require all shards green
-        run: |
-          if [ "${{ needs.test-shard.result }}" = "success" ]; then exit 0; else exit 1; fi
-
   # Full-matrix sweep: every snippet's timed stats (cpu/wall time,
-  # peak RSS, perf counters) for JVM Clojure and clojure-rs alike.
+  # peak RSS, perf counters) for JVM Clojure and clojure-rs alike —
+  # and the snippet-correctness gate (each timed leg diff-gates
+  # stdout exactly like `snip test`: same command, same normalize,
+  # same 300s timeout, missing resources fail; every algorithm
+  # must pass for both runtimes).
   # Pushes and PRs run the single-run mode: this tree only,
   # timed-only, both runtimes sequentially on the SAME runner per
   # shard — same hardware, same resources — with a step proving
   # both legs measured exactly the same cases.
-  # A manual dispatch may instead request comparison mode (the
-  # `compare` input): each shard job then measures a from-tree
-  # and a to-tree (`from`/`to` inputs, defaulting to the previous
-  # commit and the dispatched HEAD) for both runtimes, and the
-  # report job matches the merged reports case by case (missing
-  # correspondence yields missing stats, never an error).
+  # A manual dispatch may instead tick `compare`: each shard job
+  # then measures a from-tree and a to-tree (open PR base/head,
+  # else previous commit vs dispatched HEAD) for both runtimes,
+  # and the report job matches the merged reports case by case
+  # (missing correspondence yields missing stats, never an error).
   # Dispatches may also add instrumentation via the `instrument`
   # input (callgrind and/or Pin) in either mode.
   # One job per shard (8 jobs). Stats land in the per-shard
@@ -171,6 +153,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     strategy:
       # Let every shard finish so partial artifacts upload for diagnosis.
       fail-fast: false
@@ -336,11 +319,11 @@ jobs:
 
       # Comparison mode (manual dispatch with `compare`): resolve
       # the from/to commits and check the from-tree out as a
-      # worktree. Empty inputs default to the previous commit and
-      # the dispatched HEAD; explicit SHAs may point anywhere
-      # (e.g. a PR's base/head), fetched on demand when the full
-      # clone lacks them. Explicit request, explicit failure: bad
-      # refs fail loudly, never silently fall back.
+      # worktree. If the dispatched branch heads an open PR, from
+      # is that PR's base SHA; otherwise from is the previous
+      # commit — to is always the dispatched HEAD. The base SHA
+      # may not be local (it lives on another branch), so it is
+      # fetched on demand; anything still missing fails loudly.
       - name: Resolve comparison refs
         id: refs
         if: github.event_name == 'workflow_dispatch' && inputs.compare
@@ -355,17 +338,19 @@ jobs:
               exit 1
             fi
           }
-          to="${{ inputs.to }}"
-          if [ -z "$to" ]; then
-            to="$(git rev-parse HEAD)"
-          fi
-          ensure_present "$to" "to"
-          from="${{ inputs.from }}"
-          if [ -z "$from" ]; then
+          branch="${{ github.ref_name }}"
+          to="$(git rev-parse HEAD)"
+          pr="$(gh pr list --head "$branch" --state open --limit 1 --json number,baseRefOid)" \
+            || { echo "error: PR lookup for branch $branch failed" >&2; exit 1; }
+          if [ "$(echo "$pr" | jq 'length')" = "1" ]; then
+            from="$(echo "$pr" | jq -r '.[0].baseRefOid')"
+            echo "branch $branch heads PR #$(echo "$pr" | jq -r '.[0].number'); comparing its base -> HEAD"
+          else
             if ! from="$(git rev-parse "$to~1" 2>/dev/null)"; then
-              echo "error: to-ref $to has no parent to compare against" >&2
+              echo "error: no open PR for $branch and $to has no parent to compare against" >&2
               exit 1
             fi
+            echo "no open PR for $branch; comparing previous commit -> HEAD"
           fi
           ensure_present "$from" "from"
           if [ "$from" = "$to" ]; then
@@ -394,7 +379,7 @@ jobs:
         # unusable, so no vacuous counts here).
         run: |
           common=(--resources tests/resources
-            --repeat 1 --no-alloc --jobs 2 --timeout 900
+            --repeat 1 --no-alloc --jobs 2 --timeout 300
             --shard ${{ matrix.shard }}/8)
           if [ "${{ inputs.instrument }}" = "callgrind" ] || [ "${{ inputs.instrument }}" = "both" ]; then
             common+=(--callgrind --callgrind-repeat 1)
@@ -437,25 +422,25 @@ jobs:
               --pin-repeat 1 --pin-timeout 900)
           fi
           "$SNIP" measure --resources tests/resources \
-            --repeat 1 --no-alloc --jobs 2 --timeout 900 \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
             --shard "$SHARD" "${extra[@]}" \
             --runtime jvm \
             --output sweep-results-to-jvm.json --bmf-output sweep-bmf-to-jvm.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
           "$SNIP" measure --resources tests/resources \
-            --repeat 1 --no-alloc --jobs 2 --timeout 900 \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
             --shard "$SHARD" "${extra[@]}" \
             --runtime clojure-rs --command-template 'clojure-rs run {script}' \
             --output sweep-results-to-clojure-rs.json --bmf-output sweep-bmf-to-clojure-rs.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
           (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" --cp "$CP" \
-            --repeat 1 --no-alloc --jobs 2 --timeout 900 \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
             --shard "$SHARD" "${extra[@]}" \
             --runtime jvm \
             --output "$OUT/sweep-results-from-jvm.json" --bmf-output "$OUT/sweep-bmf-from-jvm.json" \
             --summary-file "$GITHUB_STEP_SUMMARY")
           (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" --cp "$CP" \
-            --repeat 1 --no-alloc --jobs 2 --timeout 900 \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
             --shard "$SHARD" "${extra[@]}" \
             --runtime clojure-rs --command-template 'clojure-rs run {script}' \
             --output "$OUT/sweep-results-from-clojure-rs.json" --bmf-output "$OUT/sweep-bmf-from-clojure-rs.json" \

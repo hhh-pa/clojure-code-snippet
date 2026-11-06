@@ -103,17 +103,21 @@ snip measure --resources tests/resources --repeat 5 \
 snip measure --self-test  # parser checks, no JVM needed
 ```
 
-CI runs correctness in the `test` job, then measures every snippet
-in a sharded `perf-instrumentation` sweep job (`needs: test`, 8
-shard jobs via `snip measure --shard K/N`, lean `--repeat 1
---no-alloc` recipe, timed-only: one timed run per case —
-cpu/wall time, peak RSS, perf counters).
+CI measures every snippet in a sharded `perf-instrumentation`
+sweep job (`needs: test`, 8 shard jobs via `snip measure
+--shard K/N`, lean `--repeat 1 --no-alloc` recipe, timed-only:
+one timed run per case — cpu/wall time, peak RSS, perf
+counters). The sweep doubles as the correctness gate: each timed
+leg diff-gates stdout exactly like `snip test` (same command,
+same normalization, same 300s timeout, missing resources fail),
+so every algorithm must pass for both runtimes; the small `test`
+job keeps only the focused SSA DF regression test.
 Pushes and PRs run the single-run mode: this tree only, both
 runtimes sequentially on the same runner per shard. A manual
 dispatch may instead tick `compare` for comparison mode: each
-shard job then measures a from-tree and a to-tree (`from`/`to`
-inputs, defaulting to the previous commit and the dispatched
-HEAD — e.g. a PR's base/head SHAs) for both runtimes, and the
+shard job then measures a from-tree and a to-tree (open PR
+base/head, else previous commit vs dispatched HEAD) for both
+runtimes, and the
 fan-in `report-instrumentation` job merges each side per runtime
 (`snip measure --merge`) and matches them case by case (`snip
 compare`); correspondence gaps yield missing stats, never an
