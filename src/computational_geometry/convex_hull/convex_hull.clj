@@ -71,7 +71,8 @@
                           (< m 0.25) (recur (* m 4.0) (/ adj 2.0))
                           :else [m adj]))
           g (loop [i 0 g (if (> m 1.0) m 1.0)]
-              (if (= i 30) g (recur (inc i) (/ (+ g (/ m g)) 2.0))))]
+              (let [g2 (/ (+ g (/ m g)) 2.0)]
+                (if (or (== g g2) (= i 10)) g2 (recur (inc i) g2))))]
       (* g adj))))
 
 (defn double-to-bigint

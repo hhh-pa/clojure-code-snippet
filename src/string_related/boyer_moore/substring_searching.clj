@@ -1,10 +1,14 @@
-;; Boyer Moore substring search with the bad char plus good
-;; suffix rules, which together give linear worst case search.
+;; Boyer Moore substring search with the bad character rule,
+;; mirroring the python twin exactly: a 256-slot last-occurrence
+;; table indexed by char code, plus a small overflow map for codes
+;; past latin-1 (which the twin's 256-slot list cannot index, but
+;; which must still search correctly here).
 ;; Input: a count n then n pairs of <text> <pattern> tokens.
 ;; Output: YES or NO per pair, each on its own line.
-;; Preprocessing costs linear time and space in the pattern length,
-;; search costs linear time in the text length. This replaces a bad
-;; char only scan whose worst case is quadratic in the two lengths.
+;; Preprocessing costs linear time and space in the pattern length.
+;; Search is sublinear on average with a quadratic worst case, like
+;; the twin. This replaces a bad char plus good suffix scan whose
+;; table build cost more than the twin's whole search.
 ;; Pure clojure with no host interop.
 (require '[clojure.string :as str])
 
@@ -45,56 +49,16 @@
   [msg]
   (binding [*out* *err*] (println msg)))
 
-(defn- suffix-lengths
-  "For char vector p of length m, entry i holds the length of the
-  longest suffix of p open to i matching a suffix of all of p.
-  Linear time with the standard border walk."
-  [p m]
-  (loop [i (- m 2) f 0 g (dec m) suf (assoc (vec (repeat m 0)) (dec m) m)]
-    (if (neg? i)
-      suf
-      (if (and (> i g) (< (nth suf (+ i m -1 (- f))) (- i g)))
-        (recur (dec i) f g (assoc suf i (nth suf (+ i m -1 (- f)))))
-        (let [g (if (< i g) i g)
-              f i
-              g (loop [g g]
-                  (if (and (>= g 0) (= (nth p g) (nth p (+ g m -1 (- f)))))
-                    (recur (dec g))
-                    g))]
-          (recur (dec i) f g (assoc suf i (- f g))))))))
-
-(defn- good-suffix-shifts
-  "Good suffix shift table for char vector p of length m: entry i is
-  how far to slide when position i mismatches. Linear time."
-  [p m]
-  (let [suf (suffix-lengths p m)
-        base (vec (repeat m m))
-        full (loop [i (dec m) j 0 tab base]
-               (if (< i -1)
-                 tab
-                 (if (or (= i -1) (= (nth suf i) (inc i)))
-                   (let [lim (- m 1 i)]
-                     (recur (dec i)
-                            lim
-                            (reduce (fn [tb k]
-                                      (if (= (nth tb k) m) (assoc tb k lim) tb))
-                                    tab
-                                    (range j lim))))
-                   (recur (dec i) j tab))))]
-    (reduce (fn [tb i] (assoc tb (- m 1 (nth suf i)) (- m 1 i)))
-            full
-            (range (- m 1)))))
-
 (defn- bm-contains?
-  "True when string pat occurs in string text. Strings are indexed
-   directly (count/nth are O(1)) instead of copying to char vectors.
-   The search is one loop (j = alignment, i = pattern index under
-   comparison) whose numbers are all primitive loop vars -- boxed
-   lets cannot hold primitives, so n/m are unboxed once into the
-   loop. Only inlined primops (+ - < >) appear and the shift is
-   recomputed in each if-branch rather than let-bound (a let slot
-   would box once per alignment), so a comparison allocates nothing
-   (verified under a non-collecting heap). No host hints are used."
+  "True when string pat occurs in string text. Bad character rule
+   only, like the python twin: the last-occurrence table is a
+   256-slot vector indexed by char code (built transiently, since
+   patterns run long), with a map fallback for codes past latin-1.
+   Strings are indexed directly (count/nth are O(1)) instead of
+   copying to char vectors. The outer loop carries the alignment;
+   the inner loop walks the pattern right to left and returns the
+   mismatch index, or -1 when the pattern matches. Only inlined
+   primops (+ - < >) appear in the loops. No host hints are used."
   [text pat]
   (let [n0 (count text)
         m0 (count pat)]
@@ -102,20 +66,31 @@
       (zero? m0) true
       (< n0 m0) false
       :else
-      (let [last-at (reduce (fn [mp j] (assoc mp (nth pat j) j)) {} (range m0))
-            gs (good-suffix-shifts pat m0)]
-        (loop [j (long 0) i (long (dec m0)) n (long n0) m (long m0)]
-          (if (> (+ j m) n)
+      (let [right (persistent!
+                   (reduce (fn [v j]
+                             (let [c (int (nth pat j))]
+                               (if (< c 256) (assoc! v c j) v)))
+                           (transient (vec (repeat 256 -1)))
+                           (range m0)))
+            big (reduce (fn [mp j]
+                          (let [ch (nth pat j)]
+                            (if (< (int ch) 256) mp (assoc mp ch j))))
+                        {} (range m0))]
+        (loop [i (long 0)]
+          (if (> i (- n0 m0))
             false
-            (if (< i 0)
-              true
-              (if (= (nth pat i) (nth text (+ i j)))
-                (recur j (- i 1) n m)
-                (recur (+ j (if (> (long (nth gs i))
-                                         (- i (long (get last-at (nth text (+ i j)) -1))))
-                                      (long (nth gs i))
-                                      (- i (long (get last-at (nth text (+ i j)) -1)))))
-                       (- m 1) n m)))))))))
+            (let [j (loop [j (dec m0)]
+                      (cond (neg? j) -1
+                            (= (nth pat j) (nth text (+ i j))) (recur (dec j))
+                            :else j))]
+              (if (neg? j)
+                true
+                (let [ch (nth text (+ i j))
+                      r (if (< (int ch) 256)
+                          (nth right (int ch))
+                          (get big ch -1))
+                      skip (- j r)]
+                  (recur (+ i (if (< skip 1) 1 skip))))))))))))
 (defn -main
   "Parses data and prints YES or NO per query pair.
   Malformed input prints a message on stderr and returns normally,

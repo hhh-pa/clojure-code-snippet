@@ -214,18 +214,25 @@
           (recur states idx dfa ends q (inc qi)))))))
 
 (defn- mmult
-  "Product of flat n by n matrices a and b, modulo the shared prime."
+  "Product of flat n by n matrices a and b, modulo the shared prime.
+   i,k,j loop order like the python twin: a zero a[i,k] skips the
+   whole j row, and zero b[k,j] entries are skipped inside. The
+   DFA matrices have two nonzero entries per row, so the early
+   multiplies do O(n-squared) work instead of Theta(n-cubed)."
   [a b n]
-  (vec (for [x (range n) y (range n)]
-         (let [xb (* x n)]
-           (loop [i 0 s 0]
-             (if (>= i n)
-               s
-               (let [av (nth a (+ xb i))]
-                 (recur (inc i)
-                        (if (zero? av)
-                          s
-                          (rem (+ s (* av (nth b (+ (* i n) y)))) MOD))))))))))
+  (let [r (transient (vec (repeat (* n n) 0)))]
+    (dotimes [i n]
+      (let [xb (* i n)]
+        (dotimes [k n]
+          (let [aik (nth a (+ xb k))]
+            (when-not (zero? aik)
+              (let [kb (* k n)]
+                (dotimes [j n]
+                  (let [bkj (nth b (+ kb j))]
+                    (when-not (zero? bkj)
+                      (let [o (+ xb j)]
+                        (assoc! r o (rem (+ (nth r o) (* aik bkj)) MOD))))))))))))
+    (persistent! r)))
 
 (defn- mexp
   "Flat n by n matrix m to the power p, modulo the shared prime."
