@@ -108,20 +108,21 @@ in a sharded `perf-instrumentation` sweep job (`needs: test`, 8
 shard jobs via `snip measure --shard K/N`, lean `--repeat 1
 --no-alloc` recipe, timed-only: one timed run per case —
 cpu/wall time, peak RSS, perf counters).
-Pushes and PRs run in comparison mode: each shard job measures a
-from-tree and a to-tree (PR: base vs head; push: previous vs
-current commit) for both runtimes sequentially on the same
-runner — same hardware, same resources, one harness build — and
-a step verifies the runtime legs of each tree measured exactly
-the same cases. A fan-in `report-instrumentation` job merges
-each side per runtime (`snip measure --merge`) and matches them
-case by case (`snip compare`); correspondence gaps yield missing
-stats, never an error, and the comparison is report-only (top
-slowdowns/speedups plus added/removed cases in the summary, full
-data in `sweep-compare-*.json`). A manual dispatch runs the
-single-run mode instead — this tree only, timed-only by default,
-with an `instrument` input (`none`, `callgrind`, `pin`, or
-`both`) for on-demand deterministic counts. A non-blocking
+Pushes and PRs run the single-run mode: this tree only, both
+runtimes sequentially on the same runner per shard. A manual
+dispatch may instead tick `compare` for comparison mode: each
+shard job then measures a from-tree and a to-tree (`from`/`to`
+inputs, defaulting to the previous commit and the dispatched
+HEAD — e.g. a PR's base/head SHAs) for both runtimes, and the
+fan-in `report-instrumentation` job merges each side per runtime
+(`snip measure --merge`) and matches them case by case (`snip
+compare`); correspondence gaps yield missing stats, never an
+error, and the comparison is report-only (top slowdowns/speedups
+plus added/removed cases in the summary, full data in
+`sweep-compare-*.json`). A step verifies the runtime legs of
+each measured tree ran exactly the same cases. Dispatches may
+also add instrumentation via the `instrument` input (`none`,
+`callgrind`, `pin`, or `both`) in either mode. A non-blocking
 `perf-pilot` job keeps one `--aot` measurement per push as a
 stdout-gate canary. Nothing reports to Bencher: repeat-1 timing
 is not a threshold signal, so the stats live in the
@@ -133,17 +134,18 @@ dispatches, via their own cache).
 ## Comparing compilers
 
 Benchmark names stay identical across compilers (`jvm` for JVM
-Clojure, `clojure-rs` for the Rust port). Each runtime gets its
-own from/to comparison (both legs of a shard on the same
-runner), so version regressions show per runtime in the merged
-comparison tables, and the runtime legs stay directly comparable
-within each tree. The native leg always builds clojure-rs master
-HEAD (resolved once per run so all 8 shard jobs share one
-revision; interpreter-only `cargo build --release --locked
---no-default-features` — `run` needs no LLVM), since the sweep
-diff-gates every case; a manual dispatch may pin `clojure_rs_sha`
-to bisect or repro, and may add `instrument: callgrind`/`pin`
-for deterministic counts. To add a compiler:
+Clojure, `clojure-rs` for the Rust port), and both legs of a
+shard run on the same runner, so the runtime legs stay directly
+comparable within each measured tree. A comparison dispatch adds
+a from/to comparison per runtime, so version regressions show
+per runtime in the merged comparison tables. The native leg
+always builds clojure-rs master HEAD (resolved once per run so
+all 8 shard jobs share one revision; interpreter-only
+`cargo build --release --locked --no-default-features` — `run`
+needs no LLVM), since the sweep diff-gates every case; a manual
+dispatch may pin `clojure_rs_sha` to bisect or repro, and may
+add `instrument: callgrind`/`pin` for deterministic counts. To
+add a compiler:
 
 1. Add a leg in `.github/workflows/test.yml` (another `snip
    measure` invocation per mode plus upload steps in

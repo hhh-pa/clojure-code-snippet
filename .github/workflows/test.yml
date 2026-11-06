@@ -16,6 +16,19 @@ on:
         default: none
         type: choice
         options: [none, callgrind, pin, both]
+      compare:
+        description: 'Performance comparison mode: measure from/to instead of a single run'
+        required: false
+        default: false
+        type: boolean
+      from:
+        description: 'Compare from this revision (40-char SHA; empty = parent of to)'
+        required: false
+        default: ''
+      to:
+        description: 'Compare to this revision (40-char SHA; empty = dispatched HEAD)'
+        required: false
+        default: ''
 
 # One run per branch: a new push supersedes the previous commit's run
 # (stale sweeps cancel instead of burning runners for hours each).
@@ -135,20 +148,21 @@ jobs:
 
   # Full-matrix sweep: every snippet's timed stats (cpu/wall time,
   # peak RSS, perf counters) for JVM Clojure and clojure-rs alike.
-  # Pushes and PRs run in comparison mode: each shard job measures
-  # a from-tree and a to-tree (PR: base vs head; push: previous vs
-  # current commit) for both runtimes on the SAME runner, and the
+  # Pushes and PRs run the single-run mode: this tree only,
+  # timed-only, both runtimes sequentially on the SAME runner per
+  # shard — same hardware, same resources — with a step proving
+  # both legs measured exactly the same cases.
+  # A manual dispatch may instead request comparison mode (the
+  # `compare` input): each shard job then measures a from-tree
+  # and a to-tree (`from`/`to` inputs, defaulting to the previous
+  # commit and the dispatched HEAD) for both runtimes, and the
   # report job matches the merged reports case by case (missing
   # correspondence yields missing stats, never an error).
-  # A manual dispatch runs the single-run mode instead: this tree
-  # only, timed-only by default, with an `instrument` input
-  # (callgrind and/or Pin) for on-demand deterministic counts.
-  # One job per shard (8 jobs); legs run sequentially on one
-  # runner — same hardware, same resources, one harness build —
-  # and a step proves the runtime legs of each tree measured
-  # exactly the same cases. Stats land in the per-shard artifacts
-  # and the summary tables; nothing reports to Bencher (repeat-1
-  # timing is not a threshold signal).
+  # Dispatches may also add instrumentation via the `instrument`
+  # input (callgrind and/or Pin) in either mode.
+  # One job per shard (8 jobs). Stats land in the per-shard
+  # artifacts and the summary tables; nothing reports to Bencher
+  # (repeat-1 timing is not a threshold signal).
   # Lean recipe (--repeat 1, --no-alloc, no slope).
   # A toolchain failure fails the push (unlike the pilot): the
   # sweep is a required signal.
@@ -168,11 +182,13 @@ jobs:
         # report-instrumentation job's runtime matrix below.
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
-      # Comparison mode needs the from-commit locally (worktree
-      # below); dispatches stay shallow and fast.
+      # Comparison mode needs history locally (worktree below);
+      # everything else stays shallow and fast. The '0'/'1' are
+      # strings on purpose: the number 0 is falsy, which would
+      # flip the || branch.
       - uses: actions/checkout@v7
         with:
-          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 1 || 0 }}
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && inputs.compare && '0' || '1' }}
       - uses: ./.github/actions/profile-runner
         with:
           cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
@@ -318,25 +334,43 @@ jobs:
           echo "$ver"
           echo "valgrind: $ver" >> "$GITHUB_STEP_SUMMARY"
 
-      # Comparison mode (pushes/PRs): resolve the from/to commits
-      # and check the from-tree out as a worktree. PRs compare the
-      # base branch against the tested head; pushes compare the
-      # previous commit against the new head, falling back to the
-      # first parent when the push's before-SHA is unavailable
-      # (e.g. rewritten history).
+      # Comparison mode (manual dispatch with `compare`): resolve
+      # the from/to commits and check the from-tree out as a
+      # worktree. Empty inputs default to the previous commit and
+      # the dispatched HEAD; explicit SHAs may point anywhere
+      # (e.g. a PR's base/head), fetched on demand when the full
+      # clone lacks them. Explicit request, explicit failure: bad
+      # refs fail loudly, never silently fall back.
       - name: Resolve comparison refs
         id: refs
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            from="${{ github.event.pull_request.base.sha }}"
-          else
-            from="${{ github.event.before }}"
+          ensure_present() {
+            if ! git cat-file -e "$1" 2>/dev/null; then
+              echo "$2 $1 not local; fetching from origin"
+              git fetch --no-tags --depth=1 origin "$1" || true
+            fi
+            if ! git cat-file -e "$1" 2>/dev/null; then
+              echo "error: $2 ref '$1' is not available" >&2
+              exit 1
+            fi
+          }
+          to="${{ inputs.to }}"
+          if [ -z "$to" ]; then
+            to="$(git rev-parse HEAD)"
           fi
-          to="$(git rev-parse HEAD)"
-          if ! git cat-file -e "$from" 2>/dev/null; then
-            echo "from-ref $from unavailable; falling back to first parent of to"
-            from="$(git rev-parse "$to~1")"
+          ensure_present "$to" "to"
+          from="${{ inputs.from }}"
+          if [ -z "$from" ]; then
+            if ! from="$(git rev-parse "$to~1" 2>/dev/null)"; then
+              echo "error: to-ref $to has no parent to compare against" >&2
+              exit 1
+            fi
+          fi
+          ensure_present "$from" "from"
+          if [ "$from" = "$to" ]; then
+            echo "error: from and to are the same commit ($from); nothing to compare" >&2
+            exit 1
           fi
           git worktree add --detach /tmp/sweep-from "$from"
           echo "from=$from" >> "$GITHUB_OUTPUT"
@@ -345,7 +379,7 @@ jobs:
           echo "comparing \`$from\` -> \`$to\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Measure sweep (single run)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
         # Lean recipe per leg: one timed run per case (stdout gate
         # plus cpu/wall time, peak RSS, perf counters). No --alloc,
         # no --slope (slope fits timed runs).
@@ -380,40 +414,49 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Measure sweep (comparison)
-        if: github.event_name != 'workflow_dispatch'
-        # Four timed legs on this same runner: to-tree (workspace
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
+        # Four legs on this same runner: to-tree (workspace
         # checkout) and from-tree (worktree above) crossed with
         # both runtimes. One harness build measures both trees,
         # with the same resources, jars, and clojure-rs binary —
-        # only the snippets differ. Always timed-only:
-        # instrumentation is a dispatch-only opt-in.
+        # only the snippets differ. Timed-only unless the dispatch
+        # also sets `instrument` (same flags as the single run).
         run: |
           SNIP="$GITHUB_WORKSPACE/snip-bin/snip"
           OUT="$GITHUB_WORKSPACE"
           RES="$GITHUB_WORKSPACE/tests/resources"
           CP=$(ls "$GITHUB_WORKSPACE/.ci/jars/"*.jar | sort | tr '\n' ':' | sed 's/:$//')
           SHARD="${{ matrix.shard }}/8"
+          extra=()
+          if [ "${{ inputs.instrument }}" = "callgrind" ] || [ "${{ inputs.instrument }}" = "both" ]; then
+            extra+=(--callgrind --callgrind-repeat 1)
+          fi
+          if [ "${{ inputs.instrument }}" = "pin" ] || [ "${{ inputs.instrument }}" = "both" ]; then
+            extra+=(--pin --pin-bin "${{ steps.pin.outputs.pin-bin }}"
+              --pin-tool "${{ steps.pin.outputs.pin-tool }}"
+              --pin-repeat 1 --pin-timeout 900)
+          fi
           "$SNIP" measure --resources tests/resources \
             --repeat 1 --no-alloc --jobs 2 --timeout 900 \
-            --shard "$SHARD" \
+            --shard "$SHARD" "${extra[@]}" \
             --runtime jvm \
             --output sweep-results-to-jvm.json --bmf-output sweep-bmf-to-jvm.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
           "$SNIP" measure --resources tests/resources \
             --repeat 1 --no-alloc --jobs 2 --timeout 900 \
-            --shard "$SHARD" \
+            --shard "$SHARD" "${extra[@]}" \
             --runtime clojure-rs --command-template 'clojure-rs run {script}' \
             --output sweep-results-to-clojure-rs.json --bmf-output sweep-bmf-to-clojure-rs.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
           (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" --cp "$CP" \
             --repeat 1 --no-alloc --jobs 2 --timeout 900 \
-            --shard "$SHARD" \
+            --shard "$SHARD" "${extra[@]}" \
             --runtime jvm \
             --output "$OUT/sweep-results-from-jvm.json" --bmf-output "$OUT/sweep-bmf-from-jvm.json" \
             --summary-file "$GITHUB_STEP_SUMMARY")
           (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" --cp "$CP" \
             --repeat 1 --no-alloc --jobs 2 --timeout 900 \
-            --shard "$SHARD" \
+            --shard "$SHARD" "${extra[@]}" \
             --runtime clojure-rs --command-template 'clojure-rs run {script}' \
             --output "$OUT/sweep-results-from-clojure-rs.json" --bmf-output "$OUT/sweep-bmf-from-clojure-rs.json" \
             --summary-file "$GITHUB_STEP_SUMMARY")
@@ -427,10 +470,10 @@ jobs:
       # (missing stats, never an error).
       - name: Verify legs measured the same shard
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            pairs="jvm:clojure-rs"
-          else
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.compare }}" = "true" ]; then
             pairs="from-jvm:from-clojure-rs to-jvm:to-clojure-rs"
+          else
+            pairs="jvm:clojure-rs"
           fi
           for pair in $pairs; do
             a="${pair%%:*}"; b="${pair##*:}"
@@ -450,7 +493,7 @@ jobs:
       # artifacts add the from/to role. The report job downloads
       # by event below.
       - name: Upload sweep results (jvm)
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && (github.event_name != 'workflow_dispatch' || !inputs.compare)
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-jvm-shard-${{ matrix.shard }}
@@ -459,7 +502,7 @@ jobs:
             sweep-bmf-jvm.json
 
       - name: Upload sweep results (clojure-rs)
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && (github.event_name != 'workflow_dispatch' || !inputs.compare)
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-clojure-rs-shard-${{ matrix.shard }}
@@ -468,7 +511,7 @@ jobs:
             sweep-bmf-clojure-rs.json
 
       - name: Upload sweep results (from-jvm)
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-from-jvm-shard-${{ matrix.shard }}
@@ -478,7 +521,7 @@ jobs:
             sweep-refs.json
 
       - name: Upload sweep results (from-clojure-rs)
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-from-clojure-rs-shard-${{ matrix.shard }}
@@ -488,7 +531,7 @@ jobs:
             sweep-refs.json
 
       - name: Upload sweep results (to-jvm)
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-to-jvm-shard-${{ matrix.shard }}
@@ -498,7 +541,7 @@ jobs:
             sweep-refs.json
 
       - name: Upload sweep results (to-clojure-rs)
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-to-clojure-rs-shard-${{ matrix.shard }}
@@ -608,19 +651,19 @@ jobs:
           cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
 
       - name: Download sweep results (single run)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
         uses: actions/download-artifact@v8
         with:
           pattern: sweep-results-${{ matrix.runtime }}-shard-*
 
       - name: Download sweep results (comparison)
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
         uses: actions/download-artifact@v8
         with:
           pattern: sweep-results-*-${{ matrix.runtime }}-shard-*
 
       - name: Merge sweep reports (single run)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
         run: |
           "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge sweep-results-*/sweep-results-${{ matrix.runtime }}.json \
             --output sweep-results-merged.json \
@@ -630,13 +673,13 @@ jobs:
       # The merge must equal the plain BMF union: sharding is
       # snippet-cohesive, so no benchmark straddles two shards.
       - name: Verify merge matches per-shard BMFs
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' || !inputs.compare
         run: |
           jq -s 'add' sweep-results-*/sweep-bmf-${{ matrix.runtime }}.json > sweep-bmf-jq.json
           diff <(jq -S . sweep-bmf-merged.json) <(jq -S . sweep-bmf-jq.json)
 
       - name: Merge sweep reports (comparison)
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
         run: |
           SNIP="$GITHUB_WORKSPACE/snip-bin/snip"
           for side in from to; do
@@ -653,7 +696,7 @@ jobs:
       # never an error. Labels come from the sweep's refs sidecar
       # (any shard's copy; all are identical).
       - name: Compare from/to reports
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.compare
         run: |
           refs=$(ls sweep-results-*/sweep-refs.json | head -n 1)
           from="$(jq -r .from "$refs")"; to="$(jq -r .to "$refs")"
@@ -664,7 +707,7 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Upload merged sweep results
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && (github.event_name != 'workflow_dispatch' || !inputs.compare)
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-${{ matrix.runtime }}-merged
@@ -673,7 +716,7 @@ jobs:
             sweep-bmf-merged.json
 
       - name: Upload comparison results
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
         uses: actions/upload-artifact@v7
         with:
           name: sweep-results-${{ matrix.runtime }}-merged
