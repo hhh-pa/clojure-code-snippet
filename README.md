@@ -96,12 +96,15 @@ snip measure --self-test  # parser checks, no JVM needed
 ```
 
 CI runs correctness in the `test` job, then measures every snippet
-with `--callgrind --pin` in a sharded matrix `perf-instrumentation`
-sweep job (`needs: test`, 8 shards x 2 runtimes via `snip measure
---shard K/N`, lean `--repeat 1 --no-alloc` recipe, ~40min per shard
-callgrind-only baseline). Each
-shard reports its own BMF subset to Bencher (`bencher run --adapter
-json --file sweep-bench.json`, carrying only the two gungraun-run
+with `--callgrind --pin` in a sharded `perf-instrumentation`
+sweep job (`needs: test`, 8 shard jobs via `snip measure
+--shard K/N`, lean `--repeat 1 --no-alloc` recipe, ~80min per job
+callgrind-only baseline). Each shard job runs both runtime legs
+sequentially on the same runner — same hardware, same checkout,
+same resources — and a step verifies both legs measured exactly
+the same cases before anything reports. Each
+shard reports one BMF subset per runtime to Bencher (`bencher run --adapter
+json --file sweep-bench-<runtime>.json`, carrying only the two gungraun-run
 measures: `callgrind_instructions` thresholded at 1% plus
 unthresholded `callgrind_allocated_bytes`) — per-shard reports keep
 every check under GitHub's check-summary limit, where one merged
@@ -113,7 +116,7 @@ a combined results table to its step summary. A non-blocking
 stdout-gate canary. Bencher plots each snippet's
 `callgrind_instructions`/`callgrind_allocated_bytes` per commit
 for both runtimes and posts a check per shard on the head commit
-(full metrics stay in the uploaded `sweep-results.json`
+(full metrics stay in the uploaded `sweep-results-*.json`
 artifacts). The Bencher project API key lives in the
 `BENCHER_API_KEY` repository secret. Clojure jars, apt packages,
 the cargo build, and the Pin kit + built inscount tool are cached
@@ -126,14 +129,16 @@ Clojure, `ubuntu-latest-clojure-rs` for the Rust port);
 benchmark names stay identical across compilers, so overlay the
 testbeds on Bencher's perf page to compare them visually. The
 native leg always builds clojure-rs master HEAD (resolved once
-per run so all 16 legs share one revision; interpreter-only
+per run so all 8 shard jobs share one revision; interpreter-only
 `cargo build --release --locked --no-default-features` — `run`
 needs no LLVM), since the sweep diff-gates every case and
 Bencher shows the delta; a manual dispatch may pin
 `clojure_rs_sha` to bisect or repro. To add a compiler:
 
-1. Add a `runtime` entry in `.github/workflows/test.yml`
-   (perf-instrumentation + report-instrumentation matrices, testbed
+1. Add a leg in `.github/workflows/test.yml` (another `snip
+   measure` invocation plus upload step in perf-instrumentation,
+   extend its verify/Bencher `jvm clojure-rs` loops, and a
+   `report-instrumentation` matrix entry, testbed
    `ubuntu-latest-<runtime>`) with whatever build steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
    --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes);

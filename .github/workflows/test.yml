@@ -131,9 +131,14 @@ jobs:
   # plus pin_instructions) on every push, for JVM Clojure and
   # clojure-rs alike. This is the only perf signal (the timed perf
   # job was removed in T1211).
+  # One job per shard (8 jobs); each job runs both runtime legs
+  # sequentially on the SAME runner — same hardware, same checkout,
+  # same resources — so per-shard JVM vs clojure-rs numbers are
+  # directly comparable, and a step proves both legs measured
+  # exactly the same cases before anything reports to Bencher.
   # Lean recipe (--repeat 1, --no-alloc since the callgrind phase
-  # itself yields allocation, no slope): ~21s/case all-in on CI
-  # hardware x ~220 cases/shard / 2 jobs ~= 40min per shard
+  # itself yields allocation, no slope): ~21s/case/leg all-in on CI
+  # hardware x ~220 cases/shard x 2 legs ~= 80min per job
   # (callgrind-only baseline; the pin phase adds its own share).
   # A valgrind/Pin/toolchain failure fails the push (unlike the
   # pilot): the sweep is a required signal.
@@ -148,12 +153,13 @@ jobs:
       # Let every shard finish so partial artifacts upload for diagnosis.
       fail-fast: false
       matrix:
-        # One entry per compiler/runtime; benchmark names stay
-        # identical across runtimes (Bencher compares via testbeds,
-        # derived below as ubuntu-latest-<runtime>). Keep the
-        # runtime list in sync with the report-instrumentation job below.
+        # Shard index only: both runtime legs (jvm, clojure-rs)
+        # run inside each shard job on the same runner (see the
+        # measure step). Benchmark names stay identical across
+        # runtimes; Bencher compares via testbeds, derived below
+        # as ubuntu-latest-<runtime>. Keep the leg list in sync
+        # with the report-instrumentation job's runtime matrix below.
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
-        runtime: [jvm, clojure-rs]
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner
@@ -168,14 +174,12 @@ jobs:
           cache-key: pin-${{ runner.os }}-${{ hashFiles('.github/actions/pin-tools/**', 'scripts/ci/pin/**') }}
 
       - name: Set up JDK 21
-        if: matrix.runtime == 'jvm'
         uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21.0.13'
 
       - name: Cache Clojure jars
-        if: matrix.runtime == 'jvm'
         id: jars-cache
         uses: actions/cache@v5
         with:
@@ -183,7 +187,7 @@ jobs:
           key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
 
       - name: Download Clojure jars
-        if: matrix.runtime == 'jvm' && steps.jars-cache.outputs.cache-hit != 'true'
+        if: steps.jars-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p .ci/jars
           base=https://repo1.maven.org/maven2
@@ -197,21 +201,20 @@ jobs:
       # sweep diff-gates every case, so a bad upstream commit fails
       # loudly, and Bencher shows the perf delta. The built binary is
       # cached by resolved SHA: repeat runs on the same upstream
-      # revision skip checkout + toolchain + build on all 8 legs.
+      # revision skip checkout + toolchain + build on all 8 shard jobs.
       - name: Restore cached clojure-rs binary
         id: cljrs-bin-cache
-        if: matrix.runtime == 'clojure-rs'
         uses: actions/cache@v5
         with:
           path: cljrs-bin
           key: cljrs-bin-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
 
       - name: Install Rust toolchain
-        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
+        if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Check out clojure-rs
-        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
+        if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v7
         with:
           repository: hhh-pa/clojure
@@ -219,13 +222,13 @@ jobs:
           path: clojure-rs
 
       - name: Cache cargo build
-        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
+        if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: clojure-rs/rust
 
       - name: Build clojure-rs
-        if: matrix.runtime == 'clojure-rs' && steps.cljrs-bin-cache.outputs.cache-hit != 'true'
+        if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         run: |
           cd clojure-rs/rust
           cargo build --release --locked --no-default-features
@@ -238,7 +241,6 @@ jobs:
       # resolved revision — a mismatch fails loudly instead of
       # benchmarking the wrong commit.
       - name: Use clojure-rs binary
-        if: matrix.runtime == 'clojure-rs'
         run: |
           test "$(cat cljrs-bin/.rev)" = "${{ needs.resolve-rs.outputs.sha }}"
           echo "$GITHUB_WORKSPACE/cljrs-bin" >> "$GITHUB_PATH"
@@ -293,29 +295,50 @@ jobs:
           echo "valgrind: $ver" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Measure instrumentation sweep (deterministic metrics)
-        # Lean recipe: one timed run (stdout gate) + the callgrind
-        # phase per case (JVM: one -Xint+EpsilonGC run; native: one
-        # plain callgrind run plus one LD_PRELOAD counting run) +
-        # the Pin phase (one inscount run per case; the pin-tools
-        # action above fails loudly when Pin is unusable, so no
-        # vacuous pin_instructions here). No --alloc (the callgrind
-        # phase itself yields allocation), no --slope (slope fits
-        # timed runs).
+        # Lean recipe per leg: one timed run (stdout gate) + the
+        # callgrind phase per case (JVM: one -Xint+EpsilonGC run;
+        # native: one plain callgrind run plus one LD_PRELOAD
+        # counting run) + the Pin phase (one inscount run per case;
+        # the pin-tools action above fails loudly when Pin is
+        # unusable, so no vacuous pin_instructions here). No --alloc
+        # (the callgrind phase itself yields allocation), no --slope
+        # (slope fits timed runs).
+        # Both legs run here on this same runner, sequentially:
+        # same hardware, same checkout, same resources — so the JVM
+        # vs clojure-rs comparison is apples-to-apples per shard.
+        # The next step proves both legs measured exactly the same
+        # (label, stem, case) set before anything reports to Bencher.
         run: |
-          flags=(--runtime "${{ matrix.runtime }}")
-          if [ "${{ matrix.runtime }}" = "clojure-rs" ]; then
-            flags+=(--command-template 'clojure-rs run {script}')
-          fi
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
-            --repeat 1 --no-alloc --jobs 2 --timeout 900 \
-            "${flags[@]}" \
-            --shard ${{ matrix.shard }}/8 \
-            --callgrind --callgrind-repeat 1 \
-            --pin --pin-bin "${{ steps.pin.outputs.pin-bin }}" \
-            --pin-tool "${{ steps.pin.outputs.pin-tool }}" \
-            --pin-repeat 1 --pin-timeout 900 \
-            --output sweep-results.json --bmf-output sweep-bmf.json \
+          common=(--resources tests/resources
+            --repeat 1 --no-alloc --jobs 2 --timeout 900
+            --shard ${{ matrix.shard }}/8
+            --callgrind --callgrind-repeat 1
+            --pin --pin-bin "${{ steps.pin.outputs.pin-bin }}"
+            --pin-tool "${{ steps.pin.outputs.pin-tool }}"
+            --pin-repeat 1 --pin-timeout 900)
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure "${common[@]}" \
+            --runtime jvm \
+            --output sweep-results-jvm.json --bmf-output sweep-bmf-jvm.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure "${common[@]}" \
+            --runtime clojure-rs --command-template 'clojure-rs run {script}' \
+            --output sweep-results-clojure-rs.json --bmf-output sweep-bmf-clojure-rs.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      # Shard membership must be runtime-independent: discovery +
+      # SelectShard see the same checkout, resources, and flags on
+      # both legs, so any drift here means a real bug (e.g. a
+      # runtime-dependent skip) — fail loudly, never compare
+      # mismatched case sets on Bencher.
+      - name: Verify both legs measured the same shard
+        run: |
+          for leg in jvm clojure-rs; do
+            jq -c '[.results[] | [.label, .stem, .case]] | sort' "sweep-results-$leg.json" > "keys-$leg.json"
+            jq -c '(.missing // []) | sort' "sweep-results-$leg.json" > "missing-$leg.json"
+          done
+          diff keys-jvm.json keys-clojure-rs.json || { echo "error: shard ${{ matrix.shard }} measured different cases on the two legs" >&2; exit 1; }
+          diff missing-jvm.json missing-clojure-rs.json || { echo "error: shard ${{ matrix.shard }} has different missing sets on the two legs" >&2; exit 1; }
+          echo "shard ${{ matrix.shard }}: $(jq 'length' keys-jvm.json) cases identical on both legs"
 
       - name: Install Bencher CLI
         uses: bencherdev/bencher@main
@@ -330,54 +353,68 @@ jobs:
       # boundary sits far above the ~0.0006% observed callgrind
       # wobble; min/max sample 10/64. callgrind_allocated_bytes
       # rides threshold-free until its own wobble is characterized.
-      # Each shard reports its own stripped subset (~50
-      # benchmarks x 2 measures).
+      # Each shard reports one stripped subset per runtime (~50
+      # benchmarks x 2 measures each).
       - name: Track callgrind benchmarks with Bencher
         run: |
-          jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
-            sweep-bmf.json > sweep-bench.json
-          if [ "$(jq 'length' sweep-bench.json)" = "0" ]; then
-            echo "no callgrind data in shard; skipping Bencher report"
-            exit 0
-          fi
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            bencher run \
-              --project clojure-code-snippet \
-              --key '${{ secrets.BENCHER_API_KEY }}' \
-              --branch "${{ github.head_ref }}" \
-              --hash "${{ github.event.pull_request.head.sha }}" \
-              --start-point "${{ github.base_ref }}" \
-              --start-point-hash "${{ github.event.pull_request.base.sha }}" \
-              --start-point-clone-thresholds \
-              --testbed ubuntu-latest-${{ matrix.runtime }} \
-              --adapter json \
-              --file sweep-bench.json \
-              --github-actions "${{ secrets.GITHUB_TOKEN }}"
-          else
-            bencher run \
-              --project clojure-code-snippet \
-              --key '${{ secrets.BENCHER_API_KEY }}' \
-              --branch "${{ github.ref_name }}" \
-              --testbed ubuntu-latest-${{ matrix.runtime }} \
-              --threshold-measure callgrind_instructions \
-              --threshold-test percentage \
-              --threshold-min-sample-size 10 \
-              --threshold-max-sample-size 64 \
-              --threshold-upper-boundary 0.01 \
-              --adapter json \
-              --file sweep-bench.json \
-              --github-actions "${{ secrets.GITHUB_TOKEN }}"
-          fi
+          for runtime in jvm clojure-rs; do
+            jq 'with_entries(select(.value.callgrind_instructions != null and .value.callgrind_allocated_bytes != null) | .value |= {callgrind_instructions, callgrind_allocated_bytes})' \
+              "sweep-bmf-$runtime.json" > "sweep-bench-$runtime.json"
+            if [ "$(jq 'length' "sweep-bench-$runtime.json")" = "0" ]; then
+              echo "no callgrind data in shard ($runtime); skipping Bencher report"
+              continue
+            fi
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              bencher run \
+                --project clojure-code-snippet \
+                --key '${{ secrets.BENCHER_API_KEY }}' \
+                --branch "${{ github.head_ref }}" \
+                --hash "${{ github.event.pull_request.head.sha }}" \
+                --start-point "${{ github.base_ref }}" \
+                --start-point-hash "${{ github.event.pull_request.base.sha }}" \
+                --start-point-clone-thresholds \
+                --testbed "ubuntu-latest-$runtime" \
+                --adapter json \
+                --file "sweep-bench-$runtime.json" \
+                --github-actions "${{ secrets.GITHUB_TOKEN }}"
+            else
+              bencher run \
+                --project clojure-code-snippet \
+                --key '${{ secrets.BENCHER_API_KEY }}' \
+                --branch "${{ github.ref_name }}" \
+                --testbed "ubuntu-latest-$runtime" \
+                --threshold-measure callgrind_instructions \
+                --threshold-test percentage \
+                --threshold-min-sample-size 10 \
+                --threshold-max-sample-size 64 \
+                --threshold-upper-boundary 0.01 \
+                --adapter json \
+                --file "sweep-bench-$runtime.json" \
+                --github-actions "${{ secrets.GITHUB_TOKEN }}"
+            fi
+          done
 
-      - name: Upload sweep results
+      # Artifact names keep the per-runtime scheme, so the
+      # report-instrumentation merges below download unchanged.
+      - name: Upload sweep results (jvm)
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: sweep-results-${{ matrix.runtime }}-shard-${{ matrix.shard }}
+          name: sweep-results-jvm-shard-${{ matrix.shard }}
           path: |
-            sweep-results.json
-            sweep-bmf.json
-            sweep-bench.json
+            sweep-results-jvm.json
+            sweep-bmf-jvm.json
+            sweep-bench-jvm.json
+
+      - name: Upload sweep results (clojure-rs)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-clojure-rs-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-clojure-rs.json
+            sweep-bmf-clojure-rs.json
+            sweep-bench-clojure-rs.json
 
   # AOT pilot: one benchmark per push as a cheap AOT stdout-gate
   # canary (the callgrind half moved to the full-matrix sweep
@@ -465,8 +502,8 @@ jobs:
     # file would re-truncate the check summary (T11).
     permissions:
       contents: read
-    # One merge per runtime; keep in sync with the perf-instrumentation
-    # job's runtime list above.
+    # One merge per runtime; keep in sync with the runtime legs
+    # in the perf-instrumentation measure step above.
     strategy:
       matrix:
         runtime: [jvm, clojure-rs]
@@ -486,7 +523,7 @@ jobs:
 
       - name: Merge sweep reports
         run: |
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge sweep-results-*/sweep-results.json \
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure --merge sweep-results-*/sweep-results-${{ matrix.runtime }}.json \
             --output sweep-results-merged.json \
             --bmf-output sweep-bmf-merged.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
@@ -495,7 +532,7 @@ jobs:
       # snippet-cohesive, so no benchmark straddles two shards.
       - name: Verify merge matches per-shard BMFs
         run: |
-          jq -s 'add' sweep-results-*/sweep-bmf.json > sweep-bmf-jq.json
+          jq -s 'add' sweep-results-*/sweep-bmf-${{ matrix.runtime }}.json > sweep-bmf-jq.json
           diff <(jq -S . sweep-bmf-merged.json) <(jq -S . sweep-bmf-jq.json)
 
       - name: Upload merged sweep results
