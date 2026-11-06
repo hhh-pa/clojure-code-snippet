@@ -327,6 +327,8 @@ jobs:
       - name: Resolve comparison refs
         id: refs
         if: github.event_name == 'workflow_dispatch' && inputs.compare
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           ensure_present() {
             if ! git cat-file -e "$1" 2>/dev/null; then
