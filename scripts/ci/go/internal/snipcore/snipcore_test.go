@@ -159,7 +159,7 @@ func TestDiscover(t *testing.T) {
 	write("res/sort/quick_sort/solution/test_case_2/input.txt", "in")
 	write("res/sort/quick_sort/solution/test_case_2/output.txt", "out")
 	write("res/sort/quick_sort/solution/stray.txt", "not a case")
-	found, err := Discover(root, res)
+	found, err := Discover(root, res, ".clj")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +185,41 @@ func TestDiscover(t *testing.T) {
 	}
 	if !strings.HasSuffix(q.Cases[0].Input, "input.txt") || !strings.HasSuffix(q.Cases[0].Output, "output.txt") {
 		t.Fatalf("quick case paths: %+v", q.Cases[0])
+	}
+}
+
+func TestDiscoverPyExtension(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, body string) {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("src/sort/quick_sort/solution.py", "print(1)")
+	write("src/sort/quick_sort/solution.clj", "(println 1)")
+	res := filepath.Join(root, "res")
+	write("res/sort/quick_sort/solution/test_case_1/input.txt", "in")
+	write("res/sort/quick_sort/solution/test_case_1/output.txt", "out")
+	found, err := Discover(root, res, ".py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found %d scripts, want 1", len(found))
+	}
+	q := found[0]
+	if q.Label != "sort/quick_sort" || q.Stem != "solution" {
+		t.Fatalf("py: %+v", q)
+	}
+	if !strings.HasSuffix(q.Script, "solution.py") {
+		t.Fatalf("py script: %q", q.Script)
+	}
+	if len(q.Cases) != 1 || q.Cases[0].Name != "test_case_1" {
+		t.Fatalf("py cases: %+v", q.Cases)
 	}
 }
 

@@ -22,17 +22,9 @@
 (defn tokenize
   "Split string s on ASCII whitespace into a vector of token strings."
   [s]
-  (let [[toks cur] (reduce (fn [[toks cur] ch]
-                             (if (whitespace? ch)
-                               (if (seq cur)
-                                 [(conj toks (str/join cur)) []]
-                                 [toks cur])
-                               [toks (conj cur ch)]))
-                           [[] []]
-                           (seq s))]
-    (if (seq cur)
-      (conj toks (str/join cur))
-      toks)))
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[\x00-\x20]+"))))
 
 (defn parse-int
   "Parse an optional-sign decimal token into an integer, else nil."

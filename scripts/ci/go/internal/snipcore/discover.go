@@ -24,15 +24,18 @@ type Found struct {
 	Cases   []Case
 	// Label is Area/Problem with forward slashes (measure.py form).
 	Label string
-	// Stem is the script file name without .clj.
+	// Stem is the script file name without the script extension.
 	Stem string
 }
 
-// Discover ports run_tests.discover exactly: every src/**/*.clj under
-// root, sorted, joined against resources/<area_problem>/<stem>/
-// test_case_*, including the area/problem split quirk (first path
-// separator wins; a bare file falls back to (dir, stem)).
-func Discover(root, resources string) ([]Found, error) {
+// Discover ports run_tests.discover exactly: every src/**/*<ext>
+// under root, sorted, joined against
+// resources/<area_problem>/<stem>/ test_case_*, including the
+// area/problem split quirk (first path separator wins; a bare file
+// falls back to (dir, stem)). ext is the script extension with its
+// leading dot (".clj"); the head-to-head gate measures the python
+// twin repo through the same code with ".py".
+func Discover(root, resources, ext string) ([]Found, error) {
 	srcDir := filepath.Join(root, "src")
 	var scripts []string
 	err := filepath.WalkDir(srcDir, func(path string, entry fs.DirEntry, err error) error {
@@ -42,7 +45,7 @@ func Discover(root, resources string) ([]Found, error) {
 		if entry.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(entry.Name(), ".clj") {
+		if strings.HasSuffix(entry.Name(), ext) {
 			scripts = append(scripts, path)
 		}
 		return nil
@@ -61,7 +64,7 @@ func Discover(root, resources string) ([]Found, error) {
 			return nil, err
 		}
 		areaProblem := filepath.Dir(rel)
-		stem := strings.TrimSuffix(filepath.Base(rel), ".clj")
+		stem := strings.TrimSuffix(filepath.Base(rel), ext)
 		caseDir := filepath.Join(resources, areaProblem, stem)
 		var cases []Case
 		entries, err := os.ReadDir(caseDir)
