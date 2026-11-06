@@ -5,38 +5,30 @@
 (defn tokenize
   "Split string on whitespace into a vector of token strings using pure reduce."
   [s]
-  (let [sp (int \space)
-        step (fn [[toks cur] c]
-               (if (<= (int c) sp)
-                 (if (empty? cur)
-                   [toks cur]
-                   [(conj toks (apply str cur)) []])
-                 [toks (conj cur c)]))
-        found (reduce step [[] []] (or (seq s) []))
-        toks (first found)
-        cur (second found)]
-    (if (empty? cur)
-      toks
-      (conj toks (apply str cur)))))
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[\x00-\x20]+"))))
 
 (defn parse-num
   "Parse decimal token to integer value or nil when shape is bad."
   [tok]
-  (let [cs (seq tok)]
-    (when (seq cs)
-      (let [head (first cs)
-            neg (= head \-)
-            plus (= head \+)
-            rest-cs (if (or neg plus) (next cs) cs)]
-        (when (seq rest-cs)
-          (let [val (reduce (fn [acc c]
-                              (let [d (get digit-val c)]
-                                (if (nil? d)
-                                  (reduced nil)
-                                  (+' (*' acc 10) d))))
-                            0 rest-cs)]
-            (when (some? val)
-              (if neg (- 0 val) val))))))))
+  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
+    (parse-long tok)
+    (let [cs (seq tok)]
+      (when (seq cs)
+        (let [head (first cs)
+              neg (= head \-)
+              plus (= head \+)
+              rest-cs (if (or neg plus) (next cs) cs)]
+          (when (seq rest-cs)
+            (let [val (reduce (fn [acc c]
+                                (let [d (get digit-val c)]
+                                  (if (nil? d)
+                                    (reduced nil)
+                                    (+' (*' acc 10) d))))
+                              0 rest-cs)]
+              (when (some? val)
+                (if neg (- 0 val) val)))))))))
 
 (defn edit-distance
   "Levenshtein gap between strings a and b with two short rows.

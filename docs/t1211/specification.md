@@ -12,8 +12,8 @@ testbeds).
 
 Acceptance criteria:
 
-- `test.yml` has no `perf`/`report` jobs; `perf-callgrind` runs a
-  shard(8) x runtime{jvm, clojure-rs} matrix; `report-callgrind`
+- `test.yml` has no `perf`/`report` jobs; `perf-instrumentation` runs a
+  shard(8) x runtime{jvm, clojure-rs} matrix; `report-instrumentation`
   merges per runtime; `test` and `perf-pilot` are unchanged.
 - `snip measure --runtime clojure-rs --command-template 'clojure-rs
   run {script}' --callgrind` reports both gungraun-run measures per
@@ -24,7 +24,7 @@ Acceptance criteria:
   `python3 -c yaml.safe_load` passes on the workflow;
   `git diff --check` is clean.
 - The pushed branch shows green `test` + all 16 sweep legs +
-  both `report-callgrind` merges, with per-shard Bencher reports
+  both `report-instrumentation` merges, with per-shard Bencher reports
   for both runtimes and merged tables in the report summaries.
 - Per-shard sweep wall time roughly halves vs the 4-shard
   baseline on the same hardware class; every per-shard Bencher
@@ -61,8 +61,8 @@ branch):
 
 - Master branch protection currently requires `test`,
   `perf (0..3)`, `report (jvm)`. At merge time, replace the
-  `perf`/`report` contexts with the new `perf-callgrind (...)`
-  and `report-callgrind (...)` check names (exact names taken
+  `perf`/`report` contexts with the new `perf-instrumentation (...)`
+  and `report-instrumentation (...)` check names (exact names taken
   from this PR's checks).
 - Optionally retire the master `allocated_bytes` Bencher
   threshold once reporting stops (history is kept; no action
@@ -74,7 +74,7 @@ branch):
 
 - Delete the `perf` and `report` jobs entirely (Bencher
   `allocated_bytes` threshold wiring goes with them).
-- `perf-callgrind` matrix: `shard: [0..7]` x runtime legs
+- `perf-instrumentation` matrix: `shard: [0..7]` x runtime legs
   `jvm` (testbed `ubuntu-latest-jvm`, unchanged) and
   `clojure-rs` (testbed `ubuntu-latest-clojure-rs`).
   - JDK/JDK-jar steps run only on the `jvm` leg
@@ -98,7 +98,7 @@ branch):
   and arms after 10 samples. The `jq` strip and artifact
   upload are runtime-agnostic already (names carry
   runtime+shard).
-- `report-callgrind` matrix gains the `clojure-rs` runtime
+- `report-instrumentation` matrix gains the `clojure-rs` runtime
   (merge + `jq -s add` verify + upload, unchanged shape).
 - `perf-pilot` stays: it is a cheap non-blocking AOT stdout-gate
   canary, not a perf signal.
@@ -192,7 +192,7 @@ non-`java` templates. The change branches on
 ### CI impact
 
 - This change rewrites `.github/workflows/test.yml` (drop
-  `perf`/`report`, re-shard `perf-callgrind`, add the
+  `perf`/`report`, re-shard `perf-instrumentation`, add the
   clojure-rs leg) and Bencher reporting; no
   Jenkinsfile/.arclint changes needed (this repo uses GitHub
   Actions, not Jenkins).

@@ -139,3 +139,26 @@ func ParseCallgrindSummary(text string) (int64, error) {
 	}
 	return 0, fmt.Errorf("callgrind summary unreadable: no summary line")
 }
+
+// ParsePinCount reads the total from an inscount-style tool
+// output file (one "Count N" line). Later Count lines win so
+// per-thread dumps still resolve to their trailing total.
+func ParsePinCount(text string) (int64, error) {
+	found := false
+	var total int64
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "Count" {
+			continue
+		}
+		n, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("pin count unreadable: %s", snipcore.PyRepr(strings.TrimSpace(line)))
+		}
+		total, found = n, true
+	}
+	if !found {
+		return 0, fmt.Errorf("pin count unreadable: no Count line")
+	}
+	return total, nil
+}

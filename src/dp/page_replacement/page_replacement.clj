@@ -17,18 +17,9 @@
 (defn tokenize
   "Split s on whitespace into a vector of token strings."
   [s]
-  (let [done (reduce (fn [acc ch]
-                       (if (contains? separators ch)
-                         (if (empty? (:current acc))
-                           acc
-                           {:tokens (conj (:tokens acc) (apply str (:current acc)))
-                             :current []})
-                         (update acc :current conj ch)))
-                     {:tokens [] :current []}
-                     s)]
-    (if (empty? (:current done))
-      (:tokens done)
-      (conj (:tokens done) (apply str (:current done))))))
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[ \t\n\r\f\x0B]+"))))
 
 (def min-long
   "Most negative long value: 1 shifted into the sign bit."
@@ -40,30 +31,11 @@
 
 (defn parse-token
   "Parse tok as a decimal long integer with optional sign. Returns
-   nil when tok is malformed or out of long range; the bounds check
-   runs before each multiply-and-add step so no step can overflow."
+   nil when tok is malformed or out of long range: the sign and ASCII
+   digits are matched first, then parse-long reads the value."
   [tok]
-  (let [chs (seq tok)]
-    (when (seq chs)
-      (let [head (first chs)
-            neg? (= head \-)
-            rest-chs (if (or neg? (= head \+)) (rest chs) chs)]
-        (when (seq rest-chs)
-          (if neg?
-            (reduce (fn [acc ch]
-                      (when (some? acc)
-                        (let [d (get digit-values ch)]
-                          (when (and (some? d)
-                                     (>= acc (quot (+ min-long d) 10)))
-                            (- (* acc 10) d)))))
-                    0 rest-chs)
-            (reduce (fn [acc ch]
-                      (when (some? acc)
-                        (let [d (get digit-values ch)]
-                          (when (and (some? d)
-                                     (<= acc (quot (- max-long d) 10)))
-                            (+ (* acc 10) d)))))
-                    0 rest-chs)))))))
+  (when (and (string? tok) (re-matches #"[+-]?[0-9]+" tok))
+    (parse-long tok)))
 
 (defn read-longs
   "Read all of stdin as a vector of longs."

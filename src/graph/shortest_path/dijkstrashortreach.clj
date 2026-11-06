@@ -12,52 +12,24 @@
 ;; shaped input prints one message to stderr and returns with exit
 ;; 0, since a nonzero exit needs host interop, avoided by design.
 
+(require 'clojure.string)
+
 (defn- parse-ints
   "Reads all signed integers from string s into a vector, else nil.
-   One scalar loop: the accumulator is a primitive long, so the
-   per-char work is inlined primops and allocates nothing. Digits
-   past signed 64-bit range fail the scan. Negated numbers
-   accumulate negatively (never negated at flush, which would throw
-   on exactly -2^63 since unary minus is not inlined); the
-   boundary digit is 8 then, 7 otherwise."
+   Tokens split on runs of chars at or below space (code 32, the old
+   per-char scanner's separators); each must be an optional minus
+   then digits within signed 64-bit range (parse-long answers nil
+   past it), or the whole read fails."
   [s]
-  (loop [i (long 0) nn (long (count s)) nums (transient [])
-         cur (long 0) started false neg false bad false]
-    (if (>= i nn)
-      (when-not bad
-        (cond
-          started (persistent! (conj! nums cur))
-          neg nil
-          :else (persistent! nums)))
-      (if bad
-        (recur (+ i 1) nn nums cur started neg bad)
-        (let [code (int (nth s i))]
-          (cond
-            (and (<= 48 code) (<= code 57))
-            (let [d (- code 48)]
-              (if (if neg
-                    (or (< cur -922337203685477580)
-                        (and (== cur -922337203685477580) (> d 8)))
-                    (or (> cur 922337203685477580)
-                        (and (== cur 922337203685477580) (> d 7))))
-                (recur (+ i 1) nn nums cur started neg true)
-                (recur (+ i 1) nn nums
-                       ;; (long d): d is let-boxed; unboxing at the
-                       ;; use site keeps cur primitive every step.
-                       (if neg (- (* cur 10) (long d)) (+ (* cur 10) (long d)))
-                       true neg bad)))
-            (== code 45)
-            (if (or started neg)
-              (recur (+ i 1) nn nums cur started neg true)
-              (recur (+ i 1) nn nums cur started true bad))
-            (<= code 32)
-            (if started
-              (recur (+ i 1) nn (conj! nums cur) 0 false false bad)
-              (if neg
-                (recur (+ i 1) nn nums cur started neg true)
-                (recur (+ i 1) nn nums cur started neg bad)))
-            :else
-            (recur (+ i 1) nn nums cur started neg true)))))))
+  (reduce (fn [out tok]
+            (cond
+              (= tok "") out
+              (re-matches #"-?[0-9]+" tok) (if-let [n (parse-long tok)]
+                                              (conj out n)
+                                              (reduced nil))
+              :else (reduced nil)))
+          []
+          (clojure.string/split s #"[\x00-\x20]+")))
 
 (defn- report-error
   "Prints message to stderr and returns nil so the driver ends calmly."

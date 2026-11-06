@@ -18,13 +18,9 @@
 (defn- tokenize
   "Splits s on whitespace; returns a vector of token strings."
   [s]
-  (loop [cs (seq s) cur [] toks []]
-    (if (nil? cs)
-      (if (seq cur) (conj toks (apply str cur)) toks)
-      (let [c (first cs)]
-        (if (blank-char? c)
-          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
-          (recur (next cs) (conj cur c) toks))))))
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[ \t\n\r\f]+"))))
 
 (defn- parse-int
   "Reads token tok as a decimal integer inside lo to hi, else nil."
