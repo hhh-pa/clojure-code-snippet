@@ -39,11 +39,16 @@ Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                    [--only SUBSTR] [--output F] [--bmf-output F]
                    [--summary-file F] [--time-bin BIN] [--no-perf]
                    [--runtime NAME] [--command-template T] [--shard K/N]
+                   [--script-extension EXT]
                    [--alloc-repeat N | --no-alloc] [--slope]
                    [--callgrind] [--callgrind-repeat N] [--aot]
                    [--aot-cache DIR]
                    [--pin] [--pin-bin BIN] [--pin-tool SO] [--pin-repeat N]
                    [--pin-timeout S]
+
+--script-extension selects the measured scripts (default ".clj");
+the head-to-head gate measures the python twin repo with ".py"
+plus a python --command-template.
 
        snip measure --merge INPUT... [--output F] [--bmf-output F]
                    [--summary-file F]
@@ -55,6 +60,7 @@ func runMeasure(argv []string) int {
 	root := snipcore.RepoRoot()
 	resources := filepath.Join(root, "tests", "resources")
 	var cp, only, output, bmfOutput, summaryFile, timeBin, shard, aotCache, pinBin, pinTool string
+	scriptExt := ".clj"
 	runtimeName := "jvm"
 	template := measure.DefaultCommandTemplate
 	jobs := 1
@@ -82,6 +88,7 @@ func runMeasure(argv []string) int {
 			"runtime": &runtimeName, "command-template": &template,
 			"shard": &shard, "aot-cache": &aotCache,
 			"pin-bin": &pinBin, "pin-tool": &pinTool,
+			"script-extension": &scriptExt,
 		},
 		Ints: map[string]*int{
 			"jobs": &jobs, "timeout": &timeout, "repeat": &repeat,
@@ -141,6 +148,10 @@ func runMeasure(argv []string) int {
 		fmt.Fprintln(os.Stderr, "snip measure: --pin-timeout must be >= 1")
 		return 2
 	}
+	if len(scriptExt) < 2 || !strings.HasPrefix(scriptExt, ".") || strings.ContainsAny(scriptExt, `/\`) {
+		fmt.Fprintln(os.Stderr, "snip measure: --script-extension must look like .clj")
+		return 2
+	}
 	var shardParsed *[2]int
 	if shard != "" {
 		idx, total, err := snipcore.ParseMeasureShard(shard)
@@ -190,7 +201,7 @@ func runMeasure(argv []string) int {
 			return 1
 		}
 	}
-	found, err := snipcore.Discover(root, resources)
+	found, err := snipcore.Discover(root, resources, scriptExt)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

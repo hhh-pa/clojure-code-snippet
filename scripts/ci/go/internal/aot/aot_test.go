@@ -86,7 +86,7 @@ func TestTransformNoMain(t *testing.T) {
 // TestTransformRepo proves every snippet transforms (fast, no JVM).
 func TestTransformRepo(t *testing.T) {
 	root := repoRoot(t)
-	found, err := snipcore.Discover(root, filepath.Join(root, "tests", "resources"))
+	found, err := snipcore.Discover(root, filepath.Join(root, "tests", "resources"), ".clj")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -63,7 +63,7 @@ func runTest(argv []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	found, err := snipcore.Discover(root, resources)
+	found, err := snipcore.Discover(root, resources, ".clj")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
