@@ -21,13 +21,9 @@
 (defn tokenize
   "Split s on ASCII whitespace."
   [s]
-  (let [[toks cur] (reduce (fn [[toks cur] ch]
-                             (if (whitespace? ch)
-                               [(if (seq cur) (conj toks (apply str cur)) toks) []]
-                               [toks (conj cur ch)]))
-                           [[] []]
-                           (seq s))]
-    (if (seq cur) (conj toks (apply str cur)) toks)))
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[ \t\n\r\f\x0B]+"))))
 
 (defn parse-long-token
   "Parse a signed 64-bit integer token; nil when malformed or out of range."

@@ -18,18 +18,9 @@
 (defn tokenize
   "Split s on whitespace into a vector of token strings."
   [s]
-  (let [done (reduce (fn [{:keys [tokens current]} ch]
-                       (if (contains? separators ch)
-                         (if (empty? current)
-                           {:tokens tokens :current []}
-                           {:tokens (conj tokens (apply str current))
-                            :current []})
-                         {:tokens tokens :current (conj current ch)}))
-                     {:tokens [] :current []}
-                     s)]
-    (if (empty? (:current done))
-      (:tokens done)
-      (conj (:tokens done) (apply str (:current done))))))
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[ \t\n\r\f\x0B]+"))))
 
 (def min-long
   "Most negative long value: 1 shifted into the sign bit."
@@ -42,27 +33,8 @@
 (defn parse-token
   "Parse tok as a decimal long integer."
   [tok]
-  (let [chs (seq tok)]
-    (when (seq chs)
-      (let [head (first chs)
-            neg? (= head \-)
-            rest-chs (if (or neg? (= head \+)) (rest chs) chs)]
-        (when (seq rest-chs)
-          (if neg?
-            (reduce (fn [acc ch]
-                      (when (some? acc)
-                        (let [d (get digit-values ch)]
-                          (when (and (some? d)
-                                     (>= acc (quot (+ min-long d) 10)))
-                            (- (* acc 10) d)))))
-                    0 rest-chs)
-            (reduce (fn [acc ch]
-                      (when (some? acc)
-                        (let [d (get digit-values ch)]
-                          (when (and (some? d)
-                                     (<= acc (quot (- max-long d) 10)))
-                            (+ (* acc 10) d)))))
-                    0 rest-chs)))))))
+  (when (and (string? tok) (re-matches #"[+-]?[0-9]+" tok))
+    (parse-long tok)))
 
 (defn selection-sort
   "Selection sort of xs in O(n^2) time and O(1) extra space."

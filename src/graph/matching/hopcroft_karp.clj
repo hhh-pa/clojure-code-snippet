@@ -32,50 +32,19 @@
 
 
 (defn parse-ints
-  "Reads all signed integers from string s into a vector. Chars are
-   tested with core compare fns after int coercion, digits through
-   digit-values, and anything else fails the whole scan with nil."
+  "Reads all signed integers from string s into a vector. Tokens
+   split on chars at or below space; a token that is not an optional
+   minus and ASCII digits within long range fails the whole scan with
+   nil."
   [s]
-  (let [done
-        (reduce
-         (fn [state ch]
-           (let [nums (:nums state)
-                 cur (:cur state)
-                 neg (:neg state)
-                 bad (:bad state)
-                 code (int ch)]
-             (cond
-               bad state
-               (<= (int \0) code (int \9))
-               (assoc state :cur (+' (*' (or cur 0) 10) (digit-values ch)))
-               (= ch \-)
-               (if (or (some? cur) neg)
-                 (assoc state :bad true)
-                 (assoc state :neg true))
-               (<= code (int \space))
-               (cond
-                 (some? cur)
-                 (let [v (fit-long (if neg (-' cur) cur))]
-                   (if (some? v)
-                     (-> state
-                     (assoc :nums (conj! nums v))
-                     (assoc :cur nil)
-                     (assoc :neg false))
-                     (assoc state :bad true)))
-                 neg (assoc state :bad true)
-                 :else state)
-               :else (assoc state :bad true))))
-         {:nums (transient []) :cur nil :neg false :bad false}
-         (seq s))]
-    (when-not (:bad done)
-      (let [nums (:nums done)
-            cur (:cur done)
-            neg (:neg done)]
-        (cond
-          (some? cur) (let [v (fit-long (if neg (-' cur) cur))]
-                        (when (some? v) (persistent! (conj! nums v))))
-          neg nil
-          :else (persistent! nums))))))
+  (if (nil? s)
+    []
+    (reduce (fn [acc t]
+              (if-let [v (when (re-matches #"-?[0-9]+" t) (parse-long t))]
+                (conj acc (if (= v -9223372036854775808) (bigint v) v))
+                (reduced nil)))
+            []
+            (filterv seq (clojure.string/split s #"[\x00-\x20]+")))))
 
 (defn report-error
   "Prints message to stderr and returns nil so the driver ends calmly."

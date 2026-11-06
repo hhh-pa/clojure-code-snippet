@@ -1,14 +1,11 @@
 ;; MSD radix sort: pure Clojure most-significant-digit string radix sort.
 (def digit-values (zipmap "0123456789" (range)))
 (def separators #{\space \tab \newline \return \formfeed \u000B})
-(defn tokenize [s]
-  (let [done (reduce (fn [{:keys [tokens current]} ch]
-                       (if (contains? separators ch)
-                         (if (empty? current) {:tokens tokens :current []}
-                             {:tokens (conj tokens (apply str current)) :current []})
-                         {:tokens tokens :current (conj current ch)}))
-                     {:tokens [] :current []} s)]
-    (if (empty? (:current done)) (:tokens done) (conj (:tokens done) (apply str (:current done))))))
+(defn tokenize
+  [s]
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[ \t\n\r\f\x0B]+"))))
 (def min-long (bit-shift-left 1 63))
 (def max-long (bit-not min-long))
 (defn parse-token [tok]

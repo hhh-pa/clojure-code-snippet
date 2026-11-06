@@ -27,24 +27,16 @@
 (defn tokenize
   "Split s into whitespace separated tokens in O(n) time."
   [s]
-  (loop [cs (seq s) cur [] toks []]
-    (if (nil? cs)
-      (if (seq cur) (conj toks (apply str cur)) toks)
-      (let [ch (first cs)]
-        (if (contains? whitespace-chars ch)
-          (recur (next cs) [] (if (seq cur) (conj toks (apply str cur)) toks))
-          (recur (next cs) (conj cur ch) toks))))))
+  (if (nil? s)
+    []
+    (filterv seq (clojure.string/split s #"[ \t\n\r]+"))))
 
 (defn parse-num
   "Parse tok as an integer, or nil when it is not one."
   [tok]
-  (when (and (string? tok) (seq tok))
-    (let [cs (seq tok)
-          neg? (= (first cs) \-)
-          ds (if neg? (next cs) cs)]
-      (when (and (seq ds) (every? digit-values ds))
-        (let [v (reduce (fn [acc ch] (+' (*' acc 10) (digit-values ch))) 0 ds)]
-          (fit-long (if neg? (-' v) v)))))))
+  (when (and (string? tok) (re-matches #"-?[0-9]+" tok))
+    (when-let [v (parse-long tok)]
+      (if (= v -9223372036854775808) (bigint v) v))))
 
 (defn fail
   "Report invalid input on stderr and return normally."
