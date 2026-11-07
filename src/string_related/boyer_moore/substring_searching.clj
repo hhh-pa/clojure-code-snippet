@@ -72,31 +72,46 @@
       (zero? m0) true
       (< n0 m0) false
       :else
-      (let [[right big] (loop [j 0
-                               v (transient (vec (repeat 256 -1)))
-                               mp {}]
-                          (if (= j m0)
-                            [(persistent! v) mp]
-                            (let [ch (nth pat j)
-                                  c (int ch)]
-                              (if (< c 256)
-                                (recur (inc j) (assoc! v c j) mp)
-                                (recur (inc j) v (assoc mp ch j))))))]
-        (loop [i (long 0)]
-          (if (> i (- n0 m0))
-            false
-            (let [j (loop [j (dec m0)]
-                      (cond (neg? j) -1
-                            (= (nth pat j) (nth text (+ i j))) (recur (dec j))
-                            :else j))]
-              (if (neg? j)
+      (let [last-j (dec m0)
+            last-p (nth pat last-j)]
+        (if (zero? last-j)
+          (loop [i 0]
+            (if (= i n0)
+              false
+              (if (= (nth text i) last-p)
                 true
-                (let [ch (nth text (+ i j))
-                      r (if (< (int ch) 256)
-                          (nth right (int ch))
-                          (get big ch -1))
-                      skip (- j r)]
-                  (recur (+ i (if (< skip 1) 1 skip))))))))))))
+                (recur (inc i)))))
+          (let [right (transient (vec (repeat 256 -1)))
+                big (loop [j 0 mp {}]
+                      (if (= j m0)
+                        mp
+                        (let [ch (nth pat j)
+                              c (int ch)]
+                          (if (< c 256)
+                            (do (assoc! right c j)
+                                (recur (inc j) mp))
+                            (recur (inc j) (assoc mp ch j))))))
+                limit (- n0 m0)]
+            (loop [i (long 0)]
+              (if (> i limit)
+                false
+                (let [ch0 (nth text (+ i last-j))]
+                  (if (not= ch0 last-p)
+                    (let [c (int ch0)
+                          r (if (< c 256) (nth right c) (get big ch0 -1))
+                          skip (- last-j r)]
+                      (recur (+ i (if (< skip 1) 1 skip))))
+                    (let [j (loop [j (dec last-j)]
+                              (cond (neg? j) -1
+                                    (= (nth pat j) (nth text (+ i j))) (recur (dec j))
+                                    :else j))]
+                      (if (neg? j)
+                        true
+                        (let [ch (nth text (+ i j))
+                              c (int ch)
+                              r (if (< c 256) (nth right c) (get big ch -1))
+                              skip (- j r)]
+                          (recur (+ i (if (< skip 1) 1 skip))))))))))))))))
 (defn -main
   "Parses data and prints YES or NO per query pair.
   Malformed input prints a message on stderr and returns normally,

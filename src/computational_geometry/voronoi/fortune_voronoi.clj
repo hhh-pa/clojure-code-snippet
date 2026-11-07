@@ -202,207 +202,45 @@
             r-sq (+ (* (- ax ux) (- ax ux)) (* (- ay uy) (- ay uy)))]
         [[ux uy] r-sq]))))
 
-(defn edge-key
-  "Canonical undirected key for the edge u-v."
-  [u v]
-  (if (< u v) [u v] [v u]))
-
-(defn tri-edges
-  "The three edge keys of triangle [a b c]."
-  [[a b c]]
-  [(edge-key a b) (edge-key b c) (edge-key c a)])
-
-(defn inside-or-on?
-  "True when p lies inside triangle t or on its border."
-  [allpts [a b c] p]
-  (let [pa (nth allpts a) pb (nth allpts b) pc (nth allpts c)]
-    (and (>= (orient pa pb p) (- EPS))
-         (>= (orient pb pc p) (- EPS))
-         (>= (orient pc pa p) (- EPS)))))
-
-(defn locate
-  "Id of a triangle containing p, walking from tid0 with a full-scan
-  fallback so location always succeeds."
-  [tris edge-map allpts tid0 p]
-  (let [start (if (contains? tris tid0) tid0 (first (keys tris)))]
-    (or (loop [cur start seen #{start} steps 0]
-          (when (<= steps (count tris))
-            (let [[a b c] (get tris cur)
-                  pa (nth allpts a) pb (nth allpts b) pc (nth allpts c)
-                  o1 (orient pa pb p)
-                  o2 (orient pb pc p)
-                  o3 (orient pc pa p)]
-              (if (and (>= o1 (- EPS)) (>= o2 (- EPS)) (>= o3 (- EPS)))
-                cur
-                (let [bad (cond (< o1 (- EPS)) (edge-key a b)
-                                (< o2 (- EPS)) (edge-key b c)
-                                :else (edge-key c a))
-                      nxt (first (disj (get edge-map bad #{}) cur))]
-                  (when (and (some? nxt) (not (contains? seen nxt)))
-                    (recur nxt (conj seen nxt) (inc steps))))))))
-        (some (fn [[tid t]] (when (inside-or-on? allpts t p) tid)) tris)
-        (first (keys tris)))))
-
-(defn in-cavity?
-  "True when triangle t must be rebuilt for the insertion of p: p sits
-  strictly inside or on its circumcircle."
-  [allpts t p]
-  (let [[a b c] t
-        pi (first p)]
-    (if (or (= a pi) (= b pi) (= c pi))
-      true
-      (let [cc (circumcircle (nth allpts a) (nth allpts b) (nth allpts c))]
-        (if (nil? cc)
-          (inside-or-on? allpts t (second p))
-          (let [[[ux uy] r-sq] cc
-                [px py] (second p)
-                px (double px) py (double py)
-                d-sq (+ (* (- px ux) (- px ux)) (* (- py uy) (- py uy)))]
-            (< d-sq (+ r-sq EPS))))))))
-
-(defn cavity-of
-  "Triangles whose circumcircle covers p, grown from the seed."
-  [tris edge-map allpts seed p]
-  (loop [queue [seed] in #{seed}]
-    (if (empty? queue)
-      in
-      (let [tid (peek queue)
-            queue (pop queue)
-            nbrs (mapcat #(disj (get edge-map % #{}) tid)
-                         (tri-edges (get tris tid)))]
-        (recur (into queue (remove #(or (contains? in %)
-                                        (not (in-cavity? allpts (get tris %) p)))
-                                   nbrs))
-               (into in (filter #(in-cavity? allpts (get tris %) p) nbrs)))))))
-
-(defn insert-point
-  "Insert coord index pi into the triangulation; returns the new state."
-  [tris edge-map allpts next-tid last-tid pi]
-  (let [p (nth allpts pi)
-        seed (locate tris edge-map allpts last-tid p)
-        cav (cavity-of tris edge-map allpts seed [pi p])
-        counts (frequencies (mapcat #(tri-edges (get tris %)) cav))
-        bound (vec (for [[e c] counts :when (= c 1)] e))
-        cav-pairs (mapv (fn [tid] [tid (get tris tid)]) cav)
-        tris (reduce dissoc tris cav)
-        edge-map (reduce (fn [em [tid t]]
-                           (reduce (fn [em e]
-                                     (let [s (disj (get em e #{}) tid)]
-                                       (if (empty? s) (dissoc em e) (assoc em e s))))
-                                   em (tri-edges t)))
-                         edge-map cav-pairs)
-        [tris edge-map next-tid tids]
-        (loop [es bound tris tris edge-map edge-map next-tid next-tid tids []]
-          (if (empty? es)
-            [tris edge-map next-tid tids]
-            (let [[u v] (peek es)
-                  t (if (neg? (orient p (nth allpts u) (nth allpts v)))
-                      [pi v u]
-                      [pi u v])]
-              (recur (pop es)
-                     (assoc tris next-tid t)
-                     (reduce (fn [em e]
-                               (update em e (fnil conj #{}) next-tid))
-                             edge-map (tri-edges t))
-                     (inc next-tid)
-                     (conj tids next-tid)))))]
-    [tris edge-map next-tid (first tids) allpts]))
-
-(defn hilbert-index
-  "Hilbert order of the 16-bit cell (ix, iy)."
-  [ix iy]
-  (loop [s 32768 x ix y iy d 0]
-    (if (zero? s)
-      d
-      (let [rx (if (pos? (bit-and x s)) 1 0)
-            ry (if (pos? (bit-and y s)) 1 0)
-            d (+ d (* s s (bit-xor (* 3 rx) ry)))
-            [x y] (if (zero? ry)
-                    (let [[x y] (if (= rx 1) [(- s 1 x) (- s 1 y)] [x y])]
-                      [y x])
-                    [x y])]
-        (recur (quot s 2) x y d)))))
-
-(defn insertion-order
-  "Coord indices sorted along the Hilbert curve."
-  [pts]
-  (let [n (count pts)
-        xs (map first pts) ys (map second pts)
-        minx (reduce min xs) maxx (reduce max xs)
-        miny (reduce min ys) maxy (reduce max ys)
-        sx (- (double maxx) (double minx))
-        sy (- (double maxy) (double miny))]
-    (vec (sort-by
-          (fn [i]
-            (let [[x y] (nth pts i)
-                  ix (if (zero? sx) 0
-                         (min 65535 (max 0 (long (* (/ (- (double x) (double minx)) sx)
-                                                     65535.0)))))
-                  iy (if (zero? sy) 0
-                         (min 65535 (max 0 (long (* (/ (- (double y) (double miny)) sy)
-                                                     65535.0)))))]
-              (hilbert-index ix iy)))
-          (range n)))))
-
-(defn smallest-combo
-  "Lexicographically smallest index triple holding one index per list."
-  [la lb lc]
-  (let [i (min (reduce min la) (reduce min lb) (reduce min lc))
-        rest-lists (vec (remove #(contains? (set %) i) [la lb lc]))
-        j (min (reduce min (first rest-lists)) (reduce min (second rest-lists)))
-        last-list (first (remove #(contains? (set %) j) rest-lists))
-        k (reduce min last-list)]
-    [i j k]))
+(defn valid-center
+  "Circumcenter when triple i<j<k has an empty circumcircle over all points, else nil."
+  [raw n i j k]
+  (let [cc (circumcircle (nth raw i) (nth raw j) (nth raw k))]
+    (when (some? cc)
+      (let [[[ux uy] r-sq] cc
+            limit (- r-sq EPS)]
+        (loop [m 0]
+          (if (>= m n)
+            [ux uy]
+            (if (or (= m i) (= m j) (= m k))
+              (recur (inc m))
+              (let [[mx my] (nth raw m)
+                    dx (- (double mx) ux)
+                    dy (- (double my) uy)]
+                (if (>= (+ (* dx dx) (* dy dy)) limit)
+                  (recur (inc m))
+                  nil)))))))))
 
 (defn voronoi-vertices
-  "Voronoi vertices over raw points via Delaunay duality. Each center is
-  evaluated with its vertices in original-index order, reproducing the
-  old triple loop bit for bit, and centers are preordered by their
-  smallest triple so dedup survivors match too."
+  "Voronoi vertices over raw points."
   [raw]
-  (let [by-coord (reduce (fn [m [i p]] (update m p (fnil conj []) i))
-                         {} (map-indexed vector raw))
-        pts (vec (keys by-coord))
-        n (count pts)]
+  (let [n (count raw)]
     (if (< n 3)
       []
-      (let [xs (map #(double (first %)) pts)
-            ys (map #(double (second %)) pts)
-            minx (reduce min xs) maxx (reduce max xs)
-            miny (reduce min ys) maxy (reduce max ys)
-            dd (max (- maxx minx) (- maxy miny) 1.0)
-            mm (+ (* 1000.0 dd) 10.0)
-            cx (/ (+ minx maxx) 2.0) cy (/ (+ miny maxy) 2.0)
-            allpts (vec (conj pts [(- cx mm) (- cy mm)]
-                              [(+ cx mm) (- cy mm)] [cx (+ cy mm)]))
-            tris {0 [n (+ n 1) (+ n 2)]}
-            edge-map (reduce (fn [em e] (assoc em e #{0}))
-                             {} (tri-edges [n (+ n 1) (+ n 2)]))
-            order (insertion-order pts)
-            [tris _ _ _ _]
-            (loop [ids order tris tris edge-map edge-map next-tid 1 last-tid 0]
-              (if (empty? ids)
-                [tris edge-map next-tid last-tid allpts]
-                (let [[tris edge-map next-tid last-tid _]
-                      (insert-point tris edge-map allpts next-tid last-tid
-                                    (first ids))]
-                  (recur (rest ids) tris edge-map next-tid last-tid))))]
-        (let [centers (for [[_ [a b c]] tris
-                                :when (and (< a n) (< b n) (< c n))
-                                :let [cc (circumcircle (nth allpts a)
-                                                       (nth allpts b)
-                                                       (nth allpts c))]
-                                :when (some? cc)
-                                :let [[i j k] (smallest-combo
-                                               (get by-coord (nth pts a))
-                                               (get by-coord (nth pts b))
-                                               (get by-coord (nth pts c)))
-                                      rc (circumcircle (nth raw i)
-                                                       (nth raw j)
-                                                       (nth raw k))]
-                                :when (some? rc)]
-                            [[i j k] (first rc)])]
-          (vec (map second (sort-by first centers))))))))
+      (loop [i 0 out (transient [])]
+        (if (>= i (- n 2))
+          (persistent! out)
+          (recur (inc i)
+                 (loop [j (inc i) out out]
+                   (if (>= j (dec n))
+                     out
+                     (recur (inc j)
+                            (loop [k (inc j) out out]
+                              (if (>= k n)
+                                out
+                                (let [c (valid-center raw n i j k)]
+                                  (recur (inc k)
+                                         (if (some? c) (conj! out c) out))))))))))))))
 
 (defn die
   "Report invalid input on stderr and return normally."
@@ -414,6 +252,19 @@
   "True when any coordinate is not a number."
   [raw]
   (some (fn [[x y]] (or (not (== x x)) (not (== y y)))) raw))
+
+(defn parse-coords
+  [tokens n]
+  (let [nt (count tokens)
+        avail (min (max n 0) (quot (dec nt) 2))]
+    (loop [i 0 idx 1 out (transient [])]
+      (if (= i avail)
+        (persistent! out)
+        (let [x (parse-double-token (nth tokens idx))
+              y (parse-double-token (nth tokens (inc idx)))]
+          (if (or (nil? x) (nil? y))
+            nil
+            (recur (inc i) (+ idx 2) (conj! out [x y]))))))))
 
 (defn -main
   [& _args]
@@ -429,11 +280,9 @@
           (die "error: point count out of range")
 
           :else
-          (let [coords (take (* 2 n) (rest tokens))
-                raw (vec (for [[xs ys] (partition 2 coords)]
-                           [(parse-double-token xs) (parse-double-token ys)]))]
+          (let [raw (parse-coords tokens n)]
             (cond
-              (some (fn [[a b]] (or (nil? a) (nil? b))) raw)
+              (nil? raw)
               (die "error: expected numeric coordinate pairs after the count")
 
               (not (= (count raw) (max n 0)))

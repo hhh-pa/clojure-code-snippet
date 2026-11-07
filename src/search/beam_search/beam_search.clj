@@ -17,19 +17,24 @@
                            (recur (inc j) c)))))]
           (recur (inc i) cnt2))))))
 
-(defn delta-attacking [b n r br c2]
-  (loop [i 0 d 0]
-    (if (= i n)
-      d
-      (if (= i r)
-        (recur (inc i) d)
-        (let [bi (nth b i)
-              dist (let [x (- i r)] (if (neg? x) (- x) x))
-              d1 (let [x (- bi br)] (if (neg? x) (- x) x))
-              d2 (let [x (- bi c2)] (if (neg? x) (- x) x))
-              old-hit (if (or (= bi br) (= d1 dist)) 1 0)
-              new-hit (if (or (= bi c2) (= d2 dist)) 1 0)]
-          (recur (inc i) (+ d (- new-hit old-hit))))))))
+(defn row-attacking [b n r]
+  (let [hits (transient (vec (repeat n 0)))]
+    (loop [i 0]
+      (if (= i n)
+        hits
+        (if (= i r)
+          (recur (inc i))
+          (let [bi (nth b i)
+                d (- i r)
+                dist (if (neg? d) (- d) d)
+                c1 (- bi dist)
+                c2 (+ bi dist)]
+            (assoc! hits bi (inc (nth hits bi)))
+            (when (>= c1 0)
+              (assoc! hits c1 (inc (nth hits c1))))
+            (when (< c2 n)
+              (assoc! hits c2 (inc (nth hits c2))))
+            (recur (inc i))))))))
 
 (defn lcg-next [s]
   (unchecked-add (unchecked-multiply s 6364136223846793005) 1442695040888963407))
@@ -68,12 +73,14 @@
                                      (if (= r n)
                                        acc
                                        (let [br (nth b r)
+                                             hits (row-attacking b n r)
+                                             base-r (- base-c (nth hits br))
                                              acc3 (loop [c2 0 acc acc]
                                                     (if (= c2 n)
                                                       acc
                                                       (if (= c2 br)
                                                         (recur (inc c2) acc)
-                                                        (let [nc (+ base-c (delta-attacking b n r br c2))
+                                                        (let [nc (+ base-r (nth hits c2))
                                                               nb (assoc b r c2)]
                                                           (recur (inc c2) (conj! acc [nc nb]))))))]
                                          (recur (inc r) acc3))))]

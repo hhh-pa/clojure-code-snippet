@@ -51,42 +51,59 @@
   (binding [*out* *err*] (println msg)))
 
 (defn- prefix-table
-  "Prefix function of char vector pat in linear time: entry i holds
+  "Prefix function of pat in linear time: entry i holds
   the length of the longest proper border of pat open to i."
-  [pat]
-  (let [m (count pat)]
-    (if (zero? m)
-      []
-      (loop [i 1 j 0 pi (transient (vec (repeat m 0)))]
-        (if (>= i m)
-          (persistent! pi)
-          (let [j (loop [j j]
-                    (if (and (pos? j) (not= (nth pat i) (nth pat j)))
-                      (recur (nth pi (dec j)))
-                      j))
-                j (if (= (nth pat i) (nth pat j)) (inc j) j)]
-            (assoc! pi i j)
-            (recur (inc i) j pi)))))))
+  [pat m]
+  (let [pi (transient (vec (repeat m 0)))
+        p0 (nth pat 0)]
+    (loop [i 1 j 0]
+      (if (>= i m)
+        pi
+        (let [ch (nth pat i)
+              j (if (zero? j)
+                  (if (= ch p0) 1 0)
+                  (let [j (loop [j j]
+                            (if (and (pos? j) (not= ch (nth pat j)))
+                              (recur (nth pi (dec j)))
+                              j))]
+                    (if (= ch (nth pat j)) (inc j) 0)))]
+          (assoc! pi i j)
+          (recur (inc i) j))))))
 
 (defn- kmp-contains?
-  "True when char vector pat occurs in char vector text."
+  "True when pat occurs in text."
   [text pat]
   (let [m (count pat)]
     (if (zero? m)
       true
-      (let [n (count text)
-            pi (prefix-table pat)]
-        (loop [i 0 j 0]
-          (if (>= i n)
-            false
-            (let [j (loop [j j]
-                      (if (and (pos? j) (not= (nth text i) (nth pat j)))
-                        (recur (nth pi (dec j)))
-                        j))
-                  j (if (= (nth text i) (nth pat j)) (inc j) j)]
-              (if (= j m)
-                true
-                (recur (inc i) j)))))))))
+      (let [n (count text)]
+        (if (< n m)
+          false
+          (let [p0 (nth pat 0)]
+            (if (= m 1)
+              (loop [i 0]
+                (if (= i n)
+                  false
+                  (if (= (nth text i) p0)
+                    true
+                    (recur (inc i)))))
+              (let [pi (prefix-table pat m)]
+                (loop [i 0 j 0]
+                  (if (>= i n)
+                    false
+                    (let [ch (nth text i)]
+                      (if (zero? j)
+                        (if (= ch p0)
+                          (recur (inc i) 1)
+                          (recur (inc i) 0))
+                        (let [j (loop [j j]
+                                  (if (and (pos? j) (not= ch (nth pat j)))
+                                    (recur (nth pi (dec j)))
+                                    j))
+                              j (if (= ch (nth pat j)) (inc j) 0)]
+                          (if (= j m)
+                            true
+                            (recur (inc i) j)))))))))))))))
 
 (defn -main
   "Parses data and prints YES or NO per query pair.

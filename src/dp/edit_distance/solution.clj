@@ -12,52 +12,55 @@
 (defn parse-num
   "Parse decimal token to integer value or nil when shape is bad."
   [tok]
-  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
-    (parse-long tok)
-    (let [cs (seq tok)]
-      (when (seq cs)
-        (let [head (first cs)
-              neg (= head \-)
-              plus (= head \+)
-              rest-cs (if (or neg plus) (next cs) cs)]
-          (when (seq rest-cs)
-            (let [val (reduce (fn [acc c]
-                                (let [d (get digit-val c)]
-                                  (if (nil? d)
-                                    (reduced nil)
-                                    (+' (*' acc 10) d))))
-                              0 rest-cs)]
-              (when (some? val)
-                (if neg (- 0 val) val)))))))))
+  (when (and (string? tok) (pos? (count tok)))
+    (if (<= (count tok) 18)
+      (if (= (nth tok 0) \+)
+        (when (and (> (count tok) 1) (not= (nth tok 1) \-) (not= (nth tok 1) \+))
+          (parse-long (subs tok 1)))
+        (parse-long tok))
+      (let [cs (seq tok)
+            head (first cs)
+            neg (= head \-)
+            plus (= head \+)
+            rest-cs (if (or neg plus) (next cs) cs)]
+        (when (seq rest-cs)
+          (let [val (reduce (fn [acc c]
+                              (let [d (get digit-val c)]
+                                (if (nil? d)
+                                  (reduced nil)
+                                  (+' (*' acc 10) d))))
+                            0 rest-cs)]
+            (when (some? val)
+              (if neg (- 0 val) val))))))))
 
 (defn edit-distance
-  "Levenshtein gap between strings a and b with two short rows.
-  Time O(mn) and space O(min) by folding over the longer string."
+  "Levenshtein gap between strings a and b with one mutable row.
+  Time O(mn) and space O(min(m, n)) by folding over the longer string."
   [a b]
-  (let [pair (if (<= (count a) (count b)) [a b] [b a])
-        s (first pair)
-        t (second pair)
+  (let [swap? (> (count a) (count b))
+        s (if swap? b a)
+        t (if swap? a b)
         m (count s)
-        s-vec (vec s)]
+        n (count t)]
     (if (zero? m)
-      (count t)
-      (loop [prev (vec (range (inc m)))
-             t-rest (seq t)
-             i 1]
-        (if (nil? t-rest)
-          (nth prev m)
-          (let [bi (first t-rest)
-                cur (transient (vec (repeat (inc m) 0)))]
-            (assoc! cur 0 i)
-            (loop [j 1]
-              (when (<= j m)
-                (if (= (nth s-vec (dec j)) bi)
-                  (assoc! cur j (nth prev (dec j)))
-                  (assoc! cur j (inc (min (nth prev j)
-                                          (nth cur (dec j))
-                                          (nth prev (dec j))))))
-                (recur (inc j))))
-            (recur (persistent! cur) (next t-rest) (inc i))))))))
+      n
+      (let [dp (transient (vec (range (inc m))))]
+        (loop [i0 0]
+          (if (= i0 n)
+            (nth dp m)
+            (let [bi (nth t i0)
+                  i1 (inc i0)]
+              (assoc! dp 0 i1)
+              (loop [j 1 diag i0 left i1]
+                (when (<= j m)
+                  (let [up (nth dp j)
+                        nl (if (= (nth s (dec j)) bi)
+                             diag
+                             (inc (let [m1 (if (< up left) up left)]
+                                    (if (< m1 diag) m1 diag))))]
+                    (assoc! dp j nl)
+                    (recur (inc j) up nl))))
+              (recur i1))))))))
 
 (defn complain
   "Print message to stderr and return nil, exit stays zero as host exit is out of reach."

@@ -52,40 +52,43 @@
   nil)
 
 (defn bfs-line
-  "Builds adjacency lists in flat transient int vectors, runs BFS from start,
+  "Builds adjacency lists in a single packed edge vector, runs BFS from start,
    and returns the space-separated distance string."
   [n all edge-base m start]
   (let [head (transient (vec (repeat n -1)))
-        to (transient [])
-        nxt (transient [])]
+        edges (transient [])]
     (loop [i 0]
       (when (< i m)
         (let [idx (+ edge-base (* i 2))
               u (dec (nth all idx))
               v (dec (nth all (inc idx)))
               e1 (* i 2)
-              e2 (inc e1)]
-          (conj! to v)
-          (conj! nxt (nth head u))
+              e2 (inc e1)
+              hu (nth head u)
+              hv (nth head v)]
+          (conj! edges (bit-or v (bit-shift-left (inc hu) 24)))
           (assoc! head u e1)
-          (conj! to u)
-          (conj! nxt (nth head v))
+          (conj! edges (bit-or u (bit-shift-left (inc hv) 24)))
           (assoc! head v e2)
           (recur (inc i)))))
     (let [q (transient [start])
           dist (assoc! (transient (vec (repeat n -1))) start 0)]
-      (loop [qi 0]
-        (when (< qi (count q))
+      (loop [qi 0 qlen 1]
+        (when (< qi qlen)
           (let [cur (nth q qi)
-                nd (+ (nth dist cur) 6)]
-            (loop [e (nth head cur)]
-              (when (not= e -1)
-                (let [nb (nth to e)]
-                  (when (= (nth dist nb) -1)
-                    (assoc! dist nb nd)
-                    (conj! q nb))
-                  (recur (nth nxt e)))))
-            (recur (inc qi)))))
+                nd (+ (nth dist cur) 6)
+                nqlen (loop [e (nth head cur) ql qlen]
+                        (if (= e -1)
+                          ql
+                          (let [ev (nth edges e)
+                                nb (bit-and ev 16777215)
+                                ne (dec (bit-shift-right ev 24))]
+                            (if (= (nth dist nb) -1)
+                              (do (assoc! dist nb nd)
+                                  (conj! q nb)
+                                  (recur ne (inc ql)))
+                              (recur ne ql)))))]
+            (recur (inc qi) nqlen))))
       (loop [i 0 out (transient [])]
         (if (= i n)
           (str/join " " (persistent! out))
@@ -95,33 +98,34 @@
 
 (defn -main
   "Entry point reading the whole stdin string, silent on blank input."
-  [input]
-  (when-not (str/blank? input)
-    (let [all (parse-all-ints input)]
-      (if (nil? all)
-        (fail "bad input: tokens must all be integers")
-        (let [len (count all)]
-          (when (pos? len)
-            (loop [p 1 left (nth all 0)]
-              (when (and (pos? left) (< (inc p) len))
-                (let [n (nth all p)
-                      m (nth all (inc p))]
-                  (if (or (<= n 0) (< m 0) (> (+' p 2 (*' m 2)) (dec len)))
-                    (fail "bad input: query header or edges out of range")
-                    (let [edge-base (+ p 2)
-                          edge-end (+ edge-base (* m 2))
-                          start-tok (nth all edge-end)
-                          edges-ok? (loop [idx edge-base]
-                                      (if (= idx edge-end)
-                                        true
-                                        (let [v (nth all idx)]
-                                          (if (and (<= 1 v) (<= v n))
-                                            (recur (inc idx))
-                                            false))))]
-                      (if (or (< start-tok 1) (> start-tok n) (not edges-ok?))
-                        (fail "bad input: node ids out of range")
-                        (do
-                          (println (bfs-line n all edge-base m (dec start-tok)))
-                          (recur (inc edge-end) (dec left)))))))))))))))
+  []
+  (let [input (slurp *in*)]
+    (when-not (str/blank? input)
+      (let [all (parse-all-ints input)]
+        (if (nil? all)
+          (fail "bad input: tokens must all be integers")
+          (let [len (count all)]
+            (when (pos? len)
+              (loop [p 1 left (nth all 0)]
+                (when (and (pos? left) (< (inc p) len))
+                  (let [n (nth all p)
+                        m (nth all (inc p))]
+                    (if (or (<= n 0) (< m 0) (> (+' p 2 (*' m 2)) (dec len)))
+                      (fail "bad input: query header or edges out of range")
+                      (let [edge-base (+ p 2)
+                            edge-end (+ edge-base (* m 2))
+                            start-tok (nth all edge-end)
+                            edges-ok? (loop [idx edge-base]
+                                        (if (= idx edge-end)
+                                          true
+                                          (let [v (nth all idx)]
+                                            (if (and (<= 1 v) (<= v n))
+                                              (recur (inc idx))
+                                              false))))]
+                        (if (or (< start-tok 1) (> start-tok n) (not edges-ok?))
+                          (fail "bad input: node ids out of range")
+                          (do
+                            (println (bfs-line n all edge-base m (dec start-tok)))
+                            (recur (inc edge-end) (dec left))))))))))))))))
 
-(-main (slurp *in*))
+(-main)

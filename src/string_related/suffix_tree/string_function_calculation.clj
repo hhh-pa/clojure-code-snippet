@@ -36,55 +36,16 @@
                  (recur (inc i))
                  false)))))))
 
-(defn- find-next
-  "Child node of u on char code c, or -1."
-  [head-v edge-ch edge-to edge-next u c]
-  (loop [e (nth head-v u)]
-    (cond
-      (= e -1) -1
-      (= (nth edge-ch e) c) (nth edge-to e)
-      :else (recur (nth edge-next e)))))
-
-(defn- set-next!
-  "Sets transition (u, c) -> child, updating in place if present."
-  [head-v edge-ch edge-to edge-next u c child]
+(defn- find-edge
+  "Edge index from node u on char code c, or -1."
+  [head-v edges u c]
   (loop [e (nth head-v u)]
     (if (= e -1)
-      (let [ne (count edge-ch)]
-        (conj! edge-ch c)
-        (conj! edge-to child)
-        (conj! edge-next (nth head-v u))
-        (assoc! head-v u ne))
-      (if (= (nth edge-ch e) c)
-        (assoc! edge-to e child)
-        (recur (nth edge-next e))))))
-
-(defn- edge-len
-  "Length of the edge into node u with leaves open to leaf-end."
-  [start-v end-v leaf-v u leaf-end]
-  (if (zero? u)
-    0
-    (let [en (if (= (nth leaf-v u) 1) leaf-end (nth end-v u))]
-      (inc (- en (nth start-v u))))))
-
-(defn- add-node!
-  "Appends a node and returns its new index."
-  [link-v start-v end-v leaf-v head-v start end leaf-flag]
-  (let [id (count link-v)]
-    (conj! link-v 0)
-    (conj! start-v start)
-    (conj! end-v end)
-    (conj! leaf-v leaf-flag)
-    (conj! head-v -1)
-    id))
-
-(defn- follow-link
-  "Active point step after an extension, following suffix links."
-  [link-v active edge alen pos rem]
-  (cond
-    (and (zero? active) (pos? alen)) [active (inc (- pos rem)) (dec alen)]
-    (zero? active) [active edge alen]
-    :else [(nth link-v active) edge alen]))
+      -1
+      (let [ev (nth edges e)]
+        (if (= (bit-shift-right ev 48) c)
+          e
+          (recur (dec (bit-and (bit-shift-right ev 24) 16777215))))))))
 
 (defn- string-value
   "Max over distinct substrings of length times occurrences."
@@ -93,90 +54,112 @@
     (if (zero? n)
       0
       (let [t (str s "$")
-            nt (count t)
+            nt (inc n)
             link-v (transient [0])
             start-v (transient [0])
-            end-v (transient [-1])
-            leaf-v (transient [0])
+            end-v (transient [-2])
             head-v (transient [-1])
-            edge-ch (transient [])
-            edge-to (transient [])
-            edge-next (transient [])]
-        (loop [pos 0 active 0 edge 0 alen 0 rem 0]
+            edges (transient [])]
+        (loop [pos 0 active 0 edge 0 alen 0 rem 1 last-new -1]
           (when (< pos nt)
-            (let [pos-ch (int (nth t pos))
-                  [active2 edge2 alen2 rem2]
-                  (loop [active active edge edge alen alen rem (inc rem) last-new -1]
-                    (if (zero? rem)
-                      [active edge alen rem]
-                      (let [edge (if (zero? alen) pos edge)
-                            cur-char (int (nth t edge))
-                            nxt (find-next head-v edge-ch edge-to edge-next active cur-char)]
-                        (if (= nxt -1)
-                          (let [leaf (add-node! link-v start-v end-v leaf-v head-v pos -1 1)]
-                            (set-next! head-v edge-ch edge-to edge-next active cur-char leaf)
-                            (when (not= last-new -1)
+            (if (zero? rem)
+              (recur (inc pos) active edge alen 1 -1)
+              (let [pos-ch (int (nth t pos))
+                    edge (if (zero? alen) pos edge)
+                    cur-char (int (nth t edge))
+                    e (find-edge head-v edges active cur-char)]
+                (if (= e -1)
+                  (let [leaf (count link-v)
+                        ne (count edges)
+                        h0 (nth head-v active)]
+                    (conj! link-v 0)
+                    (conj! start-v pos)
+                    (conj! end-v -1)
+                    (conj! head-v -1)
+                    (conj! edges (bit-or leaf
+                                         (bit-shift-left (inc h0) 24)
+                                         (bit-shift-left cur-char 48)))
+                    (assoc! head-v active ne)
+                    (when (not= last-new -1)
+                      (assoc! link-v last-new active))
+                    (let [rem-next (dec rem)]
+                      (if (zero? active)
+                        (if (pos? alen)
+                          (recur pos 0 (inc (- pos rem-next)) (dec alen) rem-next -1)
+                          (recur pos 0 edge alen rem-next -1))
+                        (recur pos (nth link-v active) edge alen rem-next -1))))
+                  (let [ev (nth edges e)
+                        nxt (bit-and ev 16777215)
+                        en (nth end-v nxt)
+                        nxt-start (nth start-v nxt)
+                        elen (inc (- (if (= en -1) pos en) nxt-start))]
+                    (if (>= alen elen)
+                      (recur pos nxt (+ edge elen) (- alen elen) rem last-new)
+                      (let [epos (+ nxt-start alen)
+                            epos-ch (int (nth t epos))]
+                        (if (= epos-ch pos-ch)
+                          (do
+                            (when (and (not= last-new -1) (not (zero? active)))
                               (assoc! link-v last-new active))
-                            (let [rem-next (dec rem)
-                                  [na ne nal] (follow-link link-v active edge alen pos rem-next)]
-                              (recur na ne nal rem-next -1)))
-                          (let [elen (edge-len start-v end-v leaf-v nxt pos)]
-                            (if (>= alen elen)
-                              (recur nxt (+ edge elen) (- alen elen) rem last-new)
-                              (let [nxt-start (nth start-v nxt)
-                                    epos (+ nxt-start alen)
-                                    epos-ch (int (nth t epos))]
-                                (if (= epos-ch pos-ch)
-                                  (do
-                                    (when (and (not= last-new -1) (not (zero? active)))
-                                      (assoc! link-v last-new active))
-                                    [active edge (inc alen) rem])
-                                  (let [split-end (+ nxt-start alen -1)
-                                        split (add-node! link-v start-v end-v leaf-v head-v
-                                                         nxt-start split-end 0)
-                                        leaf (add-node! link-v start-v end-v leaf-v head-v
-                                                        pos -1 1)]
-                                    (set-next! head-v edge-ch edge-to edge-next active cur-char split)
-                                    (set-next! head-v edge-ch edge-to edge-next split pos-ch leaf)
-                                    (assoc! start-v nxt (+ nxt-start alen))
-                                    (set-next! head-v edge-ch edge-to edge-next split epos-ch nxt)
-                                    (when (not= last-new -1)
-                                      (assoc! link-v last-new split))
-                                    (let [rem-next (dec rem)
-                                          [na ne nal] (follow-link link-v active edge alen pos rem-next)]
-                                      (recur na ne nal rem-next split)))))))))))]
-              (recur (inc pos) active2 edge2 alen2 rem2))))
+                            (recur (inc pos) active edge (inc alen) (inc rem) -1))
+                          (let [split-end (+ nxt-start alen -1)
+                                split (count link-v)
+                                leaf (inc split)
+                                ne (count edges)]
+                            (conj! link-v 0)
+                            (conj! start-v nxt-start)
+                            (conj! end-v split-end)
+                            (conj! head-v (inc ne))
+                            (conj! link-v 0)
+                            (conj! start-v pos)
+                            (conj! end-v -1)
+                            (conj! head-v -1)
+                            (assoc! edges e (bit-or (bit-and ev -16777216) split))
+                            (conj! edges (bit-or leaf (bit-shift-left pos-ch 48)))
+                            (conj! edges (bit-or nxt
+                                                 (bit-shift-left (inc ne) 24)
+                                                 (bit-shift-left epos-ch 48)))
+                            (assoc! start-v nxt epos)
+                            (when (not= last-new -1)
+                              (assoc! link-v last-new split))
+                            (let [rem-next (dec rem)]
+                              (if (zero? active)
+                                (if (pos? alen)
+                                  (recur pos 0 (inc (- pos rem-next)) (dec alen) rem-next split)
+                                  (recur pos 0 edge alen rem-next split))
+                                (recur pos (nth link-v active) edge alen rem-next split)))))))))))))
         (let [nst (count link-v)
               order (transient [0])
-              depth (transient (vec (repeat nst 0)))
               cnt (transient (vec (repeat nst 0)))]
+          (assoc! link-v 0 0)
           (loop [qi 0]
-            (when (< qi nst)
+            (when (< qi (count order))
               (let [v (nth order qi)
-                    dv (nth depth v)]
-                (loop [e (nth head-v v)]
-                  (when (not= e -1)
-                    (let [w (nth edge-to e)
-                          w-len (if (= (nth leaf-v w) 1)
-                                  (- n (nth start-v w))
-                                  (inc (- (nth end-v w) (nth start-v w))))]
-                      (conj! order w)
-                      (assoc! depth w (+ dv w-len))
-                      (recur (nth edge-next e)))))
+                    dv (nth link-v v)
+                    leaves (loop [e (nth head-v v) lc 0]
+                             (if (= e -1)
+                               lc
+                               (let [ev (nth edges e)
+                                     w (bit-and ev 16777215)
+                                     en (nth end-v w)
+                                     ne (dec (bit-and (bit-shift-right ev 24) 16777215))]
+                                 (if (= en -1)
+                                   (recur ne (inc lc))
+                                   (let [w-len (inc (- en (nth start-v w)))]
+                                     (assoc! start-v w v)
+                                     (assoc! link-v w (+ dv w-len))
+                                     (conj! order w)
+                                     (recur ne lc))))))]
+                (assoc! cnt v leaves)
                 (recur (inc qi)))))
-          (loop [qi (dec nst) ans n]
-            (if (neg? qi)
+          (loop [qi (dec (count order)) ans n]
+            (if (<= qi 0)
               ans
               (let [v (nth order qi)
-                    c (if (= (nth leaf-v v) 1)
-                        1
-                        (loop [e (nth head-v v) sum 0]
-                          (if (= e -1)
-                            sum
-                            (recur (nth edge-next e)
-                                   (+ sum (nth cnt (nth edge-to e)))))))
-                    _ (assoc! cnt v c)
-                    prod (* (nth depth v) c)]
+                    c (nth cnt v)
+                    p (nth start-v v)
+                    _ (assoc! cnt p (+ (nth cnt p) c))
+                    prod (* (nth link-v v) c)]
                 (recur (dec qi) (if (> prod ans) prod ans))))))))))
 
 (defn -main

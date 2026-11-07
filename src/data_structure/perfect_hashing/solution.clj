@@ -20,27 +20,47 @@
     (parse-long tok)))
 
 (def P 1000003)
+(def WRAP_MIN (- P 500))
 
 (defn bucket-of [a b m k] (mod (mod (+ (* a k) b) P) m))
 
+(defn cand-bs [xs n]
+  (loop [i 0 acc [0]]
+    (if (= i n)
+      (if (> (count acc) 1) (vec (distinct (sort acc))) acc)
+      (let [x (nth xs i)]
+        (if (>= x WRAP_MIN)
+          (recur (inc i) (conj acc (- P x)))
+          (recur (inc i) acc))))))
+
 (defn level1 [keys m]
   (let [n (count keys)
+        km (mapv #(mod % P) keys)
         zeros (vec (repeat m 0))]
     (if (<= n 1)
       [1 0 n]
       (loop [a 1 best-a 1 best-b 0 best-s -1]
         (if (or (> a 500) (= best-s n))
           [best-a best-b best-s]
-          (let [[ba bb bs]
-                (loop [b 0 ba best-a bb best-b bs best-s]
-                  (if (or (> b 500) (= bs n))
+          (let [xs (loop [i 0 acc (transient [])]
+                     (if (= i n)
+                       (persistent! acc)
+                       (recur (inc i) (conj! acc (rem (* a (nth km i)) P)))))
+                bs-list (cand-bs xs n)
+                nb (count bs-list)
+                [ba bb bs]
+                (loop [bi 0 ba best-a bb best-b bs best-s]
+                  (if (or (= bi nb) (= bs n))
                     [ba bb bs]
-                    (let [cnt (transient zeros)
+                    (let [b (nth bs-list bi)
+                          cnt (transient zeros)
                           s (loop [i 0 s 0]
                               (if (= i n)
                                 s
-                                (let [k (nth keys i)
-                                      idx (bucket-of a b m k)
+                                (let [x (nth xs i)
+                                      v (+ x b)
+                                      vp (if (>= v P) (- v P) v)
+                                      idx (rem vp m)
                                       c (nth cnt idx)
                                       ns (+ s (* 2 c) 1)]
                                   (if (and (not= bs -1) (>= ns bs))
@@ -48,38 +68,47 @@
                                     (do (assoc! cnt idx (inc c))
                                         (recur (inc i) ns))))))]
                       (if (or (= bs -1) (< s bs))
-                        (recur (inc b) a b s)
-                        (recur (inc b) ba bb bs)))))]
+                        (recur (inc bi) a b s)
+                        (recur (inc bi) ba bb bs)))))]
             (recur (inc a) ba bb bs)))))))
 
-(defn collisions [bucket a b mj limit]
-  (let [nb (count bucket)]
-    (loop [i 0 seen #{} col 0]
-      (if (or (= i nb) (>= col limit))
-        col
-        (let [k (nth bucket i)
-              s (mod (mod (+ (* a k) b) P) mj)]
-          (if (contains? seen s)
-            (recur (inc i) seen (inc col))
-            (recur (inc i) (conj seen s) col)))))))
+(defn collisions [xs nb b mj limit]
+  (loop [i 0 seen #{} col 0]
+    (if (or (= i nb) (>= col limit))
+      col
+      (let [x (nth xs i)
+            v (+ x b)
+            vp (if (>= v P) (- v P) v)
+            s (rem vp mj)]
+        (if (contains? seen s)
+          (recur (inc i) seen (inc col))
+          (recur (inc i) (conj seen s) col))))))
 
 (defn level2 [bucket]
   (let [nj (count bucket)
         mj (if (> nj 1) (* nj nj) 1)]
     (if (<= nj 1)
       [mj 1 0]
-      (loop [a 1 ba 1 bb 0 bc (inc nj)]
-        (if (or (> a 500) (zero? bc))
-          [mj ba bb]
-          (let [[ba2 bb2 bc2]
-                (loop [b 0 ba ba bb bb bc bc]
-                  (if (or (> b 500) (zero? bc))
-                    [ba bb bc]
-                    (let [c (collisions bucket a b mj bc)]
-                      (if (< c bc)
-                        (recur (inc b) a b c)
-                        (recur (inc b) ba bb bc)))))]
-            (recur (inc a) ba2 bb2 bc2)))))))
+      (let [km (mapv #(mod % P) bucket)]
+        (loop [a 1 ba 1 bb 0 bc (inc nj)]
+          (if (or (> a 500) (zero? bc))
+            [mj ba bb]
+            (let [xs (loop [i 0 acc (transient [])]
+                       (if (= i nj)
+                         (persistent! acc)
+                         (recur (inc i) (conj! acc (rem (* a (nth km i)) P)))))
+                  bs-list (cand-bs xs nj)
+                  nb (count bs-list)
+                  [ba2 bb2 bc2]
+                  (loop [bi 0 ba ba bb bb bc bc]
+                    (if (or (= bi nb) (zero? bc))
+                      [ba bb bc]
+                      (let [b (nth bs-list bi)
+                            c (collisions xs nj b mj bc)]
+                        (if (< c bc)
+                          (recur (inc bi) a b c)
+                          (recur (inc bi) ba bb bc)))))]
+              (recur (inc a) ba2 bb2 bc2))))))))
 
 (defn solve [toks]
   (let [n (read-int (nth toks 0))

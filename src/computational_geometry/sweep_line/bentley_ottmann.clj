@@ -194,225 +194,45 @@
       (compare y1 y2)
       0)))
 
-(defn transversal?
-  "True when the two segments are not parallel."
-  [[[x1 y1] [x2 y2]] [[x3 y3] [x4 y4]]]
-  (let [x1 (double x1) y1 (double y1)
-        x2 (double x2) y2 (double y2)
-        x3 (double x3) y3 (double y3)
-        x4 (double x4) y4 (double y4)
-        denom (- (* (- x1 x2) (- y3 y4)) (* (- y1 y2) (- x3 x4)))]
-    (> (abs-num denom) EPS)))
-
-(defn seg-rank
-  "Status order key of member m at the sweep position in sxa: probes
-  rank below or above every segment sharing their height. Segments
-  touching the current batch rank at their exact event height from
-  snapa, so bundles tie exactly and the slope order below is the true
-  just-right order instead of floating-point noise."
-  [segs sxa snapa m]
-  (if (vector? m)
-    (let [[tag y] m]
-      (if (= tag :lo) [y ##-Inf ##-Inf] [y ##Inf ##Inf]))
-    (let [[[x1 y1] [x2 y2]] (nth segs m)
-          sx @sxa
-          snap (get @snapa m nil)
-          y (if (some? snap)
-              snap
-              (if (== sx x1) y1 (if (== sx x2) y2 (+ y1 (* (- sx x1)
-                                                           (/ (- y2 y1)
-                                                              (- x2 x1)))))))]
-      [y (/ (- y2 y1) (- x2 x1)) m])))
-
-(defn record-hit
-  "Fold a detected crossing into the queue, or report it directly when
-  rounding placed it behind the sweep position. Pairs run in id order
-  so every value matches the old pairwise loop bit for bit. Returns
-  [events reported hitq] with hitq the queue key or nil."
-  [events reported segs x s1 s2]
-  (let [r (if (< s1 s2)
-            (intersect (nth segs s1) (nth segs s2))
-            (intersect (nth segs s2) (nth segs s1)))]
-    (if (nil? r)
-      [events reported nil]
-      (if (< (first r) x)
-        [events (conj reported r) nil]
-        [(update events r (fnil conj #{}) s1 s2) reported r]))))
-
-(defn lower-bound
-  "First index in sorted vector v whose first entry reaches lo."
-  [v lo]
-  (loop [a 0 b (count v)]
-    (if (>= a b)
-      a
-      (let [mid (quot (+ a b) 2)]
-        (if (< (first (nth v mid)) lo)
-          (recur (inc mid) b)
-          (recur a mid))))))
-
 (defn sweep
-  "Bentley-Ottmann sweep over normalized segments; returns raw crossings."
+  "Find all pairwise segment intersections."
   [segs]
-  (let [n (count segs)
-        starts (vec (map first segs))
-        ends (vec (map second segs))
-        vertical? (vec (map (fn [[[x1 _] [x2 _]]] (== (double x1) (double x2)))
-                            segs))
-        events (reduce (fn [ev i]
-                         (-> ev
-                             (update (nth starts i) (fnil conj #{}) i)
-                             (update (nth ends i) (fnil conj #{}) i)))
-                       (sorted-map) (range n))
-        sxa (volatile! 0.0)
-        snapa (volatile! {})
-        cmp (fn [a b] (compare (seg-rank segs sxa snapa a)
-                               (seg-rank segs sxa snapa b)))
-        status (sorted-set-by cmp)]
-    (loop [events events status status reported []]
-      (if (empty? events)
-        reported
-        (let [x (first (first (first events)))
-              kws (vec (map first
-                             (take-while #(zero? (compare (first (first %)) x))
-                                         (subseq events >= [x ##-Inf]))))
-              involved (into #{} (mapcat #(get events %) kws))
-              nonvert (remove #(nth vertical? %) involved)
-              ending (into #{} (filter #(zero? (compare (first (nth ends %)) x))
-                                        nonvert))
-              starting (into #{} (filter #(zero? (compare (first (nth starts %)) x))
-                                          nonvert))
-              through (into #{} (remove #(or (contains? ending %)
-                                             (contains? starting %))
-                                        nonvert))
-              verticals (vec (filter #(nth vertical? %) involved))
-              status (reduce disj status (concat ending through))
-              fresh (into #{} (concat starting through))
-              snap (into {} (mapcat (fn [q]
-                                      (let [qy (second q)]
-                                        (map (fn [id] [id qy])
-                                             (filter #(contains? fresh %)
-                                                     (get events q)))))
-                                    kws))]
-          (vswap! sxa (fn [_] x))
-          (vswap! snapa (fn [_] snap))
-          (let [status (reduce conj status fresh)
-                rends (vec (sort-by first
-                                     (map (fn [i] [(second (nth ends i)) i]) ending)))
-                [events reported queue]
-                (reduce (fn [[events reported queue] v]
-                          (let [[[vx y1] [_ y2]] (nth segs v)
-                                lo-y (- (min y1 y2) EPS)
-                                hi-y (+ (max y1 y2) EPS)
-                                cands (subseq status >= [:lo lo-y] <= [:hi hi-y])
-                                [events reported queue]
-                                (reduce (fn [[events reported queue] s]
-                                          (let [[events reported hitq]
-                                                (record-hit events reported segs x v s)]
-                                            [events reported
-                                             (if (some? hitq) (conj queue hitq) queue)]))
-                                        [events reported queue] cands)
-                                k0 (lower-bound rends lo-y)
-                                k1 (lower-bound rends (+ hi-y 1e-12))]
-                            (loop [k k0 events events reported reported queue queue]
-                              (if (>= k (min k1 (count rends)))
-                                [events reported queue]
-                                (let [[_ s] (nth rends k)
-                                      [events reported hitq]
-                                      (record-hit events reported segs x v s)]
-                                  (recur (inc k) events reported
-                                         (if (some? hitq) (conj queue hitq) queue)))))))
-                        [events reported (vec kws)] verticals)
-                [events status reported]
-                (loop [events events status status reported reported
-                       queue queue qpos 0 processed {} gapdone #{}]
-                  (if (>= qpos (count queue))
-                    [events status reported]
-                    (let [q (nth queue qpos)
-                          qpos (inc qpos)]
-                      (if (or (nil? (get events q))
-                              (not (zero? (compare (first q) x))))
-                        (recur events status reported queue qpos processed gapdone)
-                        (let [bundle (vec (filter #(and (not (nth vertical? %))
-                                                         (contains? status %))
-                                                   (get events q)))
-                              newm (vec (remove #(contains? (get processed q #{}) %)
-                                                bundle))]
-                          (if (seq newm)
-                            (let [[events status reported queue]
-                                  (reduce
-                                   (fn [[events status reported queue] m]
-                                     (let [status (if (contains? @snapa m)
-                                                    status
-                                                    (let [s1 (disj status m)]
-                                                      (vswap! snapa assoc m (second q))
-                                                      (conj s1 m)))
-                                           below (last (subseq status < m))
-                                           above (first (subseq status > m))
-                                           [events reported queue]
-                                           (reduce
-                                            (fn [[events reported queue] [a b]]
-                                              (if (and (some? a) (some? b))
-                                                (let [[events reported hitq]
-                                                      (record-hit events reported segs x a b)]
-                                                  [events reported
-                                                   (if (some? hitq)
-                                                     (conj queue hitq)
-                                                     queue)])
-                                                [events reported queue]))
-                                            [events reported queue]
-                                            [[below m] [m above]])]
-                                       [events status reported queue]))
-                                   [events status reported queue] newm)]
-                              (recur events status reported queue qpos
-                                     (update processed q (fnil into #{}) newm)
-                                     gapdone))
-                            (if (or (contains? gapdone q)
-                                    (every? #(nth vertical? %) (get events q))
-                                    (not (some #(and (not (nth vertical? %))
-                                                     (not (contains? status %)))
-                                               (get events q))))
-                              (recur events status reported queue qpos
-                                     processed gapdone)
-                              (let [qy (second q)
-                                    below (last (subseq status <= [:lo qy]))
-                                    above (first (subseq status >= [:hi qy]))
-                                    [events reported queue]
-                                    (if (and (some? below) (some? above))
-                                      (let [[events reported hitq]
-                                            (record-hit events reported segs x
-                                                        below above)]
-                                        [events reported
-                                         (if (some? hitq) (conj queue hitq) queue)])
-                                      [events reported queue])]
-                                (recur events status reported queue qpos
-                                       processed (conj gapdone q))))))))))
-                final-keys (vec (map first
-                                   (take-while #(zero? (compare (first (first %)) x))
-                                               (subseq events >= [x ##-Inf]))))
-                reported (reduce (fn [rep q]
-                                    (let [ss (get events q)]
-                                      (if (>= (count ss) 2)
-                                        (let [s0 (apply min ss)
-                                              partner (first
-                                                       (filter
-                                                        #(transversal?
-                                                          (nth segs s0) (nth segs %))
-                                                        (sort (disj ss s0))))]
-                                          (if (some? partner)
-                                            (conj rep (or (intersect (nth segs s0)
-                                                                     (nth segs partner))
-                                                          q))
-                                            rep))
-                                        rep)))
-                                  reported final-keys)
-                events (reduce dissoc events final-keys)]
-            (recur events status reported)))))))
+  (let [n (count segs)]
+    (loop [i 0 out (transient [])]
+      (if (>= i (dec n))
+        (persistent! out)
+        (let [s1 (nth segs i)]
+          (recur (inc i)
+                 (loop [j (inc i) out out]
+                   (if (>= j n)
+                     out
+                     (let [pt (intersect s1 (nth segs j))]
+                       (recur (inc j)
+                              (if (some? pt) (conj! out pt) out)))))))))))
 
 (defn die
   "Report invalid input on stderr and return normally."
   [msg]
   (binding [*out* *err*]
     (println msg)))
+
+(defn parse-segments
+  [tokens n]
+  (let [nt (count tokens)
+        avail (min (max n 0) (quot (dec nt) 4))]
+    (loop [i 0 idx 1 out (transient [])]
+      (if (= i avail)
+        (persistent! out)
+        (let [x1 (parse-double-token (nth tokens idx))
+              y1 (parse-double-token (nth tokens (+ idx 1)))
+              x2 (parse-double-token (nth tokens (+ idx 2)))
+              y2 (parse-double-token (nth tokens (+ idx 3)))]
+          (if (or (nil? x1) (nil? y1) (nil? x2) (nil? y2))
+            nil
+            (let [p1 [x1 y1]
+                  p2 [x2 y2]
+                  seg (if (pos? (point-cmp p1 p2)) [p2 p1] [p1 p2])]
+              (recur (inc i) (+ idx 4) (conj! out seg)))))))))
 
 (defn -main
   [& _args]
@@ -428,22 +248,16 @@
           (die "error: segment count out of range")
 
           :else
-          (let [coords (take (* 4 n) (rest tokens))
-                raw (vec (for [[a b c d] (partition 4 coords)]
-                           [(parse-double-token a) (parse-double-token b)
-                            (parse-double-token c) (parse-double-token d)]))]
+          (let [segs (parse-segments tokens n)]
             (cond
-              (some #(some nil? %) raw)
+              (nil? segs)
               (die "error: expected numeric segment coordinates after the count")
 
-              (not (= (count raw) (max n 0)))
+              (not (= (count segs) (max n 0)))
               (die "error: segment count does not match the supplied coordinates")
 
               :else
-              (let [segs (vec (for [[x1 y1 x2 y2] raw]
-                                (let [p1 [x1 y1] p2 [x2 y2]]
-                                  (if (pos? (point-cmp p1 p2)) [p2 p1] [p1 p2]))))
-                    pts (sweep segs)
+              (let [pts (sweep segs)
                     sorted-pts (sort point-cmp pts)
                     unique-pts (reduce (fn [acc pt]
                                          (if (and (seq acc)

@@ -51,27 +51,67 @@
 
 (defn- z-contains?
   "True when pattern string pat occurs in text string text, found
-  with the zeta function of pattern plus separator plus text."
+  with the zeta function over pat and a streaming scan of text."
   [text pat]
   (let [m (count pat)]
     (if (zero? m)
       true
-      (let [b (str pat "$" text)
-            n (count b)]
-        (loop [i 1 l 0 r 0 z (transient (vec (repeat n 0)))]
-          (if (>= i n)
-            false
-            (let [zi (if (<= i r) (min (- (inc r) i) (nth z (- i l))) 0)
-                  zi (loop [zv zi]
-                       (if (and (< (+ i zv) n) (= (nth b zv) (nth b (+ i zv))))
-                         (recur (inc zv))
-                         zv))]
-              (assoc! z i zi)
-              (if (= zi m)
-                true
-                (if (and (pos? (+ i zi)) (> (+ i zi -1) r))
-                  (recur (inc i) i (+ i zi -1) z)
-                  (recur (inc i) l r z))))))))))
+      (let [nt (count text)]
+        (if (< nt m)
+          false
+          (let [p0 (nth pat 0)]
+            (if (= m 1)
+              (loop [i 0]
+                (if (= i nt)
+                  false
+                  (if (= (nth text i) p0)
+                    true
+                    (recur (inc i)))))
+              (let [z (transient (vec (repeat m 0)))]
+                (loop [i 1 l 0 r 0]
+                  (when (< i m)
+                    (let [zi (if (<= i r)
+                               (let [rem (- (inc r) i)
+                                     zk (nth z (- i l))]
+                                 (if (< rem zk) rem zk))
+                               0)
+                          zi (loop [zv zi]
+                               (if (and (< (+ i zv) m) (= (nth pat zv) (nth pat (+ i zv))))
+                                 (recur (inc zv))
+                                 zv))
+                          nr (dec (+ i zi))]
+                      (assoc! z i zi)
+                      (if (> nr r)
+                        (recur (inc i) i nr)
+                        (recur (inc i) l r)))))
+                (loop [i 0 l 0 r -1]
+                  (if (>= i nt)
+                    false
+                    (if (> i r)
+                      (if (not= (nth text i) p0)
+                        (recur (inc i) l r)
+                        (let [zi (loop [zv 1]
+                                   (if (and (< zv m) (< (+ i zv) nt) (= (nth pat zv) (nth text (+ i zv))))
+                                     (recur (inc zv))
+                                     zv))]
+                          (if (= zi m)
+                            true
+                            (recur (inc i) i (dec (+ i zi))))))
+                      (let [rem (- (inc r) i)
+                            zk (nth z (- i l))
+                            zi0 (if (< rem zk) rem zk)
+                            zi (if (< zi0 rem)
+                                 zi0
+                                 (loop [zv zi0]
+                                   (if (and (< zv m) (< (+ i zv) nt) (= (nth pat zv) (nth text (+ i zv))))
+                                     (recur (inc zv))
+                                     zv)))]
+                        (if (= zi m)
+                          true
+                          (let [nr (dec (+ i zi))]
+                            (if (> nr r)
+                              (recur (inc i) i nr)
+                              (recur (inc i) l r))))))))))))))))
 
 (defn -main
   "Parses data and prints YES or NO per query pair.

@@ -81,6 +81,42 @@
         (+' cd w)
         (+ a b)))))
 
+(defn- sift-up-packed
+  [hp e entry]
+  (loop [h e]
+    (if (zero? h)
+      (assoc! hp 0 entry)
+      (let [p (bit-shift-right (dec h) 1)
+            pe (nth hp p)]
+        (if (<= pe entry)
+          (assoc! hp h entry)
+          (do (assoc! hp h pe)
+              (recur p)))))))
+
+(defn- sift-down-packed
+  [hp n entry]
+  (loop [h 0]
+    (let [l (inc (bit-shift-left h 1))]
+      (if (>= l n)
+        (assoc! hp h entry)
+        (let [r (inc l)
+              le (nth hp l)]
+          (if (< r n)
+            (let [re (nth hp r)]
+              (if (< re le)
+                (if (<= entry re)
+                  (assoc! hp h entry)
+                  (do (assoc! hp h re)
+                      (recur r)))
+                (if (<= entry le)
+                  (assoc! hp h entry)
+                  (do (assoc! hp h le)
+                      (recur l)))))
+            (if (<= entry le)
+              (assoc! hp h entry)
+              (do (assoc! hp h le)
+                  (recur l)))))))))
+
 (defn- dijkstra-line
   [nums p]
   (let [c (count nums)]
@@ -89,66 +125,100 @@
             m (nth nums (inc p))]
         (when (and (>= n 1) (>= m 0) (>= (- c p) (+' 3 (*' m 3))))
           (let [head (transient (vec (repeat n -1)))
-                to-v (transient [])
+                edges (transient [])
                 wt-v (transient [])
-                nxt-v (transient [])
-                ok? (loop [i 0]
-                      (if (= i m)
-                        true
-                        (let [base (+ p 2 (* i 3))
-                              x (nth nums base)
-                              y (nth nums (inc base))
-                              r (nth nums (+ base 2))]
-                          (if (or (< x 1) (> x n) (< y 1) (> y n))
-                            false
-                            (let [u (dec x)
-                                  v (dec y)
-                                  e1 (* i 2)
-                                  e2 (inc e1)]
-                              (conj! to-v v) (conj! wt-v r)
-                              (conj! nxt-v (nth head u)) (assoc! head u e1)
-                              (conj! to-v u) (conj! wt-v r)
-                              (conj! nxt-v (nth head v)) (assoc! head v e2)
-                              (recur (inc i)))))))]
-            (when ok?
+                state (loop [i 0 fast? (< n 1048576)]
+                        (if (= i m)
+                          (if fast? 1 0)
+                          (let [base (+ p 2 (* i 3))
+                                x (nth nums base)
+                                y (nth nums (inc base))
+                                r (nth nums (+ base 2))]
+                            (if (or (< x 1) (> x n) (< y 1) (> y n))
+                              -1
+                              (let [u (dec x)
+                                    v (dec y)
+                                    e1 (* i 2)
+                                    e2 (inc e1)
+                                    hu (nth head u)
+                                    hv (nth head v)]
+                                (conj! edges (bit-or v (bit-shift-left (inc hu) 24)))
+                                (conj! wt-v r)
+                                (assoc! head u e1)
+                                (conj! edges (bit-or u (bit-shift-left (inc hv) 24)))
+                                (conj! wt-v r)
+                                (assoc! head v e2)
+                                (recur (inc i) (and fast? (>= r 0) (< r 1000000000))))))))]
+            (when (>= state 0)
               (let [src (nth nums (+ p 2 (* m 3)))]
                 (when (and (>= src 1) (<= src n))
                   (let [s (dec src)
-                        maxl 9223372036854775807
-                        minl -9223372036854775808
-                        dist (assoc! (transient (vec (repeat n -1))) s 0)
-                        hp (conj! (conj! (transient []) 0) s)]
-                    (loop [sz (long 1)]
-                      (when (pos? sz)
-                        (let [cd (nth hp 0)
-                              v (nth hp 1)
-                              _ (when (> sz 1)
-                                  (let [ld (nth hp (* (- sz 1) 2))
-                                        lv (nth hp (+ (* (- sz 1) 2) 1))]
-                                    (assoc! hp 0 ld)
-                                    (assoc! hp 1 lv)
-                                    (sift-down hp (- sz 1))))]
-                          (if (not= cd (nth dist v))
-                            (recur (- sz 1))
-                            (let [sz1 (loop [e (nth head v)
-                                             sz (long (- sz 1))]
-                                        (if (= e -1)
-                                          sz
-                                          (let [to (nth to-v e)
-                                                w (nth wt-v e)
-                                                old (nth dist to)
-                                                ndv (add-exact cd w maxl minl)]
-                                            (if (or (= old -1) (< ndv old))
-                                              (do (assoc! dist to ndv)
-                                                  (if (< (* 2 sz) (count hp))
-                                                    (do (assoc! hp (* 2 sz) ndv)
-                                                        (assoc! hp (+ (* 2 sz) 1) to))
-                                                    (do (conj! hp ndv)
-                                                        (conj! hp to)))
-                                                  (sift-up hp sz)
-                                                  (recur (nth nxt-v e) (+ sz 1)))
-                                              (recur (nth nxt-v e) sz)))))]
-                              (recur sz1))))))
+                        dist (assoc! (transient (vec (repeat n -1))) s 0)]
+                    (if (= state 1)
+                      (let [hp (transient [s])]
+                        (loop [sz 1]
+                          (when (pos? sz)
+                            (let [top (nth hp 0)
+                                  cd (bit-shift-right top 20)
+                                  v (bit-and top 1048575)
+                                  sz0 (dec sz)
+                                  _ (when (pos? sz0)
+                                      (sift-down-packed hp sz0 (nth hp sz0)))]
+                              (if (not= cd (nth dist v))
+                                (recur sz0)
+                                (recur (loop [e (nth head v) sz sz0]
+                                         (if (= e -1)
+                                           sz
+                                           (let [ev (nth edges e)
+                                                 to (bit-and ev 16777215)
+                                                 ne (dec (bit-shift-right ev 24))
+                                                 ndv (+ cd (nth wt-v e))
+                                                 old (nth dist to)]
+                                             (if (or (= old -1) (< ndv old))
+                                               (let [nentry (bit-or (bit-shift-left ndv 20) to)]
+                                                 (assoc! dist to ndv)
+                                                 (if (< sz (count hp))
+                                                   (assoc! hp sz nentry)
+                                                   (conj! hp nentry))
+                                                 (sift-up-packed hp sz nentry)
+                                                 (recur ne (inc sz)))
+                                               (recur ne sz)))))))))))
+                      (let [maxl 9223372036854775807
+                            minl -9223372036854775808
+                            hp (conj! (conj! (transient []) 0) s)]
+                        (loop [sz (long 1)]
+                          (when (pos? sz)
+                            (let [cd (nth hp 0)
+                                  v (nth hp 1)
+                                  _ (when (> sz 1)
+                                      (let [ld (nth hp (* (- sz 1) 2))
+                                            lv (nth hp (+ (* (- sz 1) 2) 1))]
+                                        (assoc! hp 0 ld)
+                                        (assoc! hp 1 lv)
+                                        (sift-down hp (- sz 1))))]
+                              (if (not= cd (nth dist v))
+                                (recur (- sz 1))
+                                (let [sz1 (loop [e (nth head v)
+                                                 sz (long (- sz 1))]
+                                            (if (= e -1)
+                                              sz
+                                              (let [ev (nth edges e)
+                                                    to (bit-and ev 16777215)
+                                                    ne (dec (bit-shift-right ev 24))
+                                                    w (nth wt-v e)
+                                                    old (nth dist to)
+                                                    ndv (add-exact cd w maxl minl)]
+                                                (if (or (= old -1) (< ndv old))
+                                                  (do (assoc! dist to ndv)
+                                                      (if (< (* 2 sz) (count hp))
+                                                        (do (assoc! hp (* 2 sz) ndv)
+                                                            (assoc! hp (+ (* 2 sz) 1) to))
+                                                        (do (conj! hp ndv)
+                                                            (conj! hp to)))
+                                                      (sift-up hp sz)
+                                                      (recur ne (+ sz 1)))
+                                                  (recur ne sz)))))]
+                                  (recur sz1))))))))
                     (let [out (loop [i 0 acc (transient [])]
                                 (if (= i n)
                                   (persistent! acc)
@@ -178,11 +248,11 @@
             (do (print (apply str lines)) nil)))))))
 
 (defn -main
-  [s]
-  (let [nums (parse-ints s)]
+  []
+  (let [nums (parse-ints (slurp *in*))]
     (cond
       (nil? nums) (report-error "bad input: expected only integers and whitespace")
       (empty? nums) nil
       :else (solve nums))))
 
-(-main (slurp *in*))
+(-main)
