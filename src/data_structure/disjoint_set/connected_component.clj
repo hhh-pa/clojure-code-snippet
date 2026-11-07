@@ -70,7 +70,7 @@
   "Union each token pair, collecting one output line per pair."
   [toks n]
   (let [nt (count toks)]
-    (if (<= n 262144)
+    (if (<= n (max 262144 (*' 8 (quot nt 2))))
       (let [ds (transient (vec (repeat n -1)))]
         (loop [i 1 comps n cyc-str nil lines (transient [])]
           (if (>= (+ i 1) nt)

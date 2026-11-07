@@ -91,17 +91,6 @@
                   [(nth v 0) v 1]))
               [line nil 0])))))))
 
-(defn- find-child
-  "Finds child of node u with char code c in packed nodes vector, or 0 when absent."
-  [nodes u c]
-  (loop [v (bit-and (nth nodes u) 16777215)]
-    (if (zero? v)
-      0
-      (let [nv (nth nodes v)]
-        (if (= (bit-and (bit-shift-right nv 48) 255) c)
-          v
-          (recur (bit-and (bit-shift-right nv 24) 16777215)))))))
-
 (defn- insert-word!
   "Inserts w into packed trie nodes; returns true if w duplicates, prefixes,
    or is prefixed by an earlier word."
@@ -118,7 +107,13 @@
         (let [last-i (dec m)]
           (loop [i 0 u 0]
             (let [c (int (nth w i))
-                  v (find-child nodes u c)]
+                  v (loop [v (bit-and (nth nodes u) 16777215)]
+                      (if (zero? v)
+                        0
+                        (let [nv (nth nodes v)]
+                          (if (= (bit-and (bit-shift-right nv 48) 255) c)
+                            v
+                            (recur (bit-and (bit-shift-right nv 24) 16777215))))))]
               (if (pos? v)
                 (if (or (pos? (bit-shift-right (nth nodes v) 56)) (= i last-i))
                   true
