@@ -1,30 +1,118 @@
 (ns beam-search (:require [clojure.string :as str]))
-(defn attacking [b] (let [n (count b)] (count (for [i (range n) j (range (inc i) n) :when (let [bi (nth b i) bj (nth b j)] (or (= bi bj) (= (Math/abs (- bi bj)) (Math/abs (- i j)))))] 1))))
-(defn lcg-next [s] (unchecked-add (unchecked-multiply s 6364136223846793005) 1442695040888963407))
+
+(defn attacking [b]
+  (let [n (count b)]
+    (loop [i 0 cnt 0]
+      (if (= i n)
+        cnt
+        (let [bi (nth b i)
+              cnt2 (loop [j (inc i) c cnt]
+                     (if (= j n)
+                       c
+                       (let [bj (nth b j)
+                             diff (- bi bj)
+                             adiff (if (neg? diff) (- diff) diff)]
+                         (if (or (= bi bj) (= adiff (- j i)))
+                           (recur (inc j) (inc c))
+                           (recur (inc j) c)))))]
+          (recur (inc i) cnt2))))))
+
+(defn delta-attacking [b n r br c2]
+  (loop [i 0 d 0]
+    (if (= i n)
+      d
+      (if (= i r)
+        (recur (inc i) d)
+        (let [bi (nth b i)
+              dist (let [x (- i r)] (if (neg? x) (- x) x))
+              d1 (let [x (- bi br)] (if (neg? x) (- x) x))
+              d2 (let [x (- bi c2)] (if (neg? x) (- x) x))
+              old-hit (if (or (= bi br) (= d1 dist)) 1 0)
+              new-hit (if (or (= bi c2) (= d2 dist)) 1 0)]
+          (recur (inc i) (+ d (- new-hit old-hit))))))))
+
+(defn lcg-next [s]
+  (unchecked-add (unchecked-multiply s 6364136223846793005) 1442695040888963407))
+
 (defn beam-search [n k seed]
-  (let [gen-boards (loop [s seed acc []]
-                     (if (= (count acc) k) acc
-                       (let [[boards s2] (loop [b [] s s]
-                                           (if (= (count b) n) [b s]
-                                             (let [ns (lcg-next s)] (recur (conj b (int (Long/remainderUnsigned ns n))) ns))))]
-                         (recur s2 (conj acc boards)))))
-        best-init (apply min-key attacking gen-boards)]
-    (loop [beam gen-boards best best-init bestc (attacking best-init) iter 0]
-      (if (or (zero? bestc) (>= iter 100)) [best bestc]
-        (let [succs (sort-by (juxt first second)
-                             (for [b beam r (range n) c (range n) :when (not= c (nth b r))
-                                   :let [nb (assoc b r c)]] [(attacking nb) nb]))
-              new-beam (loop [ss succs acc []]
-                         (if (or (empty? ss) (>= (count acc) k)) acc
-                           (let [[_ nb] (first ss)] (if (some #(= % nb) acc) (recur (rest ss) acc) (recur (rest ss) (conj acc nb))))))
-              new-best (reduce (fn [[bb bc] b] (let [c (attacking b)] (if (< c bc) [b c] [bb bc]))) [best bestc] new-beam)]
-          (recur new-beam (first new-best) (second new-best) (inc iter)))))))
+  (let [gen-boards (loop [s seed acc (transient []) i 0]
+                     (if (= i k)
+                       (persistent! acc)
+                       (let [[board s2] (loop [b (transient []) s s j 0]
+                                          (if (= j n)
+                                            [(persistent! b) s]
+                                            (let [ns (lcg-next s)]
+                                              (recur (conj! b (int (Long/remainderUnsigned ns n)))
+                                                     ns (inc j)))))]
+                         (recur s2 (conj! acc board) (inc i)))))
+        init-costs (mapv attacking gen-boards)
+        [best-init bestc-init] (loop [i 1
+                                      bb (nth gen-boards 0)
+                                      bc (nth init-costs 0)]
+                                 (if (= i k)
+                                   [bb bc]
+                                   (let [c (nth init-costs i)]
+                                     (if (< c bc)
+                                       (recur (inc i) (nth gen-boards i) c)
+                                       (recur (inc i) bb bc)))))]
+    (loop [beam gen-boards costs init-costs best best-init bestc bestc-init iter 0]
+      (if (or (zero? bestc) (>= iter 100))
+        [best bestc]
+        (let [nb-beam (count beam)
+              succs (loop [bi 0 acc (transient [])]
+                      (if (= bi nb-beam)
+                        (sort (persistent! acc))
+                        (let [b (nth beam bi)
+                              base-c (nth costs bi)
+                              acc2 (loop [r 0 acc acc]
+                                     (if (= r n)
+                                       acc
+                                       (let [br (nth b r)
+                                             acc3 (loop [c2 0 acc acc]
+                                                    (if (= c2 n)
+                                                      acc
+                                                      (if (= c2 br)
+                                                        (recur (inc c2) acc)
+                                                        (let [nc (+ base-c (delta-attacking b n r br c2))
+                                                              nb (assoc b r c2)]
+                                                          (recur (inc c2) (conj! acc [nc nb]))))))]
+                                         (recur (inc r) acc3))))]
+                          (recur (inc bi) acc2))))
+              [new-beam new-costs new-best new-bestc]
+              (loop [ss succs nb-acc [] nc-acc [] seen #{} bb best bc bestc]
+                (if (or (empty? ss) (= (count nb-acc) k))
+                  [nb-acc nc-acc bb bc]
+                  (let [entry (first ss)
+                        c (nth entry 0)
+                        nb (nth entry 1)]
+                    (if (contains? seen nb)
+                      (recur (rest ss) nb-acc nc-acc seen bb bc)
+                      (let [[bb2 bc2] (if (< c bc) [nb c] [bb bc])]
+                        (recur (rest ss)
+                               (conj nb-acc nb)
+                               (conj nc-acc c)
+                               (conj seen nb)
+                               bb2 bc2))))))]
+          (recur new-beam new-costs new-best new-bestc (inc iter)))))))
+
 (defn -main []
-  (let [toks (str/split (str/trim (slurp *in*)) #"\s+") nums (mapv #(Long/parseLong %) toks) t (first nums)]
-    (loop [pos 1 tcases t sb (StringBuilder.)]
-      (if (zero? tcases) (print (str sb))
-        (let [n (nth nums pos) k (nth nums (inc pos)) seed (nth nums (+ pos 2))
-              [best bestc] (beam-search (int n) (int k) seed)]
-          (.append sb (str/join " " best)) (.append sb "\n") (.append sb (str bestc)) (.append sb "\n")
-          (recur (+ pos 3) (dec tcases) sb))))))
+  (let [s (slurp *in*)]
+    (when-not (str/blank? s)
+      (let [v (str/split s #"\s+")
+            nv (count v)
+            start (if (and (pos? nv) (str/blank? (nth v 0))) 1 0)
+            toks (subvec v start)
+            t (parse-long (nth toks 0))]
+        (loop [pos 1 tcases t out (transient [])]
+          (if (zero? tcases)
+            (print (str (str/join "\n" (persistent! out)) "\n"))
+            (let [n (parse-long (nth toks pos))
+                  k (parse-long (nth toks (inc pos)))
+                  seed (parse-long (nth toks (+ pos 2)))
+                  [best bestc] (beam-search n k seed)]
+              (recur (+ pos 3) (dec tcases)
+                     (-> out
+                         (conj! (str/join " " best))
+                         (conj! (str bestc)))))))))))
+
 (-main)

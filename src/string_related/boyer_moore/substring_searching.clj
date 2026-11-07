@@ -23,7 +23,13 @@
    a non-collecting heap. The explicit class matches space, tab,
    newline, return and formfeed exactly (no vertical tab, unlike \\s)."
   [s]
-  (vec (remove str/blank? (str/split s #"[ \t\n\r\f]+"))))
+  (if (nil? s)
+    []
+    (let [v (str/split s #"[ \t\n\r\f]+")
+          n (count v)
+          start (if (and (pos? n) (str/blank? (nth v 0))) 1 0)
+          end (if (and (> n start) (str/blank? (nth v (dec n)))) (dec n) n)]
+      (subvec v start end))))
 
 (defn- parse-int
   "Reads token tok as a decimal integer inside lo to hi, else nil."
@@ -66,16 +72,16 @@
       (zero? m0) true
       (< n0 m0) false
       :else
-      (let [right (persistent!
-                   (reduce (fn [v j]
-                             (let [c (int (nth pat j))]
-                               (if (< c 256) (assoc! v c j) v)))
-                           (transient (vec (repeat 256 -1)))
-                           (range m0)))
-            big (reduce (fn [mp j]
-                          (let [ch (nth pat j)]
-                            (if (< (int ch) 256) mp (assoc mp ch j))))
-                        {} (range m0))]
+      (let [[right big] (loop [j 0
+                               v (transient (vec (repeat 256 -1)))
+                               mp {}]
+                          (if (= j m0)
+                            [(persistent! v) mp]
+                            (let [ch (nth pat j)
+                                  c (int ch)]
+                              (if (< c 256)
+                                (recur (inc j) (assoc! v c j) mp)
+                                (recur (inc j) v (assoc mp ch j))))))]
         (loop [i (long 0)]
           (if (> i (- n0 m0))
             false
@@ -102,11 +108,14 @@
             t (parse-int (first toks) 0 2147483647)]
         (if (or (nil? t) (< (count toks) (inc' (*' 2 t))))
           (report "error: expected a count followed by that many text pattern pairs")
-          (let [out (map (fn [[text pat]]
-                           (if (bm-contains? text pat) "YES" "NO"))
-                         (partition 2 (take (* 2 t) (rest toks))))]
-            (when (seq out)
-              (print (str (str/join "\n" out) "\n"))))))
+          (when (pos? t)
+            (loop [k 0 idx 1 out (transient [])]
+              (if (= k t)
+                (print (str (str/join "\n" (persistent! out)) "\n"))
+                (let [text (nth toks idx)
+                      pat (nth toks (inc idx))]
+                  (recur (inc k) (+ idx 2)
+                         (conj! out (if (bm-contains? text pat) "YES" "NO")))))))))
       (catch Exception _ (report "error: invalid input")))))
 
 (let [data (slurp *in*)] (-main data))

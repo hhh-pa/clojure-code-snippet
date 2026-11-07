@@ -3,10 +3,6 @@
 ;; Optimal bounds: the tree is built in O(n), then each range minimum query
 ;; and point update costs O(log n) in O(n) space, the classic segment bound.
 
-(def digit-values
-  "Map from each digit char to its numeric value."
-  (zipmap "0123456789" (range)))
-
 (def max-long
   "Largest signed 64-bit value; tokens beyond long range are invalid."
   9223372036854775807)
@@ -14,16 +10,6 @@
 (def min-long
   "Smallest signed 64-bit value."
   -9223372036854775808)
-
-(defn fit-long
-  "Returns n when it fits in a signed 64-bit long, else nil."
-  [n]
-  (when (<= min-long n max-long) n))
-
-
-(def whitespace-chars
-  "Chars treated as token separators on input."
-  #{\space \tab \newline \return})
 
 (def no-overlap
   "Sentinel for disjoint query ranges, matching integer max value."
@@ -34,7 +20,11 @@
   [s]
   (if (nil? s)
     []
-    (filterv seq (clojure.string/split s #"[ \t\n\r]+"))))
+    (let [v (clojure.string/split s #"[ \t\n\r]+")
+          n (count v)
+          start (if (and (pos? n) (clojure.string/blank? (nth v 0))) 1 0)
+          end (if (and (> n start) (clojure.string/blank? (nth v (dec n)))) (dec n) n)]
+      (subvec v start end))))
 
 (defn parse-num
   "Parse tok as an integer, or nil when it is not one."
@@ -56,17 +46,19 @@
   (when (seq lines)
     (print (str (clojure.string/join "\n" lines) "\n"))))
 
-(defn build-tree
-  "Fill tree nodes for interval [l r] from a, returning the new tree."
+(defn build-tree!
+  "Fill transient tree nodes for interval [l r] from a."
   [tree a node l r]
   (if (= l r)
-    (assoc tree node (nth a l))
+    (assoc! tree node (nth a l))
     (let [m (quot (+ l r) 2)
           left (* 2 node)
           right (inc left)
-          tree (build-tree tree a left l m)
-          tree (build-tree tree a right (inc m) r)]
-      (assoc tree node (min (nth tree left) (nth tree right))))))
+          tree (build-tree! tree a left l m)
+          tree (build-tree! tree a right (inc m) r)
+          lv (nth tree left)
+          rv (nth tree right)]
+      (assoc! tree node (if (<= lv rv) lv rv)))))
 
 (defn range-min
   "Minimum over [ql qr] within the node interval [l r]."
@@ -74,32 +66,35 @@
   (cond
     (or (< r ql) (< qr l)) no-overlap
     (and (<= ql l) (<= r qr)) (nth tree node)
-    :else (let [m (quot (+ l r) 2)]
-            (min (range-min tree (* 2 node) l m ql qr)
-                 (range-min tree (inc (* 2 node)) (inc m) r ql qr)))))
+    :else (let [m (quot (+ l r) 2)
+                lv (range-min tree (* 2 node) l m ql qr)
+                rv (range-min tree (inc (* 2 node)) (inc m) r ql qr)]
+            (if (<= lv rv) lv rv))))
 
-(defn point-update
-  "Set position idx to val, returning the new tree."
+(defn point-update!
+  "Set position idx to val in transient tree."
   [tree node l r idx val]
   (if (= l r)
-    (assoc tree node val)
+    (assoc! tree node val)
     (let [m (quot (+ l r) 2)
           left (* 2 node)
           right (inc left)
           tree (if (<= idx m)
-                 (point-update tree left l m idx val)
-                 (point-update tree right (inc m) r idx val))]
-      (assoc tree node (min (nth tree left) (nth tree right))))))
+                 (point-update! tree left l m idx val)
+                 (point-update! tree right (inc m) r idx val))
+          lv (nth tree left)
+          rv (nth tree right)]
+      (assoc! tree node (if (<= lv rv) lv rv)))))
 
 (defn run-ops
-  "Apply q ops from toks at ti over tree.
+  "Apply q ops from toks at ti over transient tree.
    Returns [lines truncated?] with lines nil when an op is malformed."
   [toks q ti tree n]
   (let [nt (count toks)]
-    (loop [i 0 ti ti tree tree out []]
+    (loop [i 0 ti ti tree tree out (transient [])]
       (cond
-        (or (>= i q) (>= ti nt)) [out false]
-        (>= (+ ti 2) nt) [out true]
+        (or (>= i q) (>= ti nt)) [(persistent! out) false]
+        (>= (+ ti 2) nt) [(persistent! out) true]
         :else
         (let [typ (nth toks ti)
               x (parse-num (nth toks (+ ti 1)))
@@ -108,9 +103,9 @@
             [nil false]
             (if (= typ "q")
               (recur (inc i) (+ ti 3) tree
-                     (conj out (str (range-min tree 1 0 (dec n) (dec x) (dec y)))))
+                     (conj! out (str (range-min tree 1 0 (dec n) (dec x) (dec y)))))
               (recur (inc i) (+ ti 3)
-                     (point-update tree 1 0 (dec n) (dec x) y) out))))))))
+                     (point-update! tree 1 0 (dec n) (dec x) y) out))))))))
 
 (defn -main
   "Build the minimum tree, then answer queries and point updates."
@@ -120,12 +115,18 @@
         q (parse-num (second toks))]
     (if (or (nil? n) (nil? q) (neg? n) (neg? q) (< (count toks) (+' 2 n)))
       (fail "invalid input: expected n and q, then n values, then q ops")
-      (let [a (mapv parse-num (take n (drop 2 toks)))]
-        (if (some nil? a)
+      (let [a (loop [i 0 acc (transient [])]
+                (if (= i n)
+                  (persistent! acc)
+                  (let [v (parse-num (nth toks (+ 2 i)))]
+                    (if (nil? v)
+                      nil
+                      (recur (inc i) (conj! acc v))))))]
+        (if (nil? a)
           (fail "invalid input: expected n and q, then n values, then q ops")
           (let [tree (if (pos? n)
-                       (build-tree (vec (repeat (* 4 n) 0)) a 1 0 (dec n))
-                       (vec (repeat 4 0)))
+                       (build-tree! (transient (vec (repeat (* 4 n) 0))) a 1 0 (dec n))
+                       (transient (vec (repeat 4 0))))
                 [lines truncated?] (run-ops toks q (+ 2 n) tree n)]
             (cond
               (nil? lines)

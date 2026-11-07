@@ -20,7 +20,11 @@
   [s]
   (if (nil? s)
     []
-    (filterv seq (clojure.string/split s #"[ \t\n\r\f]+"))))
+    (let [v (clojure.string/split s #"[ \t\n\r\f]+")
+          n (count v)
+          start (if (and (pos? n) (str/blank? (nth v 0))) 1 0)
+          end (if (and (> n start) (str/blank? (nth v (dec n)))) (dec n) n)]
+      (subvec v start end))))
 
 (defn- parse-int
   "Reads token tok as a decimal integer inside lo to hi, else nil."
@@ -95,11 +99,14 @@
             t (parse-int (first toks) 0 2147483647)]
         (if (or (nil? t) (< (count toks) (inc' (*' 2 t))))
           (report "error: expected a count followed by that many text pattern pairs")
-          (let [out (map (fn [[text pat]]
-                           (if (kmp-contains? (vec text) (vec pat)) "YES" "NO"))
-                         (partition 2 (take (* 2 t) (rest toks))))]
-            (when (seq out)
-              (print (str (str/join "\n" out) "\n"))))))
+          (when (pos? t)
+            (loop [k 0 idx 1 out (transient [])]
+              (if (= k t)
+                (print (str (str/join "\n" (persistent! out)) "\n"))
+                (let [text (nth toks idx)
+                      pat (nth toks (inc idx))]
+                  (recur (inc k) (+ idx 2)
+                         (conj! out (if (kmp-contains? text pat) "YES" "NO")))))))))
       (catch Exception _ (report "error: invalid input")))))
 
 (let [data (slurp *in*)] (-main data))

@@ -3,11 +3,15 @@
   (zipmap "0123456789" (range)))
 
 (defn tokenize
-  "Split string on whitespace into a vector of token strings using pure reduce."
+  "Split string on whitespace into a vector of token strings."
   [s]
   (if (nil? s)
     []
-    (filterv seq (clojure.string/split s #"[\x00-\x20]+"))))
+    (let [v (clojure.string/split s #"[\x00-\x20]+")
+          n (count v)
+          start (if (and (pos? n) (clojure.string/blank? (nth v 0))) 1 0)
+          end (if (and (> n start) (clojure.string/blank? (nth v (dec n)))) (dec n) n)]
+      (subvec v start end))))
 
 (defn parse-num
   "Parse decimal token to integer value or nil when shape is bad."
@@ -33,27 +37,29 @@
 (defn parse-all
   "Parse every token with parse-num, giving nil when any token is bad."
   [toks]
-  (reduce (fn [acc t]
-            (let [v (parse-num t)]
-              (if (nil? v)
-                (reduced nil)
-                (conj acc v))))
-          [] toks))
+  (let [n (count toks)]
+    (loop [i 0 acc (transient [])]
+      (if (= i n)
+        (persistent! acc)
+        (let [v (parse-num (nth toks i))]
+          (if (nil? v)
+            nil
+            (recur (inc i) (conj! acc v))))))))
 
 (defn unbounded-one
   "Best fill for cap with reuse of vals where value equals weight, scanning upward.
-  Time O(ns) and space O(s) with transient row, treating row ops as unit cost."
+  Time O(ns) and space O(s) with transient row."
   [cap vals]
   (let [row (transient (vec (repeat (inc cap) 0)))]
-    (loop [c 0]
-      (when (<= c cap)
-        (doseq [w vals]
-          (when (<= w c)
+    (doseq [w (distinct vals)]
+      (when (and (pos? w) (<= w cap))
+        (loop [c w]
+          (when (<= c cap)
             (let [nv (+' (nth row (- c w)) w)]
               (when (> nv (nth row c))
-                (assoc! row c nv)))))
-        (recur (inc c))))
-    (nth (persistent! row) cap)))
+                (assoc! row c nv)))
+            (recur (inc c))))))
+    (nth row cap)))
 
 (defn complain
   "Print message to stderr and return nil, exit stays zero as host exit is out of reach."
@@ -79,19 +85,19 @@
         (complain "invalid input: not enough weight values")
 
         :else
-        (let [vals (->> nums (drop (+ p 2)) (take n) vec)]
+        (let [vals (subvec nums (+ p 2) (+ p 2 n))]
           (if (some (fn [w] (< w 0)) vals)
             (complain "invalid input: weights must be zero or more")
             (do
               (println (str (unbounded-one s vals)))
-              (solve-cases nums (+ p 2 n) (dec left)))))))))
+              (recur nums (+ p 2 n) (dec left)))))))))
 
 (defn -main
   "Read test cases from stdin and print best fills, quiet on blank input."
   [& _args]
   (let [data (slurp *in*)
         toks (tokenize data)]
-    (when (seq toks)
+    (when (pos? (count toks))
       (let [nums (parse-all toks)]
         (cond
           (nil? nums)

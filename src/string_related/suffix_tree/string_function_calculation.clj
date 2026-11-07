@@ -7,21 +7,16 @@
 ;; Pure clojure with no host interop.
 (require '[clojure.string :as str])
 
-(def alpha-index
-  "Lowercase chars mapped to their slot, used for validation."
-  (zipmap "abcdefghijklmnopqrstuvwxyz" (range 26)))
-
-(defn- blank-char?
-  "True for the whitespace chars that split tokens."
-  [c]
-  (or (= c \space) (= c \tab) (= c \newline) (= c \return) (= c \formfeed)))
-
 (defn- tokenize
   "Splits s on whitespace; returns a vector of token strings."
   [s]
   (if (nil? s)
     []
-    (filterv seq (clojure.string/split s #"[ \t\n\r\f]+"))))
+    (let [v (clojure.string/split s #"[ \t\n\r\f]+")
+          n (count v)
+          start (if (and (pos? n) (str/blank? (nth v 0))) 1 0)
+          end (if (and (> n start) (str/blank? (nth v (dec n)))) (dec n) n)]
+      (subvec v start end))))
 
 (defn- report
   "Prints msg on stderr."
@@ -31,124 +26,65 @@
 (defn- lower-string?
   "True when every char of s is a lowercase letter."
   [s]
-  (and (seq s) (every? #(contains? alpha-index %) s)))
+  (let [n (count s)]
+    (and (pos? n)
+         (loop [i 0]
+           (if (= i n)
+             true
+             (let [c (int (nth s i))]
+               (if (and (>= c 97) (<= c 122))
+                 (recur (inc i))
+                 false)))))))
 
-(defn- node-end
-  "End index of node, resolving open leaves to leaf-end."
-  [node leaf-end]
-  (if (:leaf node) leaf-end (:end node)))
+(defn- find-next
+  "Child node of u on char code c, or -1."
+  [head-v edge-ch edge-to edge-next u c]
+  (loop [e (nth head-v u)]
+    (cond
+      (= e -1) -1
+      (= (nth edge-ch e) c) (nth edge-to e)
+      :else (recur (nth edge-next e)))))
+
+(defn- set-next!
+  "Sets transition (u, c) -> child, updating in place if present."
+  [head-v edge-ch edge-to edge-next u c child]
+  (loop [e (nth head-v u)]
+    (if (= e -1)
+      (let [ne (count edge-ch)]
+        (conj! edge-ch c)
+        (conj! edge-to child)
+        (conj! edge-next (nth head-v u))
+        (assoc! head-v u ne))
+      (if (= (nth edge-ch e) c)
+        (assoc! edge-to e child)
+        (recur (nth edge-next e))))))
 
 (defn- edge-len
   "Length of the edge into node u with leaves open to leaf-end."
-  [nodes u leaf-end]
+  [start-v end-v leaf-v u leaf-end]
   (if (zero? u)
     0
-    (let [nd (nth nodes u)]
-      (inc (- (node-end nd leaf-end) (:start nd))))))
+    (let [en (if (= (nth leaf-v u) 1) leaf-end (nth end-v u))]
+      (inc (- en (nth start-v u))))))
 
-(defn- add-node
-  "Appends a node and returns [nodes new-index]."
-  [nodes start end leaf?]
-  [(conj nodes {:link 0 :start start :end end :leaf leaf? :next {}})
-   (count nodes)])
+(defn- add-node!
+  "Appends a node and returns its new index."
+  [link-v start-v end-v leaf-v head-v start end leaf-flag]
+  (let [id (count link-v)]
+    (conj! link-v 0)
+    (conj! start-v start)
+    (conj! end-v end)
+    (conj! leaf-v leaf-flag)
+    (conj! head-v -1)
+    id))
 
 (defn- follow-link
   "Active point step after an extension, following suffix links."
-  [nodes active edge alen pos rem]
+  [link-v active edge alen pos rem]
   (cond
     (and (zero? active) (pos? alen)) [active (inc (- pos rem)) (dec alen)]
     (zero? active) [active edge alen]
-    :else [(:link (nth nodes active)) edge alen]))
-
-(defn- build-tree
-  "Suffix tree nodes for char vector t with the online method."
-  [t]
-  (let [n (count t)]
-    (loop [pos 0
-           nodes [{:link 0 :start 0 :end -1 :leaf false :next {}}]
-           active 0 edge 0 alen 0 rem 0]
-      (if (>= pos n)
-        nodes
-        (let [[nodes active edge alen rem]
-              (loop [nodes nodes active active edge edge
-                     alen alen rem (inc rem) last-new -1]
-                (if (zero? rem)
-                  [nodes active edge alen rem]
-                  (let [edge (if (zero? alen) pos edge)
-                        cur-char (nth t edge)
-                        nxt (get (:next (nth nodes active)) cur-char)]
-                    (if (nil? nxt)
-                      (let [[nodes leaf] (add-node nodes pos -1 true)
-                            nodes (assoc-in nodes [active :next cur-char] leaf)
-                            nodes (if (not= last-new -1)
-                                    (assoc-in nodes [last-new :link] active)
-                                    nodes)
-                            rem (dec rem)
-                            [active edge alen]
-                            (follow-link nodes active edge alen pos rem)]
-                        (recur nodes active edge alen rem -1))
-                      (let [elen (edge-len nodes nxt pos)]
-                        (if (>= alen elen)
-                          (recur nodes nxt (+ edge elen) (- alen elen)
-                                 rem last-new)
-                          (let [epos (+ (:start (nth nodes nxt)) alen)]
-                            (if (= (nth t epos) (nth t pos))
-                              [(if (and (not= last-new -1) (not (zero? active)))
-                                 (assoc-in nodes [last-new :link] active)
-                                 nodes)
-                               active edge (inc alen) rem]
-                              (let [split-end (+ (:start (nth nodes nxt)) alen -1)
-                                    [nodes split]
-                                    (add-node nodes (:start (nth nodes nxt))
-                                              split-end false)
-                                    [nodes leaf] (add-node nodes pos -1 true)
-                                    nodes (-> nodes
-                                              (assoc-in [active :next cur-char] split)
-                                              (assoc-in [split :next (nth t pos)] leaf)
-                                              (update-in [nxt :start] + alen)
-                                              (assoc-in [split :next (nth t epos)] nxt))
-                                    nodes (if (not= last-new -1)
-                                            (assoc-in nodes [last-new :link] split)
-                                            nodes)
-                                    rem (dec rem)
-                                    [active edge alen]
-                                    (follow-link nodes active edge alen pos rem)]
-                                (recur nodes active edge alen rem split))))))))))]
-          (recur (inc pos) nodes active edge alen rem))))))
-
-(defn- tree-value
-  "Max over tree nodes of string depth times leaf count, where n is
-  the input length without the terminal mark."
-  [nodes n]
-  (let [nst (count nodes)
-        order (loop [stack [0] ord []]
-                (if (empty? stack)
-                  ord
-                  (let [u (peek stack)]
-                    (recur (into (pop stack) (vals (:next (nth nodes u))))
-                           (conj ord u)))))
-        depth (reduce (fn [dep v]
-                        (let [dv (nth dep v)]
-                          (reduce (fn [d w]
-                                    (let [nd (nth nodes w)]
-                                      (assoc d w (+ dv (if (:leaf nd)
-                                                         (- n (:start nd))
-                                                         (inc (- (:end nd)
-                                                                 (:start nd))))))))
-                                  dep
-                                  (vals (:next (nth nodes v))))))
-                      (vec (repeat nst 0))
-                      order)
-        [_ ans] (reduce (fn [[cnt ans] v]
-                          (let [nd (nth nodes v)
-                                c (if (:leaf nd)
-                                    1
-                                    (reduce + 0 (map cnt (vals (:next nd)))))]
-                            [(assoc cnt v c)
-                             (max ans (* (nth depth v) c))]))
-                        [(vec (repeat nst 0)) n]
-                        (reverse order))]
-    ans))
+    :else [(nth link-v active) edge alen]))
 
 (defn- string-value
   "Max over distinct substrings of length times occurrences."
@@ -156,7 +92,92 @@
   (let [n (count s)]
     (if (zero? n)
       0
-      (tree-value (build-tree (conj (vec s) \$)) n))))
+      (let [t (str s "$")
+            nt (count t)
+            link-v (transient [0])
+            start-v (transient [0])
+            end-v (transient [-1])
+            leaf-v (transient [0])
+            head-v (transient [-1])
+            edge-ch (transient [])
+            edge-to (transient [])
+            edge-next (transient [])]
+        (loop [pos 0 active 0 edge 0 alen 0 rem 0]
+          (when (< pos nt)
+            (let [pos-ch (int (nth t pos))
+                  [active2 edge2 alen2 rem2]
+                  (loop [active active edge edge alen alen rem (inc rem) last-new -1]
+                    (if (zero? rem)
+                      [active edge alen rem]
+                      (let [edge (if (zero? alen) pos edge)
+                            cur-char (int (nth t edge))
+                            nxt (find-next head-v edge-ch edge-to edge-next active cur-char)]
+                        (if (= nxt -1)
+                          (let [leaf (add-node! link-v start-v end-v leaf-v head-v pos -1 1)]
+                            (set-next! head-v edge-ch edge-to edge-next active cur-char leaf)
+                            (when (not= last-new -1)
+                              (assoc! link-v last-new active))
+                            (let [rem-next (dec rem)
+                                  [na ne nal] (follow-link link-v active edge alen pos rem-next)]
+                              (recur na ne nal rem-next -1)))
+                          (let [elen (edge-len start-v end-v leaf-v nxt pos)]
+                            (if (>= alen elen)
+                              (recur nxt (+ edge elen) (- alen elen) rem last-new)
+                              (let [nxt-start (nth start-v nxt)
+                                    epos (+ nxt-start alen)
+                                    epos-ch (int (nth t epos))]
+                                (if (= epos-ch pos-ch)
+                                  (do
+                                    (when (and (not= last-new -1) (not (zero? active)))
+                                      (assoc! link-v last-new active))
+                                    [active edge (inc alen) rem])
+                                  (let [split-end (+ nxt-start alen -1)
+                                        split (add-node! link-v start-v end-v leaf-v head-v
+                                                         nxt-start split-end 0)
+                                        leaf (add-node! link-v start-v end-v leaf-v head-v
+                                                        pos -1 1)]
+                                    (set-next! head-v edge-ch edge-to edge-next active cur-char split)
+                                    (set-next! head-v edge-ch edge-to edge-next split pos-ch leaf)
+                                    (assoc! start-v nxt (+ nxt-start alen))
+                                    (set-next! head-v edge-ch edge-to edge-next split epos-ch nxt)
+                                    (when (not= last-new -1)
+                                      (assoc! link-v last-new split))
+                                    (let [rem-next (dec rem)
+                                          [na ne nal] (follow-link link-v active edge alen pos rem-next)]
+                                      (recur na ne nal rem-next split)))))))))))]
+              (recur (inc pos) active2 edge2 alen2 rem2))))
+        (let [nst (count link-v)
+              order (transient [0])
+              depth (transient (vec (repeat nst 0)))
+              cnt (transient (vec (repeat nst 0)))]
+          (loop [qi 0]
+            (when (< qi nst)
+              (let [v (nth order qi)
+                    dv (nth depth v)]
+                (loop [e (nth head-v v)]
+                  (when (not= e -1)
+                    (let [w (nth edge-to e)
+                          w-len (if (= (nth leaf-v w) 1)
+                                  (- n (nth start-v w))
+                                  (inc (- (nth end-v w) (nth start-v w))))]
+                      (conj! order w)
+                      (assoc! depth w (+ dv w-len))
+                      (recur (nth edge-next e)))))
+                (recur (inc qi)))))
+          (loop [qi (dec nst) ans n]
+            (if (neg? qi)
+              ans
+              (let [v (nth order qi)
+                    c (if (= (nth leaf-v v) 1)
+                        1
+                        (loop [e (nth head-v v) sum 0]
+                          (if (= e -1)
+                            sum
+                            (recur (nth edge-next e)
+                                   (+ sum (nth cnt (nth edge-to e)))))))
+                    _ (assoc! cnt v c)
+                    prod (* (nth depth v) c)]
+                (recur (dec qi) (if (> prod ans) prod ans))))))))))
 
 (defn -main
   "Parses data and prints the string function value.

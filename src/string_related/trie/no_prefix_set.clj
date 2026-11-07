@@ -62,48 +62,62 @@
   [msg]
   (binding [*out* *err*] (println msg)))
 
-(defn- insert-word
-  "Inserts word w into trie; returns [new-trie bad?]. bad? is true
-   when an earlier word ends on w's path (prefix or duplicate of w)
-   or w's terminal node already has children (w prefixes an earlier
-   word). One pass down the path collects the nodes and checks the
-   :end marks, then a bottom-up pass rebuilds it with assoc; each
-   pass is O(|w|) hash steps. The string is indexed directly
-   instead of copying to a char vector, and a missing child is a
-   nil check rather than a freshly allocated {} default."
-  [trie w]
-  (let [n (count w)
-        [chain mid-bad] (loop [i 0 node trie ch (transient [trie]) bad (boolean (:end trie))]
-                          (if (>= i n)
-                            [(persistent! ch) bad]
-                            (let [c (nth w i)
-                                  nx (get node c)]
-                              (if (nil? nx)
-                                (recur (inc i) {} (conj! ch {}) bad)
-                                (recur (inc i) nx (conj! ch nx)
-                                       (or bad (boolean (:end nx))))))))
-        leaf (nth chain n)
-        bad (or mid-bad
-                (boolean (:end leaf))
-                (if (:end leaf) (> (count leaf) 1) (pos? (count leaf))))]
-    (if bad
-      [nil true]
-      (let [rebuilt (loop [i (dec n) child (assoc leaf :end true)]
-                      (if (neg? i)
-                        child
-                        (recur (dec i) (assoc (nth chain i) (nth w i) child))))]
-        [rebuilt false]))))
+(defn- find-child
+  "Finds child of node u with char code c in the first-child/next-sibling
+   arrays, or -1 when absent."
+  [fc ns cc u c]
+  (loop [v (nth fc u)]
+    (cond
+      (= v -1) -1
+      (= (nth cc v) c) v
+      :else (recur (nth ns v)))))
 
 (defn- first-bad-word
   "First word of words, in input order, that duplicates, prefixes,
    or is prefixed by an earlier word; nil when the set is good.
-   Words are inserted into a trie in input order and the first bad
-   insertion is the answer: O(T) time for T total chars."
+   The trie is stored in four flat transient int vectors (first-child,
+   next-sibling, char-code, is-end) so every node costs 4 unboxed longs
+   with zero map allocations."
   [words]
-  (loop [ws (seq words) trie {}]
-    (when ws
-      (let [[t bad] (insert-word trie (first ws))]
-        (if bad (first ws) (recur (next ws) t))))))
+  (let [fc (transient [-1])
+        ns (transient [-1])
+        cc (transient [0])
+        en (transient [0])
+        cnt (count words)]
+    (loop [wi 0]
+      (when (< wi cnt)
+        (let [w (nth words wi)
+              m (count w)]
+          (if (zero? m)
+            (if (or (= (nth en 0) 1) (not= (nth fc 0) -1))
+              w
+              (do (assoc! en 0 1)
+                  (recur (inc wi))))
+            (if (= (nth en 0) 1)
+              w
+              (let [bad? (loop [i 0 u 0]
+                           (let [c (int (nth w i))
+                                 v (find-child fc ns cc u c)]
+                             (if (not= v -1)
+                               (if (or (= (nth en v) 1) (= i (dec m)))
+                                 true
+                                 (recur (inc i) v))
+                               (do
+                                 (loop [j i parent u]
+                                   (let [ch-code (int (nth w j))
+                                         new-id (count fc)
+                                         last? (= j (dec m))]
+                                     (conj! fc -1)
+                                     (conj! ns (nth fc parent))
+                                     (conj! cc ch-code)
+                                     (conj! en (if last? 1 0))
+                                     (assoc! fc parent new-id)
+                                     (when-not last?
+                                       (recur (inc j) new-id))))
+                                 false))))]
+                (if bad?
+                  w
+                  (recur (inc wi)))))))))))
 
 (defn -main
   "Parses data and prints the set verdict.

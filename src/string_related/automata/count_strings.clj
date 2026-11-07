@@ -1,10 +1,6 @@
 ;; Count strings of length l matching a regex over a and b symbols.
 ;; Input: a count t then t pairs of <regex> <l> tokens.
 ;; Output: one answer per line, modulo 1000000007.
-;; Pipeline is regex to Thompson NFA to subset DFA to adjacency
-;; matrix power, which is the practical optimum for exact counting:
-;; matrix products cost cubic time in the DFA size times log l.
-;; Pure clojure with no host interop.
 (require '[clojure.string :as str])
 
 (def MOD 1000000007)
@@ -13,17 +9,16 @@
   "Digit chars mapped to their numeric values."
   (zipmap "0123456789" (range 10)))
 
-(defn- blank-char?
-  "True for the whitespace chars that split tokens."
-  [c]
-  (or (= c \space) (= c \tab) (= c \newline) (= c \return) (= c \formfeed)))
-
 (defn- tokenize
   "Splits s on whitespace; returns a vector of token strings."
   [s]
   (if (nil? s)
     []
-    (filterv seq (clojure.string/split s #"[ \t\n\r\f]+"))))
+    (let [v (str/split s #"[ \t\n\r\f]+")
+          n (count v)
+          start (if (and (pos? n) (str/blank? (nth v 0))) 1 0)
+          end (if (and (> n start) (str/blank? (nth v (dec n)))) (dec n) n)]
+      (subvec v start end))))
 
 (defn- parse-int
   "Reads token tok as a decimal integer inside lo to hi, else nil."
@@ -62,12 +57,11 @@
 (defn- parse-regex
   "Parses regex string r into nodes with op, ch and kids fields."
   [r]
-  (let [cs (vec r)
-        n (count cs)]
+  (let [n (count r)]
     (loop [i 0 root [] stack []]
       (if (>= i n)
         {:op :concat :ch nil :kids root}
-        (let [c (nth cs i)]
+        (let [c (nth r i)]
           (cond
             (= c \()
             (recur (inc i) root (conj stack []))
@@ -126,8 +120,8 @@
                   (let [[si adj] (fresh adj)
                         [so adj] (fresh adj)
                         adj (cond (= ch \a) (edge adj si so 1)
-                                      (= ch \b) (edge adj si so 2)
-                                      :else adj)]
+                                  (= ch \b) (edge adj si so 2)
+                                  :else adj)]
                     [in out (-> adj
                                 (edge in si 0)
                                 (edge in out 0)
@@ -160,29 +154,31 @@
       [adj in out])))
 
 (defn- e-closure
-  "Empty move closure of NFA state start as a sorted set."
+  "Empty move closure of NFA state start as a hash set."
   [adj start]
-  (loop [q [start] qi 0 seen #{start}]
+  (loop [q (transient [start]) qi 0 seen #{start}]
     (if (>= qi (count q))
-      (into (sorted-set) seen)
+      seen
       (let [u (nth q qi)
-            nxt (remove seen
-                        (map first (filter #(zero? (second %)) (nth adj u))))]
-        (recur (into q nxt) (inc qi) (into seen nxt))))))
-
-(defn- nfa-move
-  "Set of states reached from set from over label tr."
-  [adj from tr]
-  (into (sorted-set)
-        (comp (mapcat #(nth adj %))
-              (filter #(= (second %) tr))
-              (map first))
-        from))
+            es (nth adj u)
+            ne (count es)
+            [q seen] (loop [i 0 q q seen seen]
+                       (if (= i ne)
+                         [q seen]
+                         (let [edge (nth es i)
+                               v (nth edge 0)
+                               lab (nth edge 1)]
+                           (if (and (zero? lab) (not (contains? seen v)))
+                             (recur (inc i) (conj! q v) (conj seen v))
+                             (recur (inc i) q seen)))))]
+        (recur q (inc qi) seen)))))
 
 (defn- nfa-to-dfa
   "Subset construction over adj. Returns start, ends and rows."
   [adj nfa-in nfa-out]
-  (let [s0 (e-closure adj nfa-in)]
+  (let [n-nfa (count adj)
+        ecls (mapv #(e-closure adj %) (range n-nfa))
+        s0 (nth ecls nfa-in)]
     (loop [states [s0]
            idx {s0 0}
            dfa [nil]
@@ -195,9 +191,18 @@
               curset (nth states cur)
               [states idx dfa ends q]
               (reduce (fn [[states idx dfa ends q] li]
-                        (let [to (reduce into (sorted-set)
-                                         (map #(e-closure adj %)
-                                              (nfa-move adj curset (inc li))))
+                        (let [tr (inc li)
+                              to (reduce (fn [acc u]
+                                           (let [es (nth adj u)
+                                                 ne (count es)]
+                                             (loop [i 0 acc acc]
+                                               (if (= i ne)
+                                                 acc
+                                                 (let [edge (nth es i)]
+                                                   (if (= (nth edge 1) tr)
+                                                     (recur (inc i) (into acc (nth ecls (nth edge 0))))
+                                                     (recur (inc i) acc)))))))
+                                         #{} curset)
                               found (contains? idx to)
                               nxt (if found (idx to) (count states))
                               states (if found states (conj states to))
@@ -214,11 +219,6 @@
           (recur states idx dfa ends q (inc qi)))))))
 
 (defn- mmult
-  "Product of flat n by n matrices a and b, modulo the shared prime.
-   i,k,j loop order like the python twin: a zero a[i,k] skips the
-   whole j row, and zero b[k,j] entries are skipped inside. The
-   DFA matrices have two nonzero entries per row, so the early
-   multiplies do O(n-squared) work instead of Theta(n-cubed)."
   [a b n]
   (let [r (transient (vec (repeat (* n n) 0)))]
     (dotimes [i n]
@@ -235,7 +235,6 @@
     (persistent! r)))
 
 (defn- mexp
-  "Flat n by n matrix m to the power p, modulo the shared prime."
   [m p n]
   (let [ident (vec (for [x (range n) y (range n)]
                      (if (= x y) 1 0)))]
@@ -248,7 +247,6 @@
           (recur rp mp p))))))
 
 (defn- count-strings
-  "Count of length l strings matching regex string r."
   [r l]
   (let [[adj nfa-in nfa-out] (build-nfa (parse-regex r))
         {:keys [dfa ends]} (nfa-to-dfa adj nfa-in nfa-out)
@@ -262,9 +260,6 @@
     (rem (reduce + 0 (map #(nth pw %) ends)) MOD)))
 
 (defn -main
-  "Parses data and prints one count per regex pair.
-  Malformed input prints a message on stderr and returns normally,
-  leaving the exit code at zero since nonzero exit needs host calls."
   [data]
   (when-not (str/blank? data)
     (try
@@ -274,7 +269,7 @@
           (nil? t)
           (report "error: expected a count followed by regex length pairs")
           :else
-          (let [rest-toks (vec (rest toks))
+          (let [rest-toks (subvec toks 1)
                 avail (count rest-toks)
                 want (* 2 t)]
             (if (and (< avail want) (odd? avail))
