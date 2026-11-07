@@ -17,21 +17,19 @@
 (defn parse-int
   "Parse a signed decimal token with exact math."
   [tok]
-  (let [neg (= \- (first tok))
-        body (if neg (rest tok) (seq tok))]
-    (let [v (reduce (fn [acc ch] (+' (*' acc 10) (digit-values ch)))
-                    0
-                    body)]
-      (if neg (-' v) v))))
+  (if (and (<= (count tok) 18) (re-matches #"-?[0-9]+" tok))
+    (parse-long tok)
+    (let [neg (= \- (first tok))
+          body (if neg (rest tok) (seq tok))]
+      (let [v (reduce (fn [acc ch] (+' (*' acc 10) (digit-values ch)))
+                      0
+                      body)]
+        (if neg (-' v) v)))))
 
 (defn int-token?
   "True when tok is an optionally signed run of decimal digits."
   [tok]
-  (boolean
-   (and (seq tok)
-        (let [body (if (= \- (first tok)) (rest tok) (seq tok))]
-          (and (seq body)
-               (every? digit-values body))))))
+  (boolean (and (string? tok) (re-matches #"-?[0-9]+" tok))))
 
 (defn fail
   "Print message to stderr, then return normally with exit zero."
@@ -50,25 +48,37 @@
 (defn mod-mul
   "Modular multiply that stays exact for big values."
   [a b m]
-  (mod (* (bigint a) (bigint b)) (bigint m)))
+  (if (and (int? m) (< m 3037000499))
+    (rem (* (long a) (long b)) (long m))
+    (mod (*' a b) m)))
 
 (defn mod-pow
   "Modular power by squaring."
   [base exp m]
-  (loop [res (bigint 1)
-         b (mod (bigint base) (bigint m))
-         e (bigint exp)]
-    (if (zero? e)
-      res
-      (recur (if (odd? e) (mod-mul res b m) res)
-             (mod-mul b b m)
-             (quot e 2)))))
+  (if (and (int? m) (< m 3037000499) (int? exp))
+    (let [ml (long m)]
+      (loop [res 1
+             b (rem (long base) ml)
+             e (long exp)]
+        (if (zero? e)
+          res
+          (recur (if (odd? e) (rem (* res b) ml) res)
+                 (rem (* b b) ml)
+                 (bit-shift-right e 1)))))
+    (loop [res 1
+           b (mod base m)
+           e exp]
+      (if (zero? e)
+        res
+        (recur (if (odd? e) (mod (*' res b) m) res)
+               (mod (*' b b) m)
+               (quot e 2))))))
 
 (defn gcd
   "Euclid gcd over exact integers."
   [a b]
-  (loop [x (bigint a)
-         y (bigint b)]
+  (loop [x a
+         y b]
     (if (zero? y)
       x
       (recur y (mod x y)))))
@@ -76,52 +86,52 @@
 (defn abs-diff
   "Exact absolute difference of two integers."
   [u v]
-  (if (> u v) (- u v) (- v u)))
+  (if (> u v) (-' u v) (-' v u)))
 
 (defn miller-rabin?
   "Fixed base Miller-Rabin verdicts matching the old script."
   [n]
-  (let [n (bigint n)]
-    (cond
-      (< n 2) false
-      (or (== n 2) (== n 3)) true
-      (even? n) false
-      :else
-      (let [[d s] (loop [d (dec n)
-                         s 0]
-                    (if (even? d)
-                      (recur (quot d 2) (inc s))
-                      [d s]))
-            nm1 (dec n)]
-        (loop [bs mr-bases]
-          (if (empty? bs)
-            true
-            (let [a (bigint (first bs))]
-              (if (<= n a)
-                true
-                (let [x (mod-pow a d n)]
-                  (if (or (== x 1) (== x nm1))
-                    (recur (rest bs))
-                    (if (loop [r 1
-                               y x]
-                          (if (>= r s)
-                            false
-                            (let [y2 (mod-mul y y n)]
-                              (if (== y2 nm1)
-                                true
-                                (recur (inc r) y2)))))
-                      (recur (rest bs))
-                      false)))))))))))
+  (cond
+    (< n 2) false
+    (or (== n 2) (== n 3)) true
+    (even? n) false
+    :else
+    (let [[d s] (loop [d (dec n)
+                       s 0]
+                  (if (even? d)
+                    (recur (quot d 2) (inc s))
+                    [d s]))
+          nm1 (dec n)
+          nb (count mr-bases)]
+      (loop [idx 0]
+        (if (>= idx nb)
+          true
+          (let [a (nth mr-bases idx)]
+            (if (<= n a)
+              true
+              (let [x (mod-pow a d n)]
+                (if (or (== x 1) (== x nm1))
+                  (recur (inc idx))
+                  (if (loop [r 1
+                             y x]
+                        (if (>= r s)
+                          false
+                          (let [y2 (mod-mul y y n)]
+                            (if (== y2 nm1)
+                              true
+                              (recur (inc r) y2)))))
+                    (recur (inc idx))
+                    false))))))))))
 
 (defn brent-with-c
   "One Brent rho attempt with step fn f. Gives a factor of n."
   [n f batch]
-  (loop [y (bigint 2)
+  (loop [y 2
          r 1
-         q (bigint 1)
-         g (bigint 1)
-         x (bigint 0)
-         ys (bigint 0)]
+         q 1
+         g 1
+         x 0
+         ys 0]
     (cond
       (and (not (== g 1)) (not (== g n)))
       g
@@ -157,53 +167,52 @@
                                    (let [nn (f vv)]
                                      (recur (inc i)
                                             nn
-                                            (mod (* pp (abs-diff x-new nn)) n)))))]
+                                            (mod-mul pp (abs-diff x-new nn) n)))))]
                   (recur (+ k batch) v2 qq2 (gcd qq2 n) v))))]
         (recur y-end (* r 2) q-end g-end x-new ys-end)))))
 
 (defn pollard-rho
   "Nontrivial factor of odd composite n, retrying fresh addends."
   [n]
-  (let [n (bigint n)]
-    (if (even? n)
-      (bigint 2)
-      (loop [c (bigint 1)]
-        (let [f (fn [v] (mod (+ (mod-mul v v n) c) n))
-              d (brent-with-c n f 128)]
-          (if (and (> d 1) (< d n))
-            d
-            (recur (inc c))))))))
+  (if (even? n)
+    2
+    (loop [c 1]
+      (let [f (fn [v] (mod (+' (mod-mul v v n) c) n))
+            d (brent-with-c n f 128)]
+        (if (and (> d 1) (< d n))
+          d
+          (recur (inc c)))))))
 
 (defn split-off-small
   "Trial divide by small primes. Gives [small factors rest]."
   [n]
-  (loop [ps small-primes
-         left (bigint n)
-         found []]
-    (if (empty? ps)
-      [found left]
-      (let [p (bigint (first ps))]
-        (if (zero? (mod left p))
-          (recur ps (quot left p) (conj found p))
-          (recur (rest ps) left found))))))
+  (let [np (count small-primes)]
+    (loop [idx 0
+           left n
+           found []]
+      (if (>= idx np)
+        [found left]
+        (let [p (nth small-primes idx)]
+          (if (zero? (mod left p))
+            (recur idx (quot left p) (conj found p))
+            (recur (inc idx) left found)))))))
 
 (defn factorize
   "Full prime factor list of n, unsorted, exact integers."
   [n]
-  (let [n (bigint n)]
-    (cond
-      (== n 1) []
-      (miller-rabin? n) [n]
-      :else
-      (let [[smalls left] (split-off-small n)]
-        (cond
-          (== left 1) (vec smalls)
-          (miller-rabin? left) (conj (vec smalls) left)
-          :else
-          (let [d (pollard-rho left)]
-            (into (vec smalls)
-                  (into (factorize d)
-                        (factorize (quot left d))))))))))
+  (cond
+    (== n 1) []
+    (miller-rabin? n) [n]
+    :else
+    (let [[smalls left] (split-off-small n)]
+      (cond
+        (== left 1) (vec smalls)
+        (miller-rabin? left) (conj (vec smalls) left)
+        :else
+        (let [d (pollard-rho left)]
+          (into (vec smalls)
+                (into (factorize d)
+                      (factorize (quot left d)))))))))
 
 (defn -main
   "Read stdin, print one PRIME or COMPOSITE line per value."
@@ -217,7 +226,7 @@
 
           :else
           (let [t (parse-int (first toks))
-                rest-toks (rest toks)]
+                rest-toks (subvec toks 1)]
             (cond
               (neg? t)
               (fail "Error: t must be non-negative")
@@ -225,12 +234,12 @@
               (< (count rest-toks) t)
               (fail "Error: expected t values after t")
 
-              (not (every? int-token? (take t rest-toks)))
+              (let [slice (subvec rest-toks 0 t)]
+                (not (every? int-token? slice)))
               (fail "Error: values must be integers")
 
               :else
-              (let [nums (mapv (fn [tok] (bigint (parse-int tok)))
-                               (take t rest-toks))]
+              (let [nums (mapv parse-int (subvec rest-toks 0 t))]
                 (if (some (fn [v] (<= v 0)) nums)
                   (fail "Error: values must be positive integers")
                   (doseq [n nums]
@@ -238,6 +247,6 @@
                       (println "PRIME")
                       (let [factors (sort (factorize n))]
                         (println (str "COMPOSITE "
-                                      (str/join " " (map str factors))))))))))))))))
+                                      (str/join " " factors)))))))))))))))
 
 (-main)

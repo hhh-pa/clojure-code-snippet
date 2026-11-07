@@ -20,7 +20,7 @@
 
 (defn parse-token
   [tok]
-  (when (and (string? tok) (re-matches #"[+-]?[0-9]+" tok))
+  (when (and (string? tok) (pos? (count tok)))
     (parse-long tok)))
 
 (defn read-int [tok] (parse-token tok))
@@ -29,83 +29,117 @@
 (def TMAX 90000)
 (def TSIZE 100000)
 
-(defn send-frame [st j now]
-  (let [e (get (:floss st) j 0)]
-    (if (pos? e)
-      (assoc st :frame-tx (+ (:frame-tx st) 1) :sent (assoc (:sent st) j now) :floss (assoc (:floss st) j (- e 1)))
-      (assoc st :frame-tx (+ (:frame-tx st) 1) :sent (assoc (:sent st) j now)
-             :farr (assoc (:farr st) (+ now 1) (conj (get (:farr st) (+ now 1) []) j))))))
-
-(defn send-ack [st j now]
-  (let [e (get (:aloss st) j 0)]
-    (if (pos? e)
-      (assoc st :ack-tx (+ (:ack-tx st) 1) :aloss (assoc (:aloss st) j (- e 1)))
-      (assoc st :ack-tx (+ (:ack-tx st) 1)
-             :aarr (assoc (:aarr st) (+ now 1) (conj (get (:aarr st) (+ now 1) []) j))))))
-
 (defn solve [toks]
   (let [policy (read-int (nth toks 0))
         W (if (= policy 0) 1 (read-int (nth toks 1)))
-        N (read-int (nth toks 2)) L (read-int (nth toks 3))
-        [floss aloss] (loop [i 0 fl {} al {}]
-                        (if (>= i L) [fl al]
-                          (let [ty (nth toks (+ 4 (* i 2))) s (read-int (nth toks (+ 5 (* i 2))))]
-                            (if (= ty "F")
-                              (recur (+ i 1) (assoc fl s (+ (get fl s 0) 1)) al)
-                              (recur (+ i 1) fl (assoc al s (+ (get al s 0) 1)))))))
-        init {:base 0 :next 0 :sent (vec (repeat N -1000000)) :acked (vec (repeat N false))
-              :expected 0 :buffered (vec (repeat N false))
-              :farr {} :aarr {}
-              :floss floss :aloss aloss :frame-tx 0 :ack-tx 0}]
-    (loop [now 0 st init]
-      (if (>= now TMAX) (str (:frame-tx st) " " (:ack-tx st))
-        (let [fs (get (:farr st) now [])
-              st-f (if (contains? (:farr st) now) (assoc st :farr (dissoc (:farr st) now)) st)
-              st1 (loop [fs fs st2 st-f]
-                    (if (empty? fs) st2
-                      (let [j (first fs) more (rest fs)]
-                        (if (or (< j 0) (>= j N)) (recur more st2)
-                          (if (= policy 2)
-                            (let [exp (:expected st2)
-                                  st3 (cond (= j exp)
-                                            (let [e2 (+ exp 1)
-                                                  [e3 bf3] (loop [e e2 bf (:buffered st2)]
-                                                             (if (and (< e N) (nth bf e)) (recur (+ e 1) (assoc bf e false)) [e bf]))]
-                                              (assoc st2 :expected e3 :buffered bf3))
-                                            (and (> j exp) (< j (+ exp W)))
-                                            (assoc st2 :buffered (assoc (:buffered st2) j true))
-                                            :else st2)]
-                              (recur more (send-ack st3 j now)))
-                            (let [st3 (if (= j (:expected st2)) (assoc st2 :expected (+ (:expected st2) 1)) st2)]
-                              (recur more (if (pos? (:expected st3)) (send-ack st3 (- (:expected st3) 1) now) st3))))))))
-              as (get (:aarr st1) now [])
-              st-a (if (contains? (:aarr st1) now) (assoc st1 :aarr (dissoc (:aarr st1) now)) st1)
-              st2 (loop [as as st3 st-a]
-                    (if (empty? as) st3
-                      (let [j (first as) more (rest as)]
-                        (recur more
-                               (if (= policy 2)
-                                 (if (and (>= j 0) (< j N)) (assoc st3 :acked (assoc (:acked st3) j true)) st3)
-                                 (assoc st3 :acked (loop [k (:base st3) ak (:acked st3)]
-                                                     (if (or (>= k N) (> k j)) ak
-                                                       (recur (+ k 1) (assoc ak k true))))))))))
-              base2 (loop [b (:base st2)] (if (and (< b N) (nth (:acked st2) b)) (recur (+ b 1)) b))
-              st3 (assoc st2 :base base2)]
-          (if (>= base2 N) (str (:frame-tx st3) " " (:ack-tx st3))
-            (let [st4 (if (= policy 2)
-                        (loop [j base2 st5 st3]
-                          (if (>= j (:next st5)) st5
-                            (recur (+ j 1)
-                                   (if (and (not (nth (:acked st5) j)) (>= (- now (nth (:sent st5) j)) TIMEOUT))
-                                     (send-frame st5 j now) st5))))
-                        (if (and (< base2 (:next st3)) (>= (- now (nth (:sent st3) base2)) TIMEOUT))
-                          (assoc st3 :next base2) st3))
-                  st5 (loop [st6 st4]
-                        (if (and (< (:next st6) (+ (:base st6) W)) (< (:next st6) N))
-                          (recur (let [st7 (send-frame st6 (:next st6) now)]
-                                   (assoc st7 :next (+ (:next st7) 1))))
-                          st6))]
-              (recur (+ now 1) st5))))))))
+        N (read-int (nth toks 2))
+        L (read-int (nth toks 3))
+        floss (transient (vec (repeat N 0)))
+        aloss (transient (vec (repeat N 0)))
+        _ (loop [i 0]
+            (when (< i L)
+              (let [ty (nth toks (+ 4 (* i 2)))
+                    s (read-int (nth toks (+ 5 (* i 2))))]
+                (when (and (>= s 0) (< s N))
+                  (if (= ty "F")
+                    (assoc! floss s (inc (nth floss s)))
+                    (assoc! aloss s (inc (nth aloss s)))))
+                (recur (inc i)))))
+        sent (transient (vec (repeat N -1000000)))
+        acked (transient (vec (repeat N false)))
+        buffered (transient (vec (repeat N false)))]
+    (loop [now 0
+           base 0
+           next-seq 0
+           expected 0
+           frame-tx 0
+           ack-tx 0
+           cur-farr []
+           cur-aarr []]
+      (if (>= now TMAX)
+        (str frame-tx " " ack-tx)
+        (let [nf (count cur-farr)
+              [expected ack-tx next-aarr]
+              (loop [idx 0 exp expected atx ack-tx na []]
+                (if (>= idx nf)
+                  [exp atx na]
+                  (let [j (nth cur-farr idx)]
+                    (if (or (< j 0) (>= j N))
+                      (recur (inc idx) exp atx na)
+                      (if (= policy 2)
+                        (let [exp2 (cond
+                                     (= j exp)
+                                     (loop [e (inc exp)]
+                                       (if (and (< e N) (nth buffered e))
+                                         (do (assoc! buffered e false)
+                                             (recur (inc e)))
+                                         e))
+                                     (and (> j exp) (< j (+ exp W)))
+                                     (do (assoc! buffered j true) exp)
+                                     :else exp)
+                              al (nth aloss j)]
+                          (if (pos? al)
+                            (do (assoc! aloss j (dec al))
+                                (recur (inc idx) exp2 (inc atx) na))
+                            (recur (inc idx) exp2 (inc atx) (conj na j))))
+                        (let [exp2 (if (= j exp) (inc exp) exp)]
+                          (if (pos? exp2)
+                            (let [aj (dec exp2)
+                                  al (nth aloss aj)]
+                              (if (pos? al)
+                                (do (assoc! aloss aj (dec al))
+                                    (recur (inc idx) exp2 (inc atx) na))
+                                (recur (inc idx) exp2 (inc atx) (conj na aj))))
+                            (recur (inc idx) exp2 atx na))))))))
+              na-cnt (count cur-aarr)
+              _ (loop [idx 0]
+                  (when (< idx na-cnt)
+                    (let [j (nth cur-aarr idx)]
+                      (if (= policy 2)
+                        (when (and (>= j 0) (< j N))
+                          (assoc! acked j true))
+                        (let [hi (min j (dec N))]
+                          (loop [k base]
+                            (when (<= k hi)
+                              (assoc! acked k true)
+                              (recur (inc k)))))))
+                    (recur (inc idx))))
+              base2 (loop [b base]
+                      (if (and (< b N) (nth acked b))
+                        (recur (inc b))
+                        b))]
+          (if (>= base2 N)
+            (str frame-tx " " ack-tx)
+            (let [[next-seq2 frame-tx2 next-farr]
+                  (if (= policy 2)
+                    (loop [j base2 ftx frame-tx nf-arr []]
+                      (if (>= j next-seq)
+                        [next-seq ftx nf-arr]
+                        (if (and (not (nth acked j)) (>= (- now (nth sent j)) TIMEOUT))
+                          (let [fl (nth floss j)]
+                            (assoc! sent j now)
+                            (if (pos? fl)
+                              (do (assoc! floss j (dec fl))
+                                  (recur (inc j) (inc ftx) nf-arr))
+                              (recur (inc j) (inc ftx) (conj nf-arr j))))
+                          (recur (inc j) ftx nf-arr))))
+                    [(if (and (< base2 next-seq) (>= (- now (nth sent base2)) TIMEOUT))
+                       base2
+                       next-seq)
+                     frame-tx
+                     []])
+                  lim (min (+ base2 W) N)
+                  [next-seq3 frame-tx3 next-farr2]
+                  (loop [ns next-seq2 ftx frame-tx2 nf-arr next-farr]
+                    (if (>= ns lim)
+                      [ns ftx nf-arr]
+                      (let [fl (nth floss ns)]
+                        (assoc! sent ns now)
+                        (if (pos? fl)
+                          (do (assoc! floss ns (dec fl))
+                              (recur (inc ns) (inc ftx) nf-arr))
+                          (recur (inc ns) (inc ftx) (conj nf-arr ns))))))]
+              (recur (inc now) base2 next-seq3 expected frame-tx3 ack-tx next-farr2 next-aarr))))))))
 
 (let [toks (tokenize (slurp *in*))]
   (when (seq toks) (println (solve toks))))

@@ -7,12 +7,19 @@
 (def separators #"\s+")
 (defn tokenize [input] (if (str/blank? input) [] (str/split (str/trim input) separators)))
 (defn fmt [s & xs] (String/format java.util.Locale/US s (to-array xs)))
+(def ^:private inv-sqrt2 (/ 1.0 (Math/sqrt 2.0)))
+(def ^:private sqrt2 (Math/sqrt 2.0))
+(def ^:private sqrt-pi (Math/sqrt Math/PI))
+
 (defn erf7 [x]
-  (let [a1 0.254829592 a2 -0.284496736 a3 1.421413741 a4 -1.453152027 a5 1.061405429 p 0.3275911
-        s (if (< x 0) -1.0 1.0) ax (Math/abs x) t (/ 1.0 (+ 1.0 (* p ax)))
-        poly (+ (* (+ (* (+ (* (+ (* (+ (* a5 t) a4) t) a3) t) a2) t) a1)))]
+  (let [s (if (< x 0.0) -1.0 1.0)
+        ax (if (< x 0.0) (- x) x)
+        t (/ 1.0 (+ 1.0 (* 0.3275911 ax)))
+        poly (+ (* (+ (* (+ (* (+ (* 1.061405429 t) -1.453152027) t) 1.421413741) t) -0.284496736) t) 0.254829592)]
     (* s (- 1.0 (* poly t (Math/exp (- (* ax ax))))))))
-(defn ncdf [x] (* 0.5 (+ 1.0 (erf7 (/ x (Math/sqrt 2.0))))))
+
+(defn ncdf [x] (* 0.5 (+ 1.0 (erf7 (* x inv-sqrt2)))))
+
 (defn phiinv [p]
   (let [a1 -3.969683028665376e+01 a2 2.209460984245205e+02 a3 -2.759285104469687e+02
         a4 1.383577518672690e+02 a5 -3.066479806614716e+01 a6 2.506628277459239e+00
@@ -32,40 +39,50 @@
       :else
       (let [q (Math/sqrt (* -2.0 (Math/log (- 1.0 p))))]
         (- (/ (horn5 c1 c2 c3 c4 c5 c6 q) (horn4 d1 d2 d3 d4 q)))))))
+
 (defn -main [input]
   (let [toks (tokenize input)]
     (when (seq toks)
       (let [E (Double/parseDouble (nth toks 0)) sE (Double/parseDouble (nth toks 1))
             D (Double/parseDouble (nth toks 2)) rr (Double/parseDouble (nth toks 3))
             T (Double/parseDouble (nth toks 4))
-            res (loop [it 0 sA (/ (* sE E) (+ E D)) A (+ E (* D (Math/exp (* (- rr) T))))]
+            sqrt-T (Math/sqrt T)
+            disc-D (* D (Math/exp (* (- rr) T)))
+            inv-D (/ 1.0 D)
+            sE-E (* sE E)
+            res (loop [it 0 sA (/ sE-E (+ E D)) A (+ E disc-D)]
                   (if (>= it 100) [A sA]
-                    (let [A2 (loop [nt 0 a A]
+                    (let [sA-sqrt-T (* sA sqrt-T)
+                          inv-sA-sqrt-T (/ 1.0 sA-sqrt-T)
+                          drift-T (* (+ rr (* 0.5 sA sA)) T)
+                          A2 (loop [nt 0 a A]
                                (if (>= nt 50) a
-                                 (let [d1 (/ (+ (Math/log (/ a D)) (* (+ rr (* 0.5 sA sA)) T)) (* sA (Math/sqrt T)))
-                                       d2 (- d1 (* sA (Math/sqrt T)))
-                                       C (- (* a (ncdf d1)) (* D (Math/exp (* (- rr) T)) (ncdf d2)))
-                                       delta (ncdf d1)]
+                                 (let [d1 (* (+ (Math/log (* a inv-D)) drift-T) inv-sA-sqrt-T)
+                                       d2 (- d1 sA-sqrt-T)
+                                       delta (ncdf d1)
+                                       C (- (* a delta) (* disc-D (ncdf d2)))]
                                    (recur (inc nt) (- a (/ (- C E) delta))))))
-                          d1 (/ (+ (Math/log (/ A2 D)) (* (+ rr (* 0.5 sA sA)) T)) (* sA (Math/sqrt T)))]
-                      (recur (inc it) (/ (* sE E) (* (ncdf d1) A2)) A2))))
+                          d1 (* (+ (Math/log (* A2 inv-D)) drift-T) inv-sA-sqrt-T)]
+                      (recur (inc it) (/ sE-E (* (ncdf d1) A2)) A2))))
             [A sA] res
-            DD (/ (+ (Math/log (/ A D)) (* (- rr (* 0.5 sA sA)) T)) (* sA (Math/sqrt T)))
+            DD (/ (+ (Math/log (* A inv-D)) (* (- rr (* 0.5 sA sA)) T)) (* sA sqrt-T))
             PD (ncdf (- DD))
             p (Double/parseDouble (nth toks 5)) rho (Double/parseDouble (nth toks 6))
             att (Double/parseDouble (nth toks 7)) det (Double/parseDouble (nth toks 8))
             gx [0.3429013272237046 1.036610829789514 1.756683649299882 2.53273167423279 3.436159118837738]
             gw [0.6108626337353258 0.2401386110823147 0.03387439445548106 0.001343645746781232 7.64043285523262e-06]
             pinv (phiinv p) sqr (Math/sqrt rho) sq1 (Math/sqrt (- 1.0 rho))
+            inv-span (/ 1.0 (- det att))
             acc (loop [i 0 a 0.0]
                   (if (>= i 5) a
-                    (recur (inc i) (loop [s -1 b a]
-                                     (if (> s 1) b
-                                       (let [z (* s (Math/sqrt 2.0) (nth gx i))
-                                             P (ncdf (/ (- pinv (* sqr z)) sq1))
-                                             L (max 0.0 (min 1.0 (/ (- P att) (- det att))))]
-                                         (recur (+ s 2) (+ b (* (nth gw i) L)))))))))
-            el (/ acc (Math/sqrt Math/PI))]
+                    (let [gxi (* sqrt2 (nth gx i))
+                          gwi (nth gw i)
+                          P1 (ncdf (/ (+ pinv (* sqr gxi)) sq1))
+                          L1 (max 0.0 (min 1.0 (* (- P1 att) inv-span)))
+                          P2 (ncdf (/ (- pinv (* sqr gxi)) sq1))
+                          L2 (max 0.0 (min 1.0 (* (- P2 att) inv-span)))]
+                      (recur (inc i) (+ a (* gwi (+ L1 L2)))))))
+            el (/ acc sqrt-pi)]
         (println (str "MERTON: " (fmt "%.6f" A) " " (fmt "%.6f" sA) " " (fmt "%.6f" DD) " " (fmt "%.6f" PD)))
         (println (str "VASICEK: " (fmt "%.6f" el)))))))
 (-main (slurp *in*))

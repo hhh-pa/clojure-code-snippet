@@ -6,11 +6,35 @@
 
 (defn attacking [board]
   (let [n (count board)]
-    (count (for [i (range n) j (range (inc i) n)
-                 :when (let [bi (nth board i) bj (nth board j)]
-                         (or (= bi bj)
-                             (= (Math/abs (- bi bj)) (Math/abs (- i j)))))]
-             1))))
+    (loop [i 0 acc 0]
+      (if (>= i n)
+        acc
+        (let [bi (nth board i)
+              acc2 (loop [j (inc i) a acc]
+                     (if (>= j n)
+                       a
+                       (let [bj (nth board j)
+                             diff (- bi bj)
+                             adiff (if (neg? diff) (- diff) diff)]
+                         (recur (inc j)
+                                (if (or (= bi bj) (= adiff (- j i)))
+                                  (inc a)
+                                  a)))))]
+          (recur (inc i) acc2))))))
+
+(defn delta-attacks [board n r old-c new-c]
+  (loop [i 0 d 0]
+    (if (>= i n)
+      d
+      (if (= i r)
+        (recur (inc i) d)
+        (let [bi (nth board i)
+              dist (let [x (- i r)] (if (neg? x) (- x) x))
+              old-d (let [x (- bi old-c)] (if (neg? x) (- x) x))
+              new-d (let [x (- bi new-c)] (if (neg? x) (- x) x))
+              d1 (if (or (= bi old-c) (= old-d dist)) (dec d) d)
+              d2 (if (or (= bi new-c) (= new-d dist)) (inc d1) d1)]
+          (recur (inc i) d2))))))
 
 (def ^:private lcg-mult 6364136223846793005)
 (def ^:private lcg-inc 1442695040888963407)
@@ -19,37 +43,34 @@
 (defn lcg-next [s]
   (unchecked-add (unchecked-multiply s lcg-mult) lcg-inc))
 
-(defn lcg-int [s n]
-  (let [ns (lcg-next s)]
-    [ns (int (Long/remainderUnsigned ns n))]))
-
-(defn lcg-double [s]
-  (let [ns (lcg-next s)]
-    [ns (* (double (unsigned-bit-shift-right ns 11)) two53-inv)]))
-
 (defn anneal [board seed]
-  (let [n (count board)]
-    (loop [b board cur (attacking board) best board bestc (attacking board)
+  (let [n (count board)
+        init-c (attacking board)]
+    (loop [b board cur init-c best board bestc init-c
            temp 100.0 rng seed steps 0]
       (if (or (<= temp 0.01) (>= steps 5000))
         [best bestc]
-        (let [[rng1 r] (lcg-int rng n)
-              [rng2 c0] (lcg-int rng1 n)
-              c (if (= c0 (nth b r)) (mod (inc c0) n) c0)
+        (let [rng1 (lcg-next rng)
+              r (int (Long/remainderUnsigned rng1 n))
+              rng2 (lcg-next rng1)
+              c0 (int (Long/remainderUnsigned rng2 n))
               old (nth b r)
-              nb (assoc b r c)
-              nc (attacking nb)
-              delta (- nc cur)]
+              c (if (= c0 old) (mod (inc c0) n) c0)
+              delta (delta-attacks b n r old c)
+              nc (+ cur delta)]
           (if (< delta 0)
-            (let [nbest (if (< nc bestc) nb best)
-                  nbestc (min nc bestc)]
+            (let [nb (assoc b r c)
+                  nbest (if (< nc bestc) nb best)
+                  nbestc (if (< nc bestc) nc bestc)]
               (recur nb nc nbest nbestc (* temp 0.99) rng2 (inc steps)))
-            (let [[rng3 d] (lcg-double rng2)]
-              (if (< d (Math/exp (/ (- (double delta)) temp)))
-                (let [nbest (if (< nc bestc) nb best)
-                      nbestc (min nc bestc)]
-                  (recur nb nc nbest nbestc (* temp 0.99) rng3 (inc steps)))
-                (recur b cur best bestc (* temp 0.99) rng3 (inc steps))))))))))
+          (let [rng3 (lcg-next rng2)
+                d (* (double (unsigned-bit-shift-right rng3 11)) two53-inv)]
+            (if (< d (Math/exp (/ (- (double delta)) temp)))
+              (let [nb (assoc b r c)
+                    nbest (if (< nc bestc) nb best)
+                    nbestc (if (< nc bestc) nc bestc)]
+                (recur nb nc nbest nbestc (* temp 0.99) rng3 (inc steps)))
+              (recur b cur best bestc (* temp 0.99) rng3 (inc steps))))))))))
 
 (defn -main []
   (let [toks (str/split (str/trim (slurp *in*)) #"\s+")

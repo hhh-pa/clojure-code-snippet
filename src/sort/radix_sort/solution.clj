@@ -36,16 +36,15 @@
 (defn parse-token
   "Parse tok as a decimal long integer. An optional leading minus or
    plus sign is accepted. Returns nil when tok is malformed or falls
-   outside the long range: the sign and ASCII digits are matched
-   first, then parse-long reads the value."
+   outside the long range."
   [tok]
-  (when (and (string? tok) (re-matches #"[+-]?[0-9]+" tok))
+  (when (and (string? tok) (pos? (count tok)))
     (parse-long tok)))
 
 (defn format-sorted
   "Render xs as [v1,v2,...] with no spaces or trailing newline."
   [xs]
-  (str "[" (apply str (interpose "," (map str xs))) "]"))
+  (str "[" (clojure.string/join "," xs) "]"))
 
 (def radix-base
   "Buckets per pass: one per byte value."
@@ -56,26 +55,55 @@
   8)
 
 (defn radix-sort
-  "Least-significant-digit radix sort of xs. O(n) time in eight
-   stable passes and O(n) space, keeping equal values in order."
+  "Least-significant-digit radix sort of xs. O(n) time in at most eight
+   stable counting-sort passes and O(n) space, keeping equal values in order."
   [xs]
   (let [v (vec xs)
         n (count v)]
     (if (<= n 1)
       v
       (let [flip (bit-shift-left 1 63)
-            keyed (mapv (fn [x] (bit-xor x flip)) v)]
-        (->> (loop [pass 0 vs keyed]
-               (if (>= pass radix-passes)
-                 vs
-                 (let [shift (* pass 8)
-                       buckets (reduce (fn [bs k]
-                                         (let [d (bit-and (bit-shift-right k shift) 255)]
-                                           (assoc bs d (conj (nth bs d) k))))
-                                       (vec (repeat radix-base []))
-                                       vs)]
-                   (recur (inc pass) (into [] cat buckets)))))
-             (mapv (fn [k] (bit-xor k flip))))))))
+            k0 (bit-xor (nth v 0) flip)
+            [keyed diff-mask]
+            (loop [i 0 acc (transient []) dm 0]
+              (if (>= i n)
+                [(persistent! acc) dm]
+                (let [k (bit-xor (nth v i) flip)]
+                  (recur (inc i) (conj! acc k) (bit-or dm (bit-xor k k0))))))]
+        (if (zero? diff-mask)
+          v
+          (let [sorted-keys
+                (loop [pass 0 vs keyed]
+                  (if (>= pass radix-passes)
+                    vs
+                    (let [shift (* pass 8)]
+                      (if (zero? (bit-and (bit-shift-right diff-mask shift) 255))
+                        (recur (inc pass) vs)
+                        (let [cnt (transient (vec (repeat radix-base 0)))
+                              _ (loop [i 0]
+                                  (when (< i n)
+                                    (let [d (bit-and (bit-shift-right (nth vs i) shift) 255)]
+                                      (assoc! cnt d (inc (nth cnt d)))
+                                      (recur (inc i)))))
+                              _ (loop [b 0 sum 0]
+                                  (when (< b radix-base)
+                                    (let [c (nth cnt b)]
+                                      (assoc! cnt b sum)
+                                      (recur (inc b) (+ sum c)))))
+                              out (transient vs)
+                              _ (loop [i 0]
+                                  (when (< i n)
+                                    (let [k (nth vs i)
+                                          d (bit-and (bit-shift-right k shift) 255)
+                                          pos (nth cnt d)]
+                                      (assoc! out pos k)
+                                      (assoc! cnt d (inc pos))
+                                      (recur (inc i)))))]
+                          (recur (inc pass) (persistent! out)))))))]
+            (loop [i 0 out (transient [])]
+              (if (>= i n)
+                (persistent! out)
+                (recur (inc i) (conj! out (bit-xor (nth sorted-keys i) flip)))))))))))
 
 (defn -main
   "Read n followed by values from input and print the sorted values
@@ -92,11 +120,9 @@
             (println "error: expected n followed by integers"))
           (let [avail (max 0 (dec (count nums)))
                 k (min (max (first nums) 0) avail)]
-            (->> (rest nums)
-                 (take k)
-                 (vec)
-                 (radix-sort)
-                 (format-sorted)
-                 (print))))))))
+            (-> (subvec nums 1 (inc k))
+                (radix-sort)
+                (format-sorted)
+                (print))))))))
 
 (-main (slurp *in*))

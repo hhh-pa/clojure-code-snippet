@@ -16,8 +16,8 @@
 (defn parse-num
   "Parse decimal token to integer value or nil when shape is bad."
   [tok]
-  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
-    (parse-long tok)
+  (if-let [v (when (string? tok) (parse-long tok))]
+    v
     (let [cs (seq tok)]
       (when (seq cs)
         (let [head (first cs)

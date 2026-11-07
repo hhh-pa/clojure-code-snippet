@@ -25,7 +25,7 @@
 (defn parse-num
   "Parse tok as an integer, or nil when it is not one."
   [tok]
-  (when (and (string? tok) (re-matches #"-?[0-9]+" tok))
+  (when (and (string? tok) (pos? (count tok)) (not= (nth tok 0) \+))
     (when-let [v (parse-long tok)]
       (if (= v -9223372036854775808) (bigint v) v))))
 
@@ -40,7 +40,7 @@
   "Print each line with a trailing newline, or nothing when there are none."
   [lines]
   (when (seq lines)
-    (print (str (clojure.string/join "\n" lines) "\n"))))
+    (println (clojure.string/join "\n" lines))))
 
 (defn find-root-vec!
   "Root of x in transient int vector parent, halving paths along the way."

@@ -3,29 +3,58 @@
 
 (defn attacking-pairs [board]
   (let [n (count board)]
-    (count (for [i (range n) j (range (inc i) n)
-                 :when (let [bi (nth board i) bj (nth board j)]
-                         (or (= bi bj) (= (Math/abs (- bi bj)) (Math/abs (- i j)))))]
-             1))))
+    (loop [i 0 acc 0]
+      (if (>= i n)
+        acc
+        (let [bi (nth board i)
+              acc2 (loop [j (inc i) a acc]
+                     (if (>= j n)
+                       a
+                       (let [bj (nth board j)
+                             diff (- bi bj)
+                             adiff (if (neg? diff) (- diff) diff)]
+                         (recur (inc j)
+                                (if (or (= bi bj) (= adiff (- j i)))
+                                  (inc a)
+                                  a)))))]
+          (recur (inc i) acc2))))))
 
-(defn steepest-step [board]
-  (let [n (count board)
-        cur (attacking-pairs board)]
-    (if (zero? cur) nil
-        (let [best (reduce (fn [best [r c]]
-                             (let [old (nth board r)
-                                   nb (assoc board r c)
-                                   v (attacking-pairs nb)]
-                               (if (< v (:val best)) {:val v :row r :col c} best)))
-                           {:val cur :row -1 :col -1}
-                           (for [r (range n) c (range n) :when (not= c (nth board r))] [r c]))]
-          (when (not= (:row best) -1) best)))))
+(defn row-conflicts [board n r col]
+  (loop [i 0 cnt 0]
+    (if (>= i n)
+      cnt
+      (if (= i r)
+        (recur (inc i) cnt)
+        (let [bi (nth board i)
+              dr (let [x (- i r)] (if (neg? x) (- x) x))
+              dc (let [x (- bi col)] (if (neg? x) (- x) x))]
+          (recur (inc i) (if (or (= bi col) (= dc dr)) (inc cnt) cnt)))))))
+
+(defn steepest-step [board cur]
+  (let [n (count board)]
+    (if (zero? cur)
+      nil
+      (loop [r 0 best-v cur best-r -1 best-c -1]
+        (if (>= r n)
+          (when (not= best-r -1) [best-r best-c best-v])
+          (let [old-c (nth board r)
+                base-v (- cur (row-conflicts board n r old-c))
+                [bv br bc] (loop [c 0 bv best-v br best-r bc best-c]
+                             (if (>= c n)
+                               [bv br bc]
+                               (if (= c old-c)
+                                 (recur (inc c) bv br bc)
+                                 (let [v (+ base-v (row-conflicts board n r c))]
+                                   (if (< v bv)
+                                     (recur (inc c) v r c)
+                                     (recur (inc c) bv br bc))))))]
+            (recur (inc r) bv br bc)))))))
 
 (defn hill-climb [board]
-  (loop [b board]
-    (if-let [step (steepest-step b)]
-      (recur (assoc b (:row step) (:col step)))
-      b)))
+  (loop [b board cur (attacking-pairs board)]
+    (if-let [[r c nv] (steepest-step b cur)]
+      (recur (assoc b r c) nv)
+      [b cur])))
 
 (defn -main []
   (let [toks (str/split (str/trim (slurp *in*)) #"\s+")
@@ -37,8 +66,7 @@
         (print (str sb))
         (let [n (nth nums pos)
               board (vec (map int (subvec nums (inc pos) (+ pos 1 n))))
-              final-board (hill-climb board)
-              ap (attacking-pairs final-board)]
+              [final-board ap] (hill-climb board)]
           (.append sb (str/join " " final-board))
           (.append sb "\n")
           (.append sb (str ap))

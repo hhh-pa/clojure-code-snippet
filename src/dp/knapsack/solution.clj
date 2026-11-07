@@ -12,8 +12,8 @@
 (defn parse-num
   "Parse decimal token to integer value or nil when shape is bad."
   [tok]
-  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
-    (parse-long tok)
+  (if-let [v (when (string? tok) (parse-long tok))]
+    v
     (let [cs (seq tok)]
       (when (seq cs)
         (let [head (first cs)
@@ -41,18 +41,23 @@
           [] toks))
 
 (defn knapsack-one
-  "Best value for cap with items as weight value pairs, scanning cap downward.
-  Time O(ns) and space O(s) with transient row, treating row ops as unit cost."
-  [cap items]
-  (let [row (transient (vec (repeat (inc cap) 0)))]
-    (doseq [[w v] items]
-      (loop [c cap]
-        (when (>= c w)
-          (let [nv (+' (nth row (- c w)) v)]
-            (when (> nv (nth row c))
-              (assoc! row c nv)))
-          (recur (dec c)))))
-    (nth (persistent! row) cap)))
+  "Best value for cap with items read directly from nums starting at start-idx."
+  [cap nums start-idx n]
+  (let [row (transient (vec (repeat (inc cap) 0)))
+        end-idx (+ start-idx (* 2 n))]
+    (loop [idx start-idx]
+      (if (>= idx end-idx)
+        (nth (persistent! row) cap)
+        (let [w (nth nums idx)
+              v (nth nums (inc idx))]
+          (when (and (<= w cap) (> v 0))
+            (loop [c cap]
+              (when (>= c w)
+                (let [nv (+' (nth row (- c w)) v)]
+                  (when (> nv (nth row c))
+                    (assoc! row c nv)))
+                (recur (dec c)))))
+          (recur (+ idx 2)))))))
 
 (defn complain
   "Print message to stderr and return nil, exit stays zero as host exit is out of reach."
@@ -78,13 +83,19 @@
         (complain "invalid input: not enough item pairs")
 
         :else
-        (let [raw (->> nums (drop (+ p 2)) (take (* 2 n)))
-              items (->> raw (partition 2) (map vec) vec)]
-          (if (some (fn [[w _v]] (< w 0)) items)
+        (let [start-idx (+ p 2)
+              end-idx (+ start-idx (* 2 n))
+              bad-w? (loop [idx start-idx]
+                       (if (>= idx end-idx)
+                         false
+                         (if (< (nth nums idx) 0)
+                           true
+                           (recur (+ idx 2)))))]
+          (if bad-w?
             (complain "invalid input: weights must be zero or more")
             (do
-              (println (str (knapsack-one s items)))
-              (solve-cases nums (+ p 2 (* 2 n)) (dec left)))))))))
+              (println (str (knapsack-one s nums start-idx n)))
+              (solve-cases nums end-idx (dec left)))))))))
 
 (defn -main
   "Read test cases from stdin and print best values, quiet on blank input."

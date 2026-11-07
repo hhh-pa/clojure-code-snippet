@@ -21,7 +21,7 @@
 (defn parse-long-token
   "Parse an integer token; nil when malformed or outside int64 range."
   [tok]
-  (when (and (string? tok) (re-matches #"[+-]?[0-9]+" tok))
+  (when (string? tok)
     (parse-long tok)))
 
 (defn parse-int32-token
@@ -125,6 +125,20 @@
   (binding [*out* *err*]
     (println msg)))
 
+(defn dedup-sorted
+  "Deduplicate a sorted vector of points in O(n) without hashing."
+  [sv]
+  (let [m (count sv)]
+    (if (<= m 1)
+      sv
+      (loop [i 1 prev (nth sv 0) out (conj! (transient []) (nth sv 0))]
+        (if (= i m)
+          (persistent! out)
+          (let [cur (nth sv i)]
+            (if (= cur prev)
+              (recur (inc i) prev out)
+              (recur (inc i) cur (conj! out cur)))))))))
+
 (defn -main
   [& _args]
   (let [content (slurp *in*)]
@@ -154,7 +168,7 @@
                             (recur (inc i) (conj! acc [a b]))))))]
             (if (nil? raw)
               (die "error: expected integer coordinate pairs after the count")
-              (let [pts (vec (distinct (sort raw)))
+              (let [pts (dedup-sorted (vec (sort raw)))
                     u (count pts)]
                 (if (< u 2)
                   (println "0.0")

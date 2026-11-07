@@ -36,16 +36,15 @@
 (defn parse-token
   "Parse tok as a decimal long integer. An optional leading minus or
    plus sign is accepted. Returns nil when tok is malformed or falls
-   outside the long range: the sign and ASCII digits are matched
-   first, then parse-long reads the value."
+   outside the long range."
   [tok]
-  (when (and (string? tok) (re-matches #"[+-]?[0-9]+" tok))
+  (when (and (string? tok) (pos? (count tok)))
     (parse-long tok)))
 
 (defn format-sorted
   "Render xs as [v1,v2,...] with no spaces or trailing newline."
   [xs]
-  (str "[" (apply str (interpose "," (map str xs))) "]"))
+  (str "[" (clojure.string/join "," xs) "]"))
 
 (defn insertion-sort
   "Insertion sort of xs. O(n squared) worst time, O(n) best time on
@@ -59,12 +58,18 @@
       (let [a (transient v)]
         (loop [i 1]
           (when (< i n)
-            (let [key (nth a i)]
-              (loop [j (dec i)]
-                (if (and (>= j 0) (> (nth a j) key))
-                  (do (assoc! a (inc j) (nth a j))
-                      (recur (dec j)))
-                  (assoc! a (inc j) key))))
+            (let [key (nth a i)
+                  prev (nth a (dec i))]
+              (when (> prev key)
+                (assoc! a i prev)
+                (loop [j (- i 2)]
+                  (if (>= j 0)
+                    (let [aj (nth a j)]
+                      (if (> aj key)
+                        (do (assoc! a (inc j) aj)
+                            (recur (dec j)))
+                        (assoc! a (inc j) key)))
+                    (assoc! a 0 key)))))
             (recur (inc i))))
         (persistent! a)))))
 
@@ -83,11 +88,9 @@
             (println "error: expected n followed by integers"))
           (let [avail (max 0 (dec (count nums)))
                 k (min (max (first nums) 0) avail)]
-            (->> (rest nums)
-                 (take k)
-                 (vec)
-                 (insertion-sort)
-                 (format-sorted)
-                 (print))))))))
+            (-> (into [] (subvec nums 1 (inc k)))
+                (insertion-sort)
+                (format-sorted)
+                (print))))))))
 
 (-main (slurp *in*))

@@ -16,7 +16,7 @@
 
 (defn read-int
   [tok]
-  (when (and (string? tok) (re-matches #"[+-]?[0-9]+" tok))
+  (when (and (string? tok) (pos? (count tok)))
     (parse-long tok)))
 
 (def P 1000003)

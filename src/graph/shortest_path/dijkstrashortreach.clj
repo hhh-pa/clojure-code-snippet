@@ -12,13 +12,11 @@
       (if (= i nt)
         (persistent! out)
         (let [tok (nth toks i)]
-          (cond
-            (= tok "") (recur (inc i) out)
-            (re-matches #"-?[0-9]+" tok)
-            (if-let [n (parse-long tok)]
+          (if (= tok "")
+            (recur (inc i) out)
+            (if-let [n (when (not= (nth tok 0) \+) (parse-long tok))]
               (recur (inc i) (conj! out n))
-              nil)
-            :else nil))))))
+              nil)))))))
 
 (defn- report-error
   "Prints message to stderr and returns nil so the driver ends calmly."

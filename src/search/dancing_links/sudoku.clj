@@ -82,63 +82,77 @@
   [r c]
   (+ (* (quot r 3) 3) (quot c 3)))
 
-(defn candidates
-  "Legal digit mask and count for a used digit mask."
-  [used]
-  (loop [d 1 mask 0 cnt 0]
-    (if (> d 9)
-      [mask cnt]
-      (if (zero? (bit-and used (bit-shift-left 1 d)))
-        (recur (inc d) (bit-or mask (bit-shift-left 1 d)) (inc cnt))
-        (recur (inc d) mask cnt)))))
+(def cell-row
+  (mapv #(quot % 9) (range 81)))
+
+(def cell-col
+  (mapv #(rem % 9) (range 81)))
+
+(def cell-box
+  (mapv #(box-index (quot % 9) (rem % 9)) (range 81)))
+
+(def mask-digits
+  (mapv (fn [m]
+          (loop [d 1 acc []]
+            (if (> d 9)
+              acc
+              (if (zero? (bit-and m (bit-shift-left 1 d)))
+                (recur (inc d) acc)
+                (recur (inc d) (conj acc d))))))
+        (range 1024)))
+
+(def popcount-table
+  (mapv count mask-digits))
 
 (defn best-cell
-  "Empty cell with fewest cands as [r c mask cnt], nil when full or :dead."
+  "Empty cell with fewest cands packed as (bi << 16) | mask, -1 when full, or -2 when dead."
   [board rows cols boxes]
-  (loop [r 0 best nil]
-    (cond
-      (= best :dead) :dead
-      (or (>= r 9) (and (vector? best) (= (nth best 3) 1))) best
-      :else
-      (let [res (loop [c 0 best best]
-                  (cond
-                    (= best :dead) :dead
-                    (or (>= c 9) (and (vector? best) (= (nth best 3) 1))) best
-                    :else
-                    (let [i (+ (* r 9) c)]
-                      (if (not (zero? (nth board i)))
-                        (recur (inc c) best)
-                        (let [used (bit-or (nth rows r) (nth cols c)
-                                           (nth boxes (box-index r c)))
-                              [mask cnt] (candidates used)]
-                          (cond
-                            (zero? cnt) :dead
-                            (or (nil? best) (< cnt (nth best 3)))
-                            (recur (inc c) [r c mask cnt])
-                            :else (recur (inc c) best)))))))]
-        (recur (inc r) res)))))
+  (loop [i 0 best-i -1 best-mask 0 best-cnt 10]
+    (if (>= i 81)
+      (if (= best-i -1)
+        -1
+        (bit-or (bit-shift-left best-i 16) best-mask))
+      (if (not (zero? (nth board i)))
+        (recur (inc i) best-i best-mask best-cnt)
+        (let [r (nth cell-row i)
+              c (nth cell-col i)
+              b (nth cell-box i)
+              used (bit-or (nth rows r) (nth cols c) (nth boxes b))
+              mask (bit-and (bit-not used) 1022)
+              cnt (nth popcount-table mask)]
+          (cond
+            (zero? cnt) -2
+            (= cnt 1) (bit-or (bit-shift-left i 16) mask)
+            (< cnt best-cnt) (recur (inc i) i mask cnt)
+            :else (recur (inc i) best-i best-mask best-cnt)))))))
 
 (defn solve-board
   "Solve board vectors, returning a solved board or nil when stuck."
   [board rows cols boxes]
   (let [b (best-cell board rows cols boxes)]
     (cond
-      (= b :dead) nil
-      (nil? b) board
+      (= b -2) nil
+      (= b -1) board
       :else
-      (let [[br bc mask _] b
-            bi (+ (* br 9) bc)
-            bx (box-index br bc)]
-        (loop [d 1]
-          (when (<= d 9)
-            (if (zero? (bit-and mask (bit-shift-left 1 d)))
-              (recur (inc d))
-              (let [bit (bit-shift-left 1 d)
-                    res (solve-board (assoc board bi d)
-                                     (assoc rows br (bit-or (nth rows br) bit))
-                                     (assoc cols bc (bit-or (nth cols bc) bit))
-                                     (assoc boxes bx (bit-or (nth boxes bx) bit)))]
-                (or res (recur (inc d)))))))))))
+      (let [bi (bit-shift-right b 16)
+            mask (bit-and b 1023)
+            br (nth cell-row bi)
+            bc (nth cell-col bi)
+            bx (nth cell-box bi)
+            ds (nth mask-digits mask)
+            nd (count ds)
+            row-v (nth rows br)
+            col-v (nth cols bc)
+            box-v (nth boxes bx)]
+        (loop [idx 0]
+          (when (< idx nd)
+            (let [d (nth ds idx)
+                  bit (bit-shift-left 1 d)
+                  res (solve-board (assoc board bi d)
+                                   (assoc rows br (bit-or row-v bit))
+                                   (assoc cols bc (bit-or col-v bit))
+                                   (assoc boxes bx (bit-or box-v bit)))]
+              (or res (recur (inc idx))))))))))
 
 (defn solve-puzzle
   "Solve one 81 cell puzzle vector, returning the solved or given board."

@@ -29,7 +29,7 @@
 (defn parse-num
   "Parse tok as an integer, or nil when it is not one."
   [tok]
-  (when (and (string? tok) (re-matches #"-?[0-9]+" tok))
+  (when (and (string? tok) (pos? (count tok)) (not= (nth tok 0) \+))
     (when-let [v (parse-long tok)]
       (if (= v -9223372036854775808) (bigint v) v))))
 
@@ -44,52 +44,41 @@
   "Print each line with a trailing newline, or nothing when there are none."
   [lines]
   (when (seq lines)
-    (print (str (clojure.string/join "\n" lines) "\n"))))
-
-(defn build-tree!
-  "Fill transient tree nodes for interval [l r] from a."
-  [tree a node l r]
-  (if (= l r)
-    (assoc! tree node (nth a l))
-    (let [m (quot (+ l r) 2)
-          left (* 2 node)
-          right (inc left)
-          tree (build-tree! tree a left l m)
-          tree (build-tree! tree a right (inc m) r)
-          lv (nth tree left)
-          rv (nth tree right)]
-      (assoc! tree node (if (<= lv rv) lv rv)))))
+    (println (clojure.string/join "\n" lines))))
 
 (defn range-min
-  "Minimum over [ql qr] within the node interval [l r]."
-  [tree node l r ql qr]
-  (cond
-    (or (< r ql) (< qr l)) no-overlap
-    (and (<= ql l) (<= r qr)) (nth tree node)
-    :else (let [m (quot (+ l r) 2)
-                lv (range-min tree (* 2 node) l m ql qr)
-                rv (range-min tree (inc (* 2 node)) (inc m) r ql qr)]
-            (if (<= lv rv) lv rv))))
+  "Minimum over [ql qr] (0-indexed inclusive) in iterative segment tree of leaf base size."
+  [tree size ql qr]
+  (loop [l (+ ql size) r (+ qr size 1) res no-overlap]
+    (if (>= l r)
+      res
+      (let [res1 (if (odd? l)
+                   (let [v (nth tree l)] (if (< v res) v res))
+                   res)
+            l1 (if (odd? l) (inc l) l)
+            r1 (if (odd? r) (dec r) r)
+            res2 (if (odd? r)
+                   (let [v (nth tree r1)] (if (< v res1) v res1))
+                   res1)]
+        (recur (bit-shift-right l1 1) (bit-shift-right r1 1) res2)))))
 
 (defn point-update!
-  "Set position idx to val in transient tree."
-  [tree node l r idx val]
-  (if (= l r)
-    (assoc! tree node val)
-    (let [m (quot (+ l r) 2)
-          left (* 2 node)
-          right (inc left)
-          tree (if (<= idx m)
-                 (point-update! tree left l m idx val)
-                 (point-update! tree right (inc m) r idx val))
-          lv (nth tree left)
-          rv (nth tree right)]
-      (assoc! tree node (if (<= lv rv) lv rv)))))
+  "Set position idx (0-indexed) to val in iterative transient segment tree."
+  [tree size idx val]
+  (let [pos (+ idx size)]
+    (assoc! tree pos val)
+    (loop [p (bit-shift-right pos 1)]
+      (if (<= p 0)
+        tree
+        (let [lv (nth tree (bit-shift-left p 1))
+              rv (nth tree (inc (bit-shift-left p 1)))]
+          (assoc! tree p (if (<= lv rv) lv rv))
+          (recur (bit-shift-right p 1)))))))
 
 (defn run-ops
   "Apply q ops from toks at ti over transient tree.
    Returns [lines truncated?] with lines nil when an op is malformed."
-  [toks q ti tree n]
+  [toks q ti tree size]
   (let [nt (count toks)]
     (loop [i 0 ti ti tree tree out (transient [])]
       (cond
@@ -103,40 +92,46 @@
             [nil false]
             (if (= typ "q")
               (recur (inc i) (+ ti 3) tree
-                     (conj! out (str (range-min tree 1 0 (dec n) (dec x) (dec y)))))
+                     (conj! out (str (range-min tree size (dec x) (dec y)))))
               (recur (inc i) (+ ti 3)
-                     (point-update! tree 1 0 (dec n) (dec x) y) out))))))))
+                     (point-update! tree size (dec x) y) out))))))))
 
 (defn -main
   "Build the minimum tree, then answer queries and point updates."
-  [input]
-  (let [toks (tokenize input)
-        n (parse-num (first toks))
+  [toks]
+  (let [n (parse-num (first toks))
         q (parse-num (second toks))]
     (if (or (nil? n) (nil? q) (neg? n) (neg? q) (< (count toks) (+' 2 n)))
       (fail "invalid input: expected n and q, then n values, then q ops")
-      (let [a (loop [i 0 acc (transient [])]
-                (if (= i n)
-                  (persistent! acc)
-                  (let [v (parse-num (nth toks (+ 2 i)))]
-                    (if (nil? v)
-                      nil
-                      (recur (inc i) (conj! acc v))))))]
-        (if (nil? a)
+      (let [size (loop [s 1] (if (>= s n) s (recur (bit-shift-left s 1))))
+            tree (transient (vec (repeat (* 2 size) no-overlap)))
+            ok? (loop [i 0]
+                  (if (= i n)
+                    true
+                    (let [v (parse-num (nth toks (+ 2 i)))]
+                      (if (nil? v)
+                        false
+                        (do (assoc! tree (+ size i) v)
+                            (recur (inc i)))))))]
+        (if-not ok?
           (fail "invalid input: expected n and q, then n values, then q ops")
-          (let [tree (if (pos? n)
-                       (build-tree! (transient (vec (repeat (* 4 n) 0))) a 1 0 (dec n))
-                       (transient (vec (repeat 4 0))))
-                [lines truncated?] (run-ops toks q (+ 2 n) tree n)]
-            (cond
-              (nil? lines)
-              (fail "invalid input: ops need two integer operands each")
-              truncated?
-              (do
-                (emit-lines lines)
-                (fail "invalid input: the final op is cut short"))
-              :else (emit-lines lines))))))))
+          (do
+            (loop [i (dec size)]
+              (when (pos? i)
+                (let [lv (nth tree (bit-shift-left i 1))
+                      rv (nth tree (inc (bit-shift-left i 1)))]
+                  (assoc! tree i (if (<= lv rv) lv rv))
+                  (recur (dec i)))))
+            (let [[lines truncated?] (run-ops toks q (+ 2 n) tree size)]
+              (cond
+                (nil? lines)
+                (fail "invalid input: ops need two integer operands each")
+                truncated?
+                (do
+                  (emit-lines lines)
+                  (fail "invalid input: the final op is cut short"))
+                :else (emit-lines lines)))))))))
 
-(let [input (slurp *in*)]
-  (when-not (clojure.string/blank? input)
-    (-main input)))
+(let [toks (tokenize (slurp *in*))]
+  (when (seq toks)
+    (-main toks)))

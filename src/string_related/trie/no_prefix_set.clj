@@ -102,18 +102,18 @@
                                (if (or (= (nth en v) 1) (= i (dec m)))
                                  true
                                  (recur (inc i) v))
-                               (do
-                                 (loop [j i parent u]
-                                   (let [ch-code (int (nth w j))
-                                         new-id (count fc)
-                                         last? (= j (dec m))]
-                                     (conj! fc -1)
-                                     (conj! ns (nth fc parent))
-                                     (conj! cc ch-code)
+                               (let [first-id (count fc)
+                                     old-fc (nth fc u)
+                                     last-i (dec m)]
+                                 (assoc! fc u first-id)
+                                 (loop [j i nid first-id]
+                                   (let [last? (= j last-i)]
+                                     (conj! fc (if last? -1 (inc nid)))
+                                     (conj! ns (if (= j i) old-fc -1))
+                                     (conj! cc (int (nth w j)))
                                      (conj! en (if last? 1 0))
-                                     (assoc! fc parent new-id)
                                      (when-not last?
-                                       (recur (inc j) new-id))))
+                                       (recur (inc j) (inc nid)))))
                                  false))))]
                 (if bad?
                   w

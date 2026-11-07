@@ -42,21 +42,8 @@
 (defn parse-int-token
   "Read one signed integer token into a long, else nil for a bad token."
   [tok]
-  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
-    (parse-long tok)
-    (let [cs (seq tok)]
-      (when (seq cs)
-        (let [f (first cs)
-              neg? (= f \-)
-              ds (if (or neg? (= f \+)) (next cs) cs)]
-          (when (seq ds)
-            (loop [ds ds acc 0]
-              (if (nil? ds)
-                (fit-long (if neg? (-' acc) acc))
-                (let [ch (first ds)]
-                  (if (contains? digit-values ch)
-                    (recur (next ds) (+' (*' acc 10) (get digit-values ch)))
-                    nil))))))))))
+  (when (and (string? tok) (pos? (count tok)))
+    (parse-long tok)))
 
 (defn fail
   "Report a bad input shape on stderr and return nil with exit code zero."
@@ -75,6 +62,12 @@
   [r c fr fc]
   (+ (abs-val (- r fr)) (abs-val (- c fc))))
 
+(def nbr-dr [-1 0 0 1])
+(def nbr-dc [0 -1 1 0])
+
+(defn pack-node [cost r c]
+  (bit-or (bit-shift-left cost 20) (bit-shift-left r 10) c))
+
 (defn astar-path
   "Run the A star relaxation over grid rows n and cols m, returning the path
    from start to food as a vector of cell ids, else nil when unreachable."
@@ -82,12 +75,11 @@
   (let [nm (* n m)
         start (+ (* pr m) pc)
         goal (+ (* fr m) fc)
-        h (fn [r c] (food-dist r c fr fc))
-        nbrs [[-1 0] [0 -1] [0 1] [1 0]]]
-    (loop [dist (assoc (vec (repeat nm -1)) start 0)
-           par (vec (repeat nm -1))
-           costq (assoc (vec (repeat nm 0)) start (h pr pc))
-           open (sorted-set [(h pr pc) pr pc])]
+        init-h (food-dist pr pc fr fc)
+        dist (assoc! (transient (vec (repeat nm -1))) start 0)
+        par (transient (vec (repeat nm -1)))
+        costq (assoc! (transient (vec (repeat nm 0))) start init-h)]
+    (loop [open (sorted-set (pack-node init-h pr pc))]
       (if (empty? open)
         (when (not= (nth dist goal) -1)
           (loop [s goal acc (list)]
@@ -95,38 +87,32 @@
               (vec (conj acc s))
               (recur (nth par s) (conj acc s)))))
         (let [cur (first open)
-              [cost cr ccol] cur
+              cr (bit-and (bit-shift-right cur 10) 1023)
+              ccol (bit-and cur 1023)
               ci (+ (* cr m) ccol)
               dc (nth dist ci)
-              [dist par costq open]
-              (loop [ks nbrs
-                     dist dist
-                     par par
-                     costq costq
-                     open (disj open cur)]
-                (if (empty? ks)
-                  [dist par costq open]
-                  (let [[dr dcol] (first ks)
-                        nr (+ cr dr)
-                        nc (+ ccol dcol)]
-                    (if (and (<= 0 nr) (< nr n) (<= 0 nc) (< nc m)
-                             (not= (nth grid (+ (* nr m) nc)) \%))
-                      (let [ni (+ (* nr m) nc)
-                            nd (nth dist ni)
-                            new-dist (inc dc)
-                            new-cost (+ dc (h nr nc))]
-                        (if (or (= nd -1) (> nd new-dist))
-                          (let [open (if (= nd -1)
-                                       open
-                                       (disj open [(nth costq ni) nr nc]))]
-                            (recur (rest ks)
-                                   (assoc dist ni new-dist)
-                                   (assoc par ni ci)
-                                   (assoc costq ni new-cost)
-                                   (conj open [new-cost nr nc])))
-                          (recur (rest ks) dist par costq open)))
-                      (recur (rest ks) dist par costq open)))))]
-          (recur dist par costq open))))))
+              open2 (loop [k 0 op (disj open cur)]
+                      (if (>= k 4)
+                        op
+                        (let [nr (+ cr (nth nbr-dr k))
+                              nc (+ ccol (nth nbr-dc k))]
+                          (if (and (<= 0 nr) (< nr n) (<= 0 nc) (< nc m)
+                                   (not= (nth grid (+ (* nr m) nc)) \%))
+                            (let [ni (+ (* nr m) nc)
+                                  nd (nth dist ni)
+                                  new-dist (inc dc)
+                                  new-cost (+ dc (food-dist nr nc fr fc))]
+                              (if (or (= nd -1) (> nd new-dist))
+                                (let [op2 (if (= nd -1)
+                                            op
+                                            (disj op (pack-node (nth costq ni) nr nc)))]
+                                  (assoc! dist ni new-dist)
+                                  (assoc! par ni ci)
+                                  (assoc! costq ni new-cost)
+                                  (recur (inc k) (conj op2 (pack-node new-cost nr nc))))
+                                (recur (inc k) op)))
+                            (recur (inc k) op)))))]
+          (recur open2))))))
 
 (defn solve-input
   "Solve one grid read from string s, printing the path or nothing."

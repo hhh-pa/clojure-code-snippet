@@ -28,21 +28,8 @@
 (defn parse-int-token
   "Read one signed integer token into a long, else nil for a bad token."
   [tok]
-  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
-    (parse-long tok)
-    (let [cs (seq tok)]
-      (when (seq cs)
-        (let [f (first cs)
-              neg? (= f \-)
-              ds (if (or neg? (= f \+)) (next cs) cs)]
-          (when (seq ds)
-            (loop [ds ds acc 0]
-              (if (nil? ds)
-                (fit-long (if neg? (-' acc) acc))
-                (let [ch (first ds)]
-                  (if (contains? digit-values ch)
-                    (recur (next ds) (+' (*' acc 10) (get digit-values ch)))
-                    nil))))))))))
+  (when (and (string? tok) (pos? (count tok)))
+    (parse-long tok)))
 
 (defn parse-all-ints
   "Read every token of s as a signed integer, else nil for a bad token."

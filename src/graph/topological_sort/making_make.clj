@@ -38,12 +38,18 @@
   [s]
   (if (nil? s)
     []
-    (reduce (fn [acc t]
-              (if-let [v (when (re-matches #"-?[0-9]+" t) (parse-long t))]
-                (conj acc (if (= v -9223372036854775808) (bigint v) v))
-                (reduced nil)))
-            []
-            (filterv seq (clojure.string/split s #"[\x00-\x20]+")))))
+    (let [raw (clojure.string/split s #"[\x00-\x20]+")
+          n (count raw)
+          start (if (and (pos? n) (empty? (nth raw 0))) 1 0)]
+      (loop [i start acc (transient [])]
+        (if (>= i n)
+          (persistent! acc)
+          (let [t (nth raw i)
+                v (when (not= (nth t 0) \+) (parse-long t))]
+            (if (nil? v)
+              nil
+              (recur (inc i)
+                     (conj! acc (if (= v -9223372036854775808) (bigint v) v))))))))))
 
 (defn report-error
   "Prints message to stderr and returns nil so the driver ends calmly."
@@ -51,6 +57,44 @@
   (binding [*out* *err*]
     (println msg))
   nil)
+
+(defn- heap-push!
+  "Pushes v onto the binary max-heap in transient vector heap (1-indexed, size at 0)."
+  [heap v]
+  (let [n (inc (nth heap 0))]
+    (assoc! heap 0 n)
+    (loop [i n]
+      (if (<= i 1)
+        (assoc! heap 1 v)
+        (let [p (bit-shift-right i 1)
+              pv (nth heap p)]
+          (if (< pv v)
+            (do (assoc! heap i pv)
+                (recur p))
+            (assoc! heap i v)))))))
+
+(defn- heap-pop!
+  "Pops the maximum from transient max-heap."
+  [heap]
+  (let [n (nth heap 0)
+        top (nth heap 1)
+        last-v (nth heap n)
+        n2 (dec n)]
+    (assoc! heap 0 n2)
+    (when (pos? n2)
+      (loop [i 1]
+        (let [l (bit-shift-left i 1)
+              r (inc l)]
+          (if (> l n2)
+            (assoc! heap i last-v)
+            (let [lv (nth heap l)
+                  best-c (if (and (<= r n2) (> (nth heap r) lv)) r l)
+                  cv (nth heap best-c)]
+              (if (> cv last-v)
+                (do (assoc! heap i cv)
+                    (recur best-c))
+                (assoc! heap i last-v)))))))
+    top))
 
 (defn solve
   "Solves one instance from the token vector and prints the answer."
@@ -63,63 +107,50 @@
         (if (< vv 0)
           (report-error "bad input: vertex count must not be negative")
           (let [m (max 0 (min ee (quot (- c 2) 2)))
-                built (loop [k 0
-                             g (transient (vec (repeat vv [])))
-                             indeg (transient (vec (repeat vv 0)))]
-                        (if (>= k m)
-                          [g indeg]
-                          (let [from (nth nums (+ 2 (* k 2)))
-                                to (nth nums (+ 3 (* k 2)))]
-                            (if (or (< from 0) (>= from vv)
-                                    (< to 0) (>= to vv))
-                              nil
-                              (recur (inc k)
-                                     (assoc! g from
-                                             (conj (nth g from) to))
-                                     (assoc! indeg to
-                                             (inc (nth indeg to))))))))]
-            (if (nil? built)
+                head (transient (vec (repeat vv -1)))
+                edge-to (transient (vec (repeat m 0)))
+                edge-next (transient (vec (repeat m -1)))
+                indeg (transient (vec (repeat vv 0)))
+                ok? (loop [k (- m 1)]
+                      (if (neg? k)
+                        true
+                        (let [from (nth nums (+ 2 (* k 2)))
+                              to (nth nums (+ 3 (* k 2)))]
+                          (if (or (< from 0) (>= from vv)
+                                  (< to 0) (>= to vv))
+                            false
+                            (do (assoc! edge-to k to)
+                                (assoc! edge-next k (nth head from))
+                                (assoc! head from k)
+                                (assoc! indeg to (inc (nth indeg to)))
+                                (recur (dec k)))))))]
+            (if-not ok?
               (report-error "bad input: edge vertex out of range")
-              (let [[g indeg] built
-                    ready (loop [i 0 ready (sorted-set)]
-                            (if (>= i vv)
-                              ready
-                              (recur (inc i)
-                                     (if (zero? (nth indeg i))
-                                       (conj ready i)
-                                       ready))))
-                    [order _] (loop [ready ready
-                                     order (transient (vec (repeat vv 0)))
-                                     indeg indeg
-                                     counter 0]
-                                (if (empty? ready)
-                                  [(persistent! order) indeg]
-                                  (let [v (last ready)
-                                        ready (disj ready v)
-                                        order (assoc! order v counter)
-                                        [ready indeg]
-                                        (loop [es (nth g v)
-                                               ready ready indeg indeg]
-                                          (if (empty? es)
-                                            [ready indeg]
-                                            (let [w (first es)
-                                                  ni (dec (nth indeg w))
-                                                  indeg (assoc! indeg w ni)]
-                                              (if (zero? ni)
-                                                (recur (rest es)
-                                                       (conj ready w)
-                                                       indeg)
-                                                (recur (rest es)
-                                                       ready indeg)))))]
-                                    (recur ready order indeg (inc counter)))))]
-                (print (str (apply str (map (fn [x] (str x " "))
-                                            (reduce (fn [ans i]
-                                                      (assoc ans (nth order i)
-                                                             i))
-                                                    (vec (repeat vv 0))
-                                                    (range vv))))
-                            "\n"))
-                nil))))))))
+              (let [heap (transient (vec (repeat (inc vv) 0)))]
+                (loop [i 0]
+                  (when (< i vv)
+                    (when (zero? (nth indeg i))
+                      (heap-push! heap i))
+                    (recur (inc i))))
+                (let [ans (transient [])]
+                  (loop []
+                    (when (pos? (nth heap 0))
+                      (let [v (heap-pop! heap)]
+                        (conj! ans v)
+                        (loop [ei (nth head v)]
+                          (when (not= ei -1)
+                            (let [w (nth edge-to ei)
+                                  ni (dec (nth indeg w))]
+                              (assoc! indeg w ni)
+                              (when (zero? ni)
+                                (heap-push! heap w))
+                              (recur (nth edge-next ei)))))
+                        (recur))))
+                  (let [res (persistent! ans)]
+                    (if (empty? res)
+                      (print "\n")
+                      (print (str (clojure.string/join " " res) " \n"))))
+                  nil)))))))))
 
 (defn -main
   "Entry point used by the top level driver below."

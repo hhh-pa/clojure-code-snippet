@@ -17,59 +17,69 @@
 (defn lcg-int [s n]
   (let [ns (lcg-next s)] [ns (int (Long/remainderUnsigned ns n))]))
 
-(defn legal-moves [stones k]
-  (vec (for [m (range 1 (inc k)) :when (<= m stones)] m)))
-
-(defn select-expand [tree k v]
-  (loop [t tree cur v traj [v]]
-    (let [nd (nth t cur)]
-      (if (zero? (:stones nd))
-        [t cur traj]
-        (if (< (count (:kids nd)) (count (:moves nd)))
-          (let [mv (nth (:moves nd) (count (:kids nd)))
-                child {:stones (- (:stones nd) mv) :player (- 1 (:player nd))
-                       :visits 0 :wins 0 :moves (legal-moves (- (:stones nd) mv) k)
-                       :kids []}
-                ni (count t)
-                t2 (-> t
-                       (update-in [cur :kids] conj ni)
-                       (conj child))]
-            [t2 ni (conj traj ni)])
-          (let [lN (Math/log (double (:visits nd)))
-                bi (loop [i 0 b 0 bu -1e300]
-                     (if (>= i (count (:kids nd)))
-                       b
-                       (let [c (nth t (nth (:kids nd) i))
-                             u (+ (- 1.0 (/ (double (:wins c)) (double (:visits c))))
-                                    (Math/sqrt (/ (* 2.0 lN) (double (:visits c)))))]
-                         (if (> u bu) (recur (inc i) i u) (recur (inc i) b bu)))))]
-            (recur t (nth (:kids nd) bi) (conj traj (nth (:kids nd) bi)))))))))
-
 (defn simulate [stones player k rng]
   (loop [st stones pl player r rng]
     (if (zero? st)
       [(- 1 pl) r]
-      (let [nm (count (legal-moves st k))
-            [r2 pick] (lcg-int r nm)
-            mv (nth (legal-moves st k) pick)]
+      (let [nm (min st k)
+            r2 (lcg-next r)
+            pick (int (Long/remainderUnsigned r2 nm))
+            mv (inc pick)]
         (recur (- st mv) (- 1 pl) r2)))))
 
 (defn mcts [n k iters seed]
-  (loop [t [{:stones n :player 0 :visits 0 :wins 0
-             :moves (legal-moves n k) :kids []}]
-         rng seed i 0]
-    (if (>= i iters)
-      t
-      (let [[t2 v traj] (select-expand t k 0)
-            nd (nth t2 v)
-            [winner r2] (simulate (:stones nd) (:player nd) k rng)
-            t3 (reduce (fn [tt idx]
-                         (-> tt
-                             (update-in [idx :visits] inc)
-                             (update-in [idx :wins]
-                                        (fn [w] (if (= (:player (nth tt idx)) winner) (inc w) w)))))
-                       t2 traj)]
-        (recur t3 r2 (inc i))))))
+  (let [stones-v (transient [n])
+        player-v (transient [0])
+        visits-v (transient [0])
+        wins-v (transient [0])
+        kids-v (transient [[]])]
+    (loop [rng seed i 0]
+      (if (>= i iters)
+        [(persistent! stones-v)
+         (persistent! visits-v)
+         (persistent! wins-v)
+         (persistent! kids-v)]
+        (let [[v traj] (loop [cur 0 tr [0]]
+                         (let [st (nth stones-v cur)]
+                           (if (zero? st)
+                             [cur tr]
+                             (let [kds (nth kids-v cur)
+                                   nk (count kds)
+                                   nm (min st k)]
+                               (if (< nk nm)
+                                 (let [mv (inc nk)
+                                       ni (count stones-v)]
+                                   (conj! stones-v (- st mv))
+                                   (conj! player-v (- 1 (nth player-v cur)))
+                                   (conj! visits-v 0)
+                                   (conj! wins-v 0)
+                                   (conj! kids-v [])
+                                   (assoc! kids-v cur (conj kds ni))
+                                   [ni (conj tr ni)])
+                                 (let [lN (Math/log (double (nth visits-v cur)))
+                                       bi (loop [j 0 b 0 bu -1e300]
+                                            (if (>= j nk)
+                                              b
+                                              (let [ci (nth kds j)
+                                                    cv (double (nth visits-v ci))
+                                                    cw (double (nth wins-v ci))
+                                                    u (+ (- 1.0 (/ cw cv))
+                                                         (Math/sqrt (/ (* 2.0 lN) cv)))]
+                                                (if (> u bu)
+                                                  (recur (inc j) j u)
+                                                  (recur (inc j) b bu)))))
+                                       nxt (nth kds bi)]
+                                   (recur nxt (conj tr nxt))))))))
+              [winner r2] (simulate (nth stones-v v) (nth player-v v) k rng)
+              nt (count traj)]
+          (loop [j 0]
+            (when (< j nt)
+              (let [idx (nth traj j)]
+                (assoc! visits-v idx (inc (nth visits-v idx)))
+                (when (= (nth player-v idx) winner)
+                  (assoc! wins-v idx (inc (nth wins-v idx)))))
+              (recur (inc j))))
+          (recur r2 (inc i)))))))
 
 (defn -main []
   (let [nums (digit-values (tokenize (slurp *in*)))
@@ -79,15 +89,16 @@
         (print (str sb))
         (let [n (int (nth nums pos)) k (int (nth nums (+ pos 1)))
               iters (int (nth nums (+ pos 2))) seed (nth nums (+ pos 3))
-              tree (mcts n k iters seed)
-              rt (first tree)
+              [stones-v visits-v wins-v kids-v] (mcts n k iters seed)
+              rt-stones (nth stones-v 0)
+              rt-kids (nth kids-v 0)
               [best _] (reduce (fn [[bm bv] ci]
-                                 (let [c (nth tree ci)
-                                       mv (- (:stones rt) (:stones c))]
-                                   (if (> (:visits c) bv) [mv (:visits c)] [bm bv])))
-                               [(first (:moves rt)) -1] (:kids rt))
-              vs (mapv #(str (:visits (nth tree %))) (:kids rt))
-              ws (mapv #(str (:wins (nth tree %))) (:kids rt))]
+                                 (let [cv (nth visits-v ci)
+                                       mv (- rt-stones (nth stones-v ci))]
+                                   (if (> cv bv) [mv cv] [bm bv])))
+                               [1 -1] rt-kids)
+              vs (mapv #(str (nth visits-v %)) rt-kids)
+              ws (mapv #(str (nth wins-v %)) rt-kids)]
           (.append sb (str "MCTS " best " V " (str/join " " vs)
                            " W " (str/join " " ws) "\n"))
           (recur (+ pos 4) (dec tcases) sb))))))

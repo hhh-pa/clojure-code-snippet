@@ -12,8 +12,8 @@
 (defn parse-num
   "Parse decimal token to integer value or nil when shape is bad."
   [tok]
-  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
-    (parse-long tok)
+  (if-let [v (when (string? tok) (parse-long tok))]
+    v
     (let [cs (seq tok)]
       (when (seq cs)
         (let [head (first cs)
@@ -41,23 +41,24 @@
           [] toks))
 
 (defn max-sums
-  "Best block sum and best loose sum for non blank run in one scan.
+  "Best block sum and best loose sum for slice [start..end) of nums in one scan.
   Time O(n) and extra space O(1) with kadane scan plus positive fold."
-  [vals]
-  (let [head (first vals)]
-    (loop [rest-vs (next vals)
+  [nums start end]
+  (let [head (nth nums start)]
+    (loop [i (inc start)
            cur head
            best head
            max-elem head
            pos-sum (if (> head 0) head 0)]
-      (if (nil? rest-vs)
+      (if (>= i end)
         [best (if (> pos-sum 0) pos-sum max-elem)]
-        (let [v (first rest-vs)
-              ncur (max v (+' cur v))
-              nbest (max best ncur)
-              nelem (max max-elem v)
+        (let [v (nth nums i)
+              s (+' cur v)
+              ncur (if (> v s) v s)
+              nbest (if (> ncur best) ncur best)
+              nelem (if (> v max-elem) v max-elem)
               npos (if (> v 0) (+' pos-sum v) pos-sum)]
-          (recur (next rest-vs) ncur nbest nelem npos))))))
+          (recur (inc i) ncur nbest nelem npos))))))
 
 (defn complain
   "Print message to stderr and return nil, exit stays zero as host exit is out of reach."
@@ -82,10 +83,11 @@
         (complain "invalid input: not enough case values")
 
         :else
-        (let [vals (->> nums (drop (+ p 1)) (take n) vec)
-              pair (max-sums vals)]
-          (println (str (first pair) " " (second pair)))
-          (solve-cases nums (+ p 1 n) (dec left)))))))
+        (let [start (+ p 1)
+              end (+ start n)
+              [best loose] (max-sums nums start end)]
+          (println (str best " " loose))
+          (solve-cases nums end (dec left)))))))
 
 (defn -main
   "Read test cases from stdin and print best pairs, quiet on blank input."

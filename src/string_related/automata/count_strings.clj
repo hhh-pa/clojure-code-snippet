@@ -218,46 +218,149 @@
                       [states idx dfa ends q] [0 1])]
           (recur states idx dfa ends q (inc qi)))))))
 
+(defn- minimize-dfa
+  "Minimizes the 2-symbol DFA (start=0, ends set, dfa vector of [a-next b-next])
+   via Moore partition refinement and prunes dead states that cannot reach ends."
+  [dfa ends]
+  (let [n (count dfa)
+        init-cls (mapv #(if (contains? ends %) 1 0) (range n))
+        cls (loop [cls init-cls prev-cnt -1]
+              (let [[new-cls cnt]
+                    (loop [i 0 mp {} out (transient []) next-id 0]
+                      (if (= i n)
+                        [(persistent! out) next-id]
+                        (let [row (nth dfa i)
+                              sig [(nth cls i)
+                                   (nth cls (nth row 0))
+                                   (nth cls (nth row 1))]
+                              id (get mp sig -1)]
+                          (if (not= id -1)
+                            (recur (inc i) mp (conj! out id) next-id)
+                            (recur (inc i) (assoc mp sig next-id) (conj! out next-id) (inc next-id))))))]
+                (if (= cnt prev-cnt)
+                  new-cls
+                  (recur new-cls cnt))))
+        num-cls (inc (reduce max 0 cls))
+        rep (loop [i (dec n) r (vec (repeat num-cls 0))]
+              (if (neg? i)
+                r
+                (recur (dec i) (assoc r (nth cls i) i))))
+        min-dfa (mapv (fn [c]
+                        (let [u (nth rep c)
+                              row (nth dfa u)]
+                          [(nth cls (nth row 0))
+                           (nth cls (nth row 1))]))
+                      (range num-cls))
+        min-ends ( into #{} (for [c (range num-cls)
+                                  :when (contains? ends (nth rep c))]
+                              c))
+        ;; Find which minimized states can reach min-ends
+        alive (loop [alive min-ends]
+                (let [alive2 (reduce (fn [acc c]
+                                       (let [row (nth min-dfa c)]
+                                         (if (or (contains? acc (nth row 0))
+                                                 (contains? acc (nth row 1)))
+                                           (conj acc c)
+                                           acc)))
+                                     alive
+                                     (range num-cls))]
+                  (if (= (count alive2) (count alive))
+                    alive
+                    (recur alive2))))]
+    {:dfa min-dfa :ends min-ends :alive alive}))
+
+(def MOD8 8000000112000000392)
+
+(defn- vmult
+  "Multiplies 1xN vector v by NxN matrix b modulo MOD."
+  [v b n]
+  (let [r (transient (vec (repeat n 0)))]
+    (loop [k 0]
+      (when (< k n)
+        (let [vk (nth v k)]
+          (when-not (zero? vk)
+            (let [kb (* k n)]
+              (loop [j 0]
+                (when (< j n)
+                  (let [bkj (nth b (+ kb j))]
+                    (when-not (zero? bkj)
+                      (let [s (+ (nth r j) (* vk bkj))]
+                        (assoc! r j (if (>= s MOD8) (- s MOD8) s)))))
+                  (recur (inc j)))))))
+        (recur (inc k))))
+    (loop [j 0]
+      (when (< j n)
+        (assoc! r j (rem (nth r j) MOD))
+        (recur (inc j))))
+    (persistent! r)))
+
 (defn- mmult
   [a b n]
   (let [r (transient (vec (repeat (* n n) 0)))]
-    (dotimes [i n]
-      (let [xb (* i n)]
-        (dotimes [k n]
-          (let [aik (nth a (+ xb k))]
-            (when-not (zero? aik)
-              (let [kb (* k n)]
-                (dotimes [j n]
-                  (let [bkj (nth b (+ kb j))]
-                    (when-not (zero? bkj)
-                      (let [o (+ xb j)]
-                        (assoc! r o (rem (+ (nth r o) (* aik bkj)) MOD))))))))))))
+    (loop [i 0]
+      (when (< i n)
+        (let [xb (* i n)]
+          (loop [k 0]
+            (when (< k n)
+              (let [aik (nth a (+ xb k))]
+                (when-not (zero? aik)
+                  (let [kb (* k n)]
+                    (loop [j 0]
+                      (when (< j n)
+                        (let [bkj (nth b (+ kb j))]
+                          (when-not (zero? bkj)
+                            (let [o (+ xb j)
+                                  s (+ (nth r o) (* aik bkj))]
+                              (assoc! r o (if (>= s MOD8) (- s MOD8) s)))))
+                        (recur (inc j)))))))
+              (recur (inc k))))
+          (loop [j 0]
+            (when (< j n)
+              (let [o (+ xb j)]
+                (assoc! r o (rem (nth r o) MOD)))
+              (recur (inc j)))))
+        (recur (inc i))))
     (persistent! r)))
 
-(defn- mexp
+(defn- mexp-row0
+  "Computes row 0 of m^p modulo MOD using O(n^2) vector-matrix steps for odd bits."
   [m p n]
-  (let [ident (vec (for [x (range n) y (range n)]
-                     (if (= x y) 1 0)))]
-    (loop [rp ident mp m p p]
+  (let [row0 (assoc (vec (repeat n 0)) 0 1)]
+    (loop [rv row0 mp m p p]
       (if (<= p 0)
-        rp
-        (let [rp (if (odd? p) (mmult rp mp n) rp)
+        rv
+        (let [rv (if (odd? p) (vmult rv mp n) rv)
               p (bit-shift-right p 1)
               mp (if (> p 0) (mmult mp mp n) mp)]
-          (recur rp mp p))))))
+          (recur rv mp p))))))
 
 (defn- count-strings
   [r l]
   (let [[adj nfa-in nfa-out] (build-nfa (parse-regex r))
         {:keys [dfa ends]} (nfa-to-dfa adj nfa-in nfa-out)
-        n (count dfa)
-        m (reduce (fn [m i]
-                    (reduce (fn [m c] (update m (+ (* i n) c) inc))
-                            m (nth dfa i)))
-                  (vec (repeat (* n n) 0))
-                  (range n))
-        pw (mexp m l n)]
-    (rem (reduce + 0 (map #(nth pw %) ends)) MOD)))
+        {:keys [dfa ends alive]} (minimize-dfa dfa ends)]
+    (if (not (contains? alive 0))
+      0
+      (let [alive-vec (vec (sort alive))
+            n (count alive-vec)
+            remap (into {} (map-indexed (fn [idx old-c] [old-c idx]) alive-vec))
+            m (reduce (fn [m idx]
+                        (let [old-c (nth alive-vec idx)
+                              row (nth dfa old-c)]
+                          (reduce (fn [m nxt-c]
+                                    (if-let [nxt-idx (get remap nxt-c)]
+                                      (update m (+ (* idx n) nxt-idx) inc)
+                                      m))
+                                  m row)))
+                      (vec (repeat (* n n) 0))
+                      (range n))
+            row0 (mexp-row0 m l n)]
+        (rem (reduce (fn [acc old-e]
+                       (if-let [e-idx (get remap old-e)]
+                         (+ acc (nth row0 e-idx))
+                         acc))
+                     0 ends)
+             MOD)))))
 
 (defn -main
   [data]

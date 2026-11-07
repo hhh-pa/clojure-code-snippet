@@ -12,8 +12,8 @@
 (defn parse-num
   "Parse decimal token to integer value or nil when shape is bad."
   [tok]
-  (if (and (string? tok) (re-matches #"[+-]?[0-9]{1,18}" tok))
-    (parse-long tok)
+  (if-let [v (when (string? tok) (parse-long tok))]
+    v
     (let [cs (seq tok)]
       (when (seq cs)
         (let [head (first cs)
@@ -44,59 +44,76 @@
   "Row of longest match lengths for x against each prefix of y.
   Time O(mn) and space O(n) with two rows, treating row ops as unit cost."
   [x y]
-  (let [m (count y)
+  (let [nx (count x)
+        m (count y)
         base (vec (repeat (inc m) 0))]
-    (loop [prev base
-           xs (seq x)]
-      (if (nil? xs)
+    (loop [i 0 prev base]
+      (if (>= i nx)
         prev
-        (let [xi (first xs)
+        (let [xi (nth x i)
               cur (transient base)]
-          (loop [j 1]
+          (loop [j 1 left 0 diag 0]
             (when (<= j m)
-              (if (= xi (nth y (dec j)))
-                (assoc! cur j (inc (nth prev (dec j))))
-                (assoc! cur j (max (nth prev j) (nth cur (dec j)))))
-              (recur (inc j))))
-          (recur (persistent! cur) (next xs)))))))
+              (let [up (nth prev j)
+                    v (if (= xi (nth y (dec j)))
+                        (inc diag)
+                        (if (>= up left) up left))]
+                (assoc! cur j v)
+                (recur (inc j) v up))))
+          (recur (inc i) (persistent! cur)))))))
 
 (defn in-vec
   "True when v equals some entry of coll, pure linear scan."
   [coll v]
-  (some? (some (fn [e] (= e v)) coll)))
+  (let [n (count coll)]
+    (loop [i 0]
+      (cond
+        (>= i n) false
+        (= (nth coll i) v) true
+        :else (recur (inc i))))))
+
+(defn rev-vec [v]
+  (let [n (count v)
+        out (transient [])]
+    (loop [i (dec n)]
+      (if (neg? i)
+        (persistent! out)
+        (do (conj! out (nth v i))
+            (recur (dec i)))))))
 
 (defn hirschberg
   "Longest shared run of x and y with linear extra rows and first split.
   Time O(mn) and extra space O(n), split choice mirrors full table backtrack."
   [x y]
-  (cond
-    (or (empty? x) (empty? y))
-    []
+  (let [nx (count x)
+        ny (count y)]
+    (cond
+      (or (zero? nx) (zero? ny))
+      []
 
-    (= 1 (count x))
-    (let [v (first x)]
-      (if (in-vec y v) [v] []))
+      (= 1 nx)
+      (let [v (nth x 0)]
+        (if (in-vec y v) [v] []))
 
-    (= 1 (count y))
-    (let [v (first y)]
-      (if (in-vec x v) [v] []))
+      (= 1 ny)
+      (let [v (nth y 0)]
+        (if (in-vec x v) [v] []))
 
-    :else
-    (let [mid (quot (count x) 2)
-          x1 (subvec x 0 mid)
-          x2 (subvec x mid)
-          fwd (lcs-scores x1 y)
-          back (lcs-scores (vec (reverse x2)) (vec (reverse y)))
-          m (count y)
-          best-k (loop [k 0 best-val -1 best-k 0]
-                   (if (> k m)
-                     best-k
-                     (let [v (+' (nth fwd k) (nth back (- m k)))]
-                       (if (> v best-val)
-                         (recur (inc k) v k)
-                         (recur (inc k) best-val best-k)))))]
-      (into (hirschberg x1 (subvec y 0 best-k))
-            (hirschberg x2 (subvec y best-k))))))
+      :else
+      (let [mid (quot nx 2)
+            x1 (subvec x 0 mid)
+            x2 (subvec x mid)
+            fwd (lcs-scores x1 y)
+            back (lcs-scores (rev-vec x2) (rev-vec y))
+            best-k (loop [k 0 best-val -1 best-k 0]
+                     (if (> k ny)
+                       best-k
+                       (let [v (+ (nth fwd k) (nth back (- ny k)))]
+                         (if (> v best-val)
+                           (recur (inc k) v k)
+                           (recur (inc k) best-val best-k)))))]
+        (into (hirschberg x1 (subvec y 0 best-k))
+              (hirschberg x2 (subvec y best-k)))))))
 
 (defn complain
   "Print message to stderr and return nil, exit stays zero as host exit is out of reach."
@@ -130,10 +147,10 @@
               (complain "invalid input: not enough run values")
 
               :else
-              (let [a (->> nums (drop 2) (take n) vec)
-                    b (->> nums (drop (+ 2 n)) (take m) vec)
+              (let [a (subvec nums 2 (+ 2 n))
+                    b (subvec nums (+ 2 n) (+ 2 n m))
                     ans (hirschberg b a)
-                    line (apply str (interpose " " (map str ans)))]
+                    line (clojure.string/join " " ans)]
                 (println line)))))))))
 
 (-main)
