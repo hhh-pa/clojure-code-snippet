@@ -82,31 +82,50 @@
               [ip r] (if (= r 10) [(inc ip) 0] [ip r])]
           (str (when neg "-") (str ip) "." (str r)))))))
 
-(defn cross
-  "Twice the signed area of triangle o-a-b; exact integer math."
-  [o a b]
-  (let [ox (nth o 0) oy (nth o 1)
-        ax (nth a 0) ay (nth a 1)
-        bx (nth b 0) by (nth b 1)]
-    (-' (*' (-' ax ox) (-' by oy)) (*' (-' ay oy) (-' bx ox)))))
+(defn pack-point
+  "Pack int32 point (x y) into one long whose signed order matches
+   lexicographic point order (bias to unsigned, then flip the sign
+   bit), so points sort as plain longs."
+  [x y]
+  (bit-xor (bit-or (bit-shift-left (+ x 2147483648) 32)
+                   (bit-and (+ y 2147483648) 4294967295))
+           -9223372036854775808))
 
 (defn chain
-  "One monotone chain over sorted distinct points, minus its last point."
+  "One monotone chain over sorted distinct packed points, minus its last point."
   [pts]
-  (let [h (reduce (fn [h p]
-                    (loop [h h]
-                      (if (and (>= (count h) 2)
-                               (<= (cross (nth h (- (count h) 2)) (peek h) p) 0))
-                        (recur (pop h))
-                        (conj h p))))
-                  [] pts)]
-    (if (seq h) (pop h) h)))
+  (let [m (count pts)
+        h (transient [])]
+    (loop [i 0]
+      (if (= i m)
+        (do
+          (when (pos? (count h))
+            (pop! h))
+          (persistent! h))
+        (let [p (nth pts i)
+              px (- (unsigned-bit-shift-right (bit-xor p -9223372036854775808) 32) 2147483648)
+              py (- (bit-and (bit-xor p -9223372036854775808) 4294967295) 2147483648)]
+          (loop []
+            (when (>= (count h) 2)
+              (let [hn (count h)
+                    b (nth h (dec hn))
+                    a (nth h (- hn 2))
+                    ax (- (unsigned-bit-shift-right (bit-xor a -9223372036854775808) 32) 2147483648)
+                    ay (- (bit-and (bit-xor a -9223372036854775808) 4294967295) 2147483648)
+                    bx (- (unsigned-bit-shift-right (bit-xor b -9223372036854775808) 32) 2147483648)
+                    by (- (bit-and (bit-xor b -9223372036854775808) 4294967295) 2147483648)
+                    cr (-' (*' (-' bx ax) (-' py ay)) (*' (-' by ay) (-' px ax)))]
+                (when (<= cr 0)
+                  (pop! h)
+                  (recur)))))
+          (conj! h p)
+          (recur (inc i)))))))
 
 (defn dist
-  "Euclidean distance between two integer points."
+  "Euclidean distance between two packed integer points."
   [p1 p2]
-  (let [dx (double (- (nth p1 0) (nth p2 0)))
-        dy (double (- (nth p1 1) (nth p2 1)))]
+  (let [dx (double (-' (- (unsigned-bit-shift-right (bit-xor p1 -9223372036854775808) 32) 2147483648) (- (unsigned-bit-shift-right (bit-xor p2 -9223372036854775808) 32) 2147483648)))
+        dy (double (-' (- (bit-and (bit-xor p1 -9223372036854775808) 4294967295) 2147483648) (- (bit-and (bit-xor p2 -9223372036854775808) 4294967295) 2147483648)))]
     (sqrt (+ (* dx dx) (* dy dy)))))
 
 (defn perimeter
@@ -165,14 +184,14 @@
                               b (parse-int32-token (nth tokens (inc idx)))]
                           (if (or (nil? a) (nil? b))
                             nil
-                            (recur (inc i) (conj! acc [a b]))))))]
+                            (recur (inc i) (conj! acc (pack-point a b)))))))]
             (if (nil? raw)
               (die "error: expected integer coordinate pairs after the count")
               (let [pts (dedup-sorted (vec (sort raw)))
                     u (count pts)]
                 (if (< u 2)
                   (println "0.0")
-                  (let [hull (into (chain pts) (chain (rseq pts)))]
+                  (let [hull (into (chain pts) (chain (vec (rseq pts))))]
                     (println (format-fixed-even (perimeter hull)))))))))))))
 
 (-main)
