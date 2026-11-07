@@ -127,9 +127,9 @@
           (let [head (transient (vec (repeat n -1)))
                 edges (transient [])
                 wt-v (transient [])
-                state (loop [i 0 fast? (< n 1048576)]
+                state (loop [i 0 fast? (< n 1048576) max-w 0]
                         (if (= i m)
-                          (if fast? 1 0)
+                          (if (and fast? (< (*' n max-w) 8796093022208)) 1 0)
                           (let [base (+ p 2 (* i 3))
                                 x (nth nums base)
                                 y (nth nums (inc base))
@@ -148,7 +148,9 @@
                                 (conj! edges (bit-or u (bit-shift-left (inc hv) 24)))
                                 (conj! wt-v r)
                                 (assoc! head v e2)
-                                (recur (inc i) (and fast? (>= r 0) (< r 1000000000))))))))]
+                                (recur (inc i)
+                                       (and fast? (>= r 0) (< r 1000000000))
+                                       (if (> r max-w) r max-w)))))))]
             (when (>= state 0)
               (let [src (nth nums (+ p 2 (* m 3)))]
                 (when (and (>= src 1) (<= src n))
