@@ -141,7 +141,13 @@
    word bad, and the smallest larger stack index is itself bad
    for prefixing this earlier word."
   [words]
-  (let [pairs (vec (map-indexed (fn [i w] [w i]) words))
+  (let [pairs (let [acc (transient [])
+                      nw (count words)]
+                  (loop [i 0]
+                    (if (= i nw)
+                      (persistent! acc)
+                      (do (conj! acc [(nth words i) i])
+                          (recur (inc i))))))
         spairs (vec (sort pairs))
         m (count spairs)]
     (loop [k 0 stack [] best -1]
