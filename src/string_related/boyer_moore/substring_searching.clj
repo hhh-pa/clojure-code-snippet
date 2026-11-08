@@ -81,16 +81,17 @@
               (if (= (nth text i) last-p)
                 true
                 (recur (inc i)))))
-          (let [right (transient (vec (repeat 256 -1)))
+          (let [right-trans (transient (vec (repeat 256 -1)))
                 big (loop [j 0 mp {}]
                       (if (= j m0)
                         mp
                         (let [ch (nth pat j)
                               c (int ch)]
                           (if (< c 256)
-                            (do (assoc! right c j)
+                            (do (assoc! right-trans c j)
                                 (recur (inc j) mp))
                             (recur (inc j) (assoc mp ch j))))))
+                right (persistent! right-trans)
                 limit (- n0 m0)]
             (loop [i (long 0)]
               (if (> i limit)

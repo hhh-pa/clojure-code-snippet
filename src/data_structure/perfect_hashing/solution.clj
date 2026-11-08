@@ -58,40 +58,43 @@
                         (recur (inc b) ba bb bs)))))]
             (recur (inc a) ba bb bs)))))))
 
-(defn collisions [xs nb b mj limit]
-  (loop [i 0 seen #{} col 0]
+(defn collisions [seen gen xs nb b mj limit]
+  (loop [i 0 col 0]
     (if (or (= i nb) (>= col limit))
       col
       (let [x (nth xs i)
             v (+ x b)
             vp (if (>= v P) (- v P) v)
             s (rem vp mj)]
-        (if (contains? seen s)
-          (recur (inc i) seen (inc col))
-          (recur (inc i) (conj seen s) col))))))
+        (if (= (nth seen s) gen)
+          (recur (inc i) (inc col))
+          (do
+            (assoc! seen s gen)
+            (recur (inc i) col)))))))
 
 (defn level2 [bucket]
   (let [nj (count bucket)
         mj (if (> nj 1) (* nj nj) 1)]
     (if (<= nj 1)
       [mj 1 0]
-      (let [km (mapv #(mod % P) bucket)]
-        (loop [a 1 ba 1 bb 0 bc (inc nj)]
+      (let [km (mapv #(mod % P) bucket)
+            seen (transient (vec (repeat mj 0)))]
+        (loop [a 1 ba 1 bb 0 bc (inc nj) gen 1]
           (if (or (> a 500) (zero? bc))
             [mj ba bb]
             (let [xs (loop [i 0 acc (transient [])]
                        (if (= i nj)
                          (persistent! acc)
                          (recur (inc i) (conj! acc (rem (* a (nth km i)) P)))))
-                  [ba2 bb2 bc2]
-                  (loop [b 0 ba ba bb bb bc bc]
+                  [ba2 bb2 bc2 gen2]
+                  (loop [b 0 ba ba bb bb bc bc gen gen]
                     (if (or (> b 500) (zero? bc))
-                      [ba bb bc]
-                      (let [c (collisions xs nj b mj bc)]
+                      [ba bb bc gen]
+                      (let [c (collisions seen gen xs nj b mj bc)]
                         (if (< c bc)
-                          (recur (inc b) a b c)
-                          (recur (inc b) ba bb bc)))))]
-              (recur (inc a) ba2 bb2 bc2))))))))
+                          (recur (inc b) a b c (inc gen))
+                          (recur (inc b) ba bb bc (inc gen))))))]
+              (recur (inc a) ba2 bb2 bc2 gen2))))))))
 
 (defn solve [toks]
   (let [n (read-int (nth toks 0))
