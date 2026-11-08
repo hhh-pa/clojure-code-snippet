@@ -1,131 +1,69 @@
-;; Shortest reach in an unweighted graph with edge weight six.
-;; A queue based breadth first search from the start node sets each distance
-;; once, which takes O(V+E) time and space for V nodes and E links held in
-;; flat transient integer vectors.
 (require '[clojure.string :as str])
 
-(def digit-values
-  "Digit chars mapped to their numeric values for the pure number reader."
-  (zipmap "0123456789" (range 10)))
+;; Shortest reach in an unweighted graph with edge weight six.
+;; A queue-based breadth-first search from the start node sets each distance once,
+;; which takes O(V+E) time and space.
+;; Mirrors python-code-snippet/src/search/bfs/ctci_bfs_shortest_reach.py.
 
-(def max-long 9223372036854775807)
-(def min-long -9223372036854775808)
-
-(defn fit-long [n]
-  (when (<= min-long n max-long) n))
-
-(defn tokenize
-  "Split string s on blanks into a vector of token strings in linear time."
-  [s]
-  (if (nil? s)
+(defn- tokenize [s]
+  (if (str/blank? s)
     []
-    (let [v (str/split s #"[ \t\n\r]+")
-          n (count v)
-          start (if (and (pos? n) (str/blank? (nth v 0))) 1 0)
-          end (if (and (> n start) (str/blank? (nth v (dec n)))) (dec n) n)]
-      (subvec v start end))))
+    (str/split (str/trim s) #"\s+")))
 
-(defn parse-int-token
-  "Read one signed integer token into a long, else nil for a bad token."
-  [tok]
-  (when (and (string? tok) (pos? (count tok)))
-    (parse-long tok)))
-
-(defn parse-all-ints
-  "Read every token of s as a signed integer, else nil for a bad token."
-  [s]
-  (let [toks (tokenize s)
-        nt (count toks)]
-    (loop [i 0 out (transient [])]
-      (if (= i nt)
-        (persistent! out)
-        (let [v (parse-int-token (nth toks i))]
-          (if (nil? v)
-            nil
-            (recur (inc i) (conj! out v))))))))
-
-(defn fail
-  "Report a bad input shape on stderr and return nil with exit code zero."
-  [msg]
+(defn- report [msg]
   (binding [*out* *err*]
-    (println msg))
-  nil)
+    (println msg)))
 
-(defn bfs-line
-  "Builds adjacency lists in a single packed edge vector, runs BFS from start,
-   and returns the space-separated distance string."
-  [n all edge-base m start]
-  (let [head (transient (vec (repeat n -1)))
-        edges (transient [])]
-    (loop [i 0]
-      (when (< i m)
-        (let [idx (+ edge-base (* i 2))
-              u (dec (nth all idx))
-              v (dec (nth all (inc idx)))
-              e1 (* i 2)
-              e2 (inc e1)
-              hu (nth head u)
-              hv (nth head v)]
-          (conj! edges (bit-or v (bit-shift-left (inc hu) 24)))
-          (assoc! head u e1)
-          (conj! edges (bit-or u (bit-shift-left (inc hv) 24)))
-          (assoc! head v e2)
-          (recur (inc i)))))
-    (let [q (transient [start])
-          dist (assoc! (transient (vec (repeat n -1))) start 0)]
-      (loop [qi 0 qlen 1]
-        (when (< qi qlen)
-          (let [cur (nth q qi)
-                nd (+ (nth dist cur) 6)
-                nqlen (loop [e (nth head cur) ql qlen]
-                        (if (= e -1)
-                          ql
-                          (let [ev (nth edges e)
-                                nb (bit-and ev 16777215)
-                                ne (dec (bit-shift-right ev 24))]
-                            (if (= (nth dist nb) -1)
-                              (do (assoc! dist nb nd)
-                                  (conj! q nb)
-                                  (recur ne (inc ql)))
-                              (recur ne ql)))))]
-            (recur (inc qi) nqlen))))
-      (loop [i 0 out (transient [])]
-        (if (= i n)
-          (str/join " " (persistent! out))
-          (if (= i start)
-            (recur (inc i) out)
-            (recur (inc i) (conj! out (str (nth dist i))))))))))
-
-(defn -main
-  "Entry point reading the whole stdin string, silent on blank input."
-  []
-  (let [input (slurp *in*)]
-    (when-not (str/blank? input)
-      (let [all (parse-all-ints input)]
-        (if (nil? all)
-          (fail "bad input: tokens must all be integers")
-          (let [len (count all)]
-            (when (pos? len)
-              (loop [p 1 left (nth all 0)]
-                (when (and (pos? left) (< (inc p) len))
-                  (let [n (nth all p)
-                        m (nth all (inc p))]
-                    (if (or (<= n 0) (< m 0) (> (+' p 2 (*' m 2)) (dec len)))
-                      (fail "bad input: query header or edges out of range")
-                      (let [edge-base (+ p 2)
-                            edge-end (+ edge-base (* m 2))
-                            start-tok (nth all edge-end)
-                            edges-ok? (loop [idx edge-base]
-                                        (if (= idx edge-end)
-                                          true
-                                          (let [v (nth all idx)]
-                                            (if (and (<= 1 v) (<= v n))
-                                              (recur (inc idx))
-                                              false))))]
-                        (if (or (< start-tok 1) (> start-tok n) (not edges-ok?))
-                          (fail "bad input: node ids out of range")
-                          (do
-                            (println (bfs-line n all edge-base m (dec start-tok)))
-                            (recur (inc edge-end) (dec left))))))))))))))))
+(defn -main []
+  (try
+    (let [content (slurp *in*)]
+      (when-not (str/blank? content)
+        (let [toks (tokenize content)
+              nt (count toks)]
+          (when (pos? nt)
+            (let [queries (parse-long (nth toks 0))]
+              (loop [q 0 idx 1]
+                (when (< q queries)
+                  (let [n (parse-long (nth toks idx))
+                        m (parse-long (nth toks (inc idx)))
+                        adj (transient (vec (repeat n [])))]
+                    (loop [i 0 edge-idx (+ idx 2)]
+                      (when (< i m)
+                        (let [u (dec (parse-long (nth toks edge-idx)))
+                              v (dec (parse-long (nth toks (inc edge-idx))))]
+                          (assoc! adj u (conj (nth adj u) v))
+                          (assoc! adj v (conj (nth adj v) u))
+                          (recur (inc i) (+ edge-idx 2)))))
+                    (let [start-tok-idx (+ idx 2 (* 2 m))
+                          start (dec (parse-long (nth toks start-tok-idx)))
+                          dist (assoc! (transient (vec (repeat n -1))) start 0)
+                          queue (transient [start])]
+                      (loop [qi 0 qlen 1]
+                        (when (< qi qlen)
+                          (let [cur (nth queue qi)
+                                nd (+ (nth dist cur) 6)
+                                neighbors (nth adj cur)
+                                num-nb (count neighbors)
+                                nqlen (loop [k 0 ql qlen]
+                                        (if (= k num-nb)
+                                          ql
+                                          (let [nxt (nth neighbors k)]
+                                            (if (= (nth dist nxt) -1)
+                                              (do
+                                                (assoc! dist nxt nd)
+                                                (conj! queue nxt)
+                                                (recur (inc k) (inc ql)))
+                                              (recur (inc k) ql)))))]
+                            (recur (inc qi) nqlen))))
+                      (let [row (loop [i 0 acc (transient [])]
+                                  (if (= i n)
+                                    (persistent! acc)
+                                    (if (= i start)
+                                      (recur (inc i) acc)
+                                      (recur (inc i) (conj! acc (str (nth dist i)))))))]
+                        (println (str/join " " row)))
+                      (recur (inc q) (+ start-tok-idx 1)))))))))))
+    (catch Exception _
+      (report "invalid input"))))
 
 (-main)

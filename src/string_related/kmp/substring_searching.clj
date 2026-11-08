@@ -58,7 +58,7 @@
         p0 (nth pat 0)]
     (loop [i 1 j 0]
       (if (>= i m)
-        pi
+        (persistent! pi)
         (let [ch (nth pat i)
               j (if (zero? j)
                   (if (= ch p0) 1 0)
