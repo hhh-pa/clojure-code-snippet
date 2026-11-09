@@ -9,6 +9,12 @@
     []
     (str/split (str/trim s) #"\s+")))
 
+(defn- prepare
+  "Parse every token of content with parse-long (nil for a bad token).
+   Returning from this frame lets the token strings die before the search runs."
+  [content]
+  (mapv parse-long (tokenize content)))
+
 (defn- report [msg]
   (binding [*out* *err*]
     (println msg)))
@@ -51,19 +57,19 @@
   (try
     (let [content (slurp *in*)]
       (when-not (str/blank? content)
-        (let [toks (tokenize content)
-              nt (count toks)]
+        (let [nums (prepare content)
+              nt (count nums)]
           (when (pos? nt)
-            (let [v (parse-long (nth toks 0))
-                  e (parse-long (nth toks 1))]
+            (let [v (nth nums 0)
+                  e (nth nums 1)]
               (if (or (nil? v) (nil? e) (neg? v) (neg? e))
                 (report "invalid input: expected vertex and edge counts")
                 (let [graph (transient (vec (repeat v [])))
                       indegree (transient (vec (repeat v 0)))]
                   (loop [k 0 idx 2]
                     (when (< k e)
-                      (let [from (parse-long (nth toks idx))
-                            to (parse-long (nth toks (inc idx)))]
+                      (let [from (nth nums idx)
+                            to (nth nums (inc idx))]
                         (assoc! graph from (conj (nth graph from) to))
                         (assoc! indegree to (inc (nth indegree to)))
                         (recur (inc k) (+ idx 2)))))
