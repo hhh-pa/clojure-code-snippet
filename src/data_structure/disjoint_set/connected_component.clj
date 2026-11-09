@@ -36,27 +36,10 @@
     (println msg)))
 
 (defn emit-lines
-  "Print each encoded line with a trailing newline, or nothing when there
-   are none. Lines are ints: a component count, or its negation for a
-   cycle line (counts stay >= 1, so the sign is unambiguous). Rendering
-   runs in chunks so the per-line strings never all coexist."
+  "Print each line with a trailing newline, or nothing when there are none."
   [lines]
   (when (seq lines)
-    (let [n (count lines)
-          chunks (loop [start 0 acc (transient [])]
-                   (if (>= start n)
-                     (persistent! acc)
-                     (let [end (min n (+ start 8192))
-                           parts (loop [i start ps (transient [])]
-                                   (if (= i end)
-                                     (persistent! ps)
-                                     (let [x (nth lines i)]
-                                       (recur (inc i)
-                                              (conj! ps (if (neg? x)
-                                                          (str (- x) " CYCLE FORMED!")
-                                                          (str x)))))))]
-                       (recur end (conj! acc (clojure.string/join "\n" parts))))))]
-      (println (clojure.string/join "\n" chunks)))))
+    (println (clojure.string/join "\n" lines))))
 
 (defn find-root-vec!
   "Root of x in single-array transient disjoint set ds (negative = -size, >= 0 = parent)."
@@ -123,7 +106,7 @@
                                      gp
                                      (recur gp ggp))))))))]
               (if (= ru rv)
-                (let [cs (or cyc-str (- comps))]
+                (let [cs (or cyc-str (str comps " CYCLE FORMED!"))]
                   (recur (+ i 2) comps cs (conj! lines cs)))
                 (let [su (nth ds ru)
                       sv (nth ds rv)
@@ -133,7 +116,7 @@
                         (assoc! ds ru (+ su sv)))
                     (do (assoc! ds ru rv)
                         (assoc! ds rv (+ su sv))))
-                  (recur (+ i 2) ncomps nil (conj! lines ncomps)))))))))))
+                  (recur (+ i 2) ncomps nil (conj! lines (str ncomps))))))))))))
 
 (defn process-ints-sparse
   "Union each pair of the pre-parsed ints (nil marks a bad token), sparse path."
@@ -149,12 +132,12 @@
             (let [[ru parent] (find-root-map parent (dec u))
                   [rv parent] (find-root-map parent (dec v))]
               (if (= ru rv)
-                (recur (+ i 2) comps (conj! lines (- comps))
+                (recur (+ i 2) comps (conj! lines (str comps " CYCLE FORMED!"))
                        parent size)
                 (let [su (get size ru 1)
                       sv (get size rv 1)
                       [big small] (if (>= su sv) [ru rv] [rv ru])]
-                  (recur (+ i 2) (dec comps) (conj! lines (dec comps))
+                  (recur (+ i 2) (dec comps) (conj! lines (str (dec comps)))
                          (assoc! parent small big)
                          (assoc! size big (+ su sv))))))))))))
 
@@ -174,7 +157,7 @@
                 (let [ru (find-root-vec! ds (dec u))
                       rv (find-root-vec! ds (dec v))]
                   (if (= ru rv)
-                    (let [cs (or cyc-str (- comps))]
+                    (let [cs (or cyc-str (str comps " CYCLE FORMED!"))]
                       (recur (+ i 2) comps cs (conj! lines cs)))
                     (let [su (nth ds ru)
                           sv (nth ds rv)
@@ -184,7 +167,7 @@
                             (assoc! ds ru (+ su sv)))
                         (do (assoc! ds ru rv)
                             (assoc! ds rv (+ su sv))))
-                      (recur (+ i 2) ncomps nil (conj! lines ncomps))))))))))
+                      (recur (+ i 2) ncomps nil (conj! lines (str ncomps)))))))))))
       (loop [i 1 comps n lines (transient []) parent (transient {}) size (transient {})]
         (if (>= (+ i 1) nt)
           (persistent! lines)
@@ -195,12 +178,12 @@
               (let [[ru parent] (find-root-map parent (dec u))
                     [rv parent] (find-root-map parent (dec v))]
                 (if (= ru rv)
-                  (recur (+ i 2) comps (conj! lines (- comps))
+                  (recur (+ i 2) comps (conj! lines (str comps " CYCLE FORMED!"))
                          parent size)
                   (let [su (get size ru 1)
                         sv (get size rv 1)
                         [big small] (if (>= su sv) [ru rv] [rv ru])]
-                    (recur (+ i 2) (dec comps) (conj! lines (dec comps))
+                    (recur (+ i 2) (dec comps) (conj! lines (str (dec comps)))
                            (assoc! parent small big)
                            (assoc! size big (+ su sv)))))))))))))
 
