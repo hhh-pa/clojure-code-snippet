@@ -10,6 +10,12 @@
     []
     (str/split (str/trim s) #"\s+")))
 
+(defn- prepare
+  "Parse every token of content with parse-long (nil for a bad token).
+   Returning from this frame lets the token strings die before the search runs."
+  [content]
+  (mapv parse-long (tokenize content)))
+
 (defn- report [msg]
   (binding [*out* *err*]
     (println msg)))
@@ -18,24 +24,24 @@
   (try
     (let [content (slurp *in*)]
       (when-not (str/blank? content)
-        (let [toks (tokenize content)
-              nt (count toks)]
+        (let [nums (prepare content)
+              nt (count nums)]
           (when (pos? nt)
-            (let [queries (parse-long (nth toks 0))]
+            (let [queries (nth nums 0)]
               (loop [q 0 idx 1]
                 (when (< q queries)
-                  (let [n (parse-long (nth toks idx))
-                        m (parse-long (nth toks (inc idx)))
+                  (let [n (nth nums idx)
+                        m (nth nums (inc idx))
                         adj (transient (vec (repeat n [])))]
                     (loop [i 0 edge-idx (+ idx 2)]
                       (when (< i m)
-                        (let [u (dec (parse-long (nth toks edge-idx)))
-                              v (dec (parse-long (nth toks (inc edge-idx))))]
+                        (let [u (dec (nth nums edge-idx))
+                              v (dec (nth nums (inc edge-idx)))]
                           (assoc! adj u (conj (nth adj u) v))
                           (assoc! adj v (conj (nth adj v) u))
                           (recur (inc i) (+ edge-idx 2)))))
                     (let [start-tok-idx (+ idx 2 (* 2 m))
-                          start (dec (parse-long (nth toks start-tok-idx)))
+                          start (dec (nth nums start-tok-idx))
                           dist (assoc! (transient (vec (repeat n -1))) start 0)
                           queue (transient [start])]
                       (loop [qi 0 qlen 1]
