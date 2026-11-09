@@ -94,8 +94,8 @@
   "Thompson NFA for parsed root. Returns adjacency plus in and out
   states. Edge labels are 0 for empty, 1 for a, 2 for b."
   [root]
-  (letfn [(fresh [adj] [(count adj) (conj adj [])])
-          (edge [adj u v lab] (update adj u conj [v lab]))
+  (letfn [(fresh [adj] [(count adj) (conj! adj [])])
+          (edge [adj u v lab] (do (assoc! adj u (conj (nth adj u) [v lab])) adj))
           (gen [nd adj]
             (let [[in adj] (fresh adj)
                   [out adj] (fresh adj)
@@ -150,8 +150,8 @@
                               (edge in ri 0)
                               (edge lo out 0)
                               (edge ro out 0))]))))]
-    (let [[in out adj] (gen root [])]
-      [adj in out])))
+    (let [[in out adj] (gen root (transient []))]
+      [(persistent! adj) in out])))
 
 (defn- e-closure
   "Empty move closure of NFA state start as a hash set."
@@ -179,14 +179,14 @@
   (let [n-nfa (count adj)
         ecls (mapv #(e-closure adj %) (range n-nfa))
         s0 (nth ecls nfa-in)]
-    (loop [states [s0]
-           idx {s0 0}
-           dfa [nil]
+    (loop [states (transient [s0])
+           idx (transient {s0 0})
+           dfa (transient [nil])
            ends (if (contains? s0 nfa-out) #{0} #{})
-           q [0]
+           q (transient [0])
            qi 0]
       (if (>= qi (count q))
-        {:start 0 :ends ends :dfa dfa}
+        {:start 0 :ends ends :dfa (persistent! dfa)}
         (let [cur (nth q qi)
               curset (nth states cur)
               [states idx dfa ends q]
@@ -204,16 +204,16 @@
                                                      (recur (inc i) acc)))))))
                                          #{} curset)
                               found (contains? idx to)
-                              nxt (if found (idx to) (count states))
-                              states (if found states (conj states to))
-                              idx (if found idx (assoc idx to nxt))
-                              dfa (if found dfa (conj dfa nil))
-                              q (if found q (conj q nxt))
+                              nxt (if found (get idx to) (count states))
+                              states (if found states (conj! states to))
+                              idx (if found idx (assoc! idx to nxt))
+                              dfa (if found dfa (conj! dfa nil))
+                              q (if found q (conj! q nxt))
                               ends (if (contains? to nfa-out)
                                      (conj ends nxt)
                                      ends)
-                              dfa (assoc dfa cur
-                                         (assoc (or (nth dfa cur) [-1 -1]) li nxt))]
+                              dfa (assoc! dfa cur
+                                          (assoc (or (nth dfa cur) [-1 -1]) li nxt))]
                           [states idx dfa ends q]))
                       [states idx dfa ends q] [0 1])]
           (recur states idx dfa ends q (inc qi)))))))
@@ -344,16 +344,18 @@
       (let [alive-vec (vec (sort alive))
             n (count alive-vec)
             remap (into {} (map-indexed (fn [idx old-c] [old-c idx]) alive-vec))
-            m (reduce (fn [m idx]
-                        (let [old-c (nth alive-vec idx)
-                              row (nth dfa old-c)]
-                          (reduce (fn [m nxt-c]
-                                    (if-let [nxt-idx (get remap nxt-c)]
-                                      (update m (+ (* idx n) nxt-idx) inc)
-                                      m))
-                                  m row)))
-                      (vec (repeat (* n n) 0))
-                      (range n))
+            m (persistent!
+                (reduce (fn [m idx]
+                          (let [old-c (nth alive-vec idx)
+                                row (nth dfa old-c)]
+                            (reduce (fn [m nxt-c]
+                                      (if-let [nxt-idx (get remap nxt-c)]
+                                        (let [cell (+ (* idx n) nxt-idx)]
+                                          (assoc! m cell (inc (nth m cell))))
+                                        m))
+                                    m row)))
+                        (transient (vec (repeat (* n n) 0)))
+                        (range n)))
             row0 (mexp-row0 m l n)]
         (rem (reduce (fn [acc old-e]
                        (if-let [e-idx (get remap old-e)]
