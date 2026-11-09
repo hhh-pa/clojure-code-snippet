@@ -132,6 +132,52 @@
                         (recur (inc j) (inc nid)))))
                   false)))))))))
 
+(defn- first-bad
+  "Input index of the first bad word in words, or -1 when good.
+   Sorts words carrying input indices, then sweeps with an
+   ancestor stack: popping tops that do not prefix the current
+   word (equality counts) leaves exactly its prefix-related
+   predecessors; any with a smaller input index makes the current
+   word bad, and the smallest larger stack index is itself bad
+   for prefixing this earlier word."
+  [words]
+  (let [pairs (let [acc (transient [])
+                      nw (count words)]
+                  (loop [i 0]
+                    (if (= i nw)
+                      (persistent! acc)
+                      (do (conj! acc [(nth words i) i])
+                          (recur (inc i))))))
+        spairs (vec (sort pairs))
+        m (count spairs)]
+    (loop [k 0 stack [] best -1]
+      (if (= k m)
+        best
+        (let [w (nth (nth spairs k) 0)
+              j (nth (nth spairs k) 1)
+              stack (loop [st stack]
+                      (if (and (seq st)
+                               (not (str/starts-with? w (nth (peek st) 0))))
+                        (recur (pop st))
+                        st))
+              cand (loop [si 0 cand -1]
+                     (if (= si (count stack))
+                       cand
+                       (let [a (nth (nth stack si) 1)]
+                         (cond
+                           (< a j) j
+                           (> a j) (recur (inc si)
+                                          (if (or (< cand 0) (< a cand)) a cand))
+                           :else (recur (inc si) cand)))))
+              best (if (and (>= cand 0) (or (< best 0) (< cand best))) cand best)]
+          (recur (inc k) (conj stack [w j]) best))))))
+
+(def ^:private packed-budget
+  "Words inserted into the packed trie before switching to the
+   sort sweep: an early bad word exits at packed-insert cost,
+   while a large good set pays only this many wasted inserts."
+  20000)
+
 (defn -main
   "Streams tokens from *in* and prints the set verdict.
   Malformed input prints a message on stderr and returns normally,
@@ -143,15 +189,36 @@
         (if (nil? n)
           (report "error: expected a count followed by that many words")
           (let [target (max 0 n)
-                nodes (transient [0])]
+                nodes (transient [0])
+                seen (transient [])]
             (loop [wi 0 buf buf idx idx]
-              (if (= wi target)
+              (cond
+                (= wi target)
                 (print "GOOD SET\n")
-                (if-let [[w nbuf nidx] (next-tok buf idx)]
-                  (if (insert-word! nodes w)
-                    (print (str "BAD SET\n" w "\n"))
-                    (recur (inc wi) nbuf nidx))
-                  (print "GOOD SET\n"))))))))
+                (= wi packed-budget)
+                (let [rest-toks (tokenize (slurp *in*))
+                      words (loop [acc seen src buf si idx]
+                              (cond
+                                (= (count acc) target)
+                                (persistent! acc)
+                                (< si (count src))
+                                (recur (conj! acc (nth src si)) src (inc si))
+                                (identical? src buf)
+                                (recur acc rest-toks 0)
+                                :else (persistent! acc)))
+                      bad (first-bad words)]
+                  (if (< bad 0)
+                    (print "GOOD SET\n")
+                    (print (str "BAD SET\n" (nth words bad) "\n"))))
+                :else
+                (let [t (next-tok buf idx)]
+                  (if (nil? t)
+                    (print "GOOD SET\n")
+                    (let [[w nbuf nidx] t]
+                      (conj! seen w)
+                      (if (insert-word! nodes w)
+                        (print (str "BAD SET\n" w "\n"))
+                        (recur (inc wi) nbuf nidx)))))))))))
     (catch Exception _ (report "error: invalid input"))))
 
 (-main)

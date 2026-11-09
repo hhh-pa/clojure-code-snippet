@@ -1,26 +1,37 @@
-
 ;; perfect-hashing: FKS two-level static table (CLRS 11.5).
 ;; Input: n; n distinct keys; q; q queries. Deterministic grid search
 ;; for level-1 and collision-free level-2 parameters. Output: total
 ;; slots S, then YES/NO per query. Pure Clojure.
-(ns data-structure.perfect-hashing.solution
-  (:require [clojure.string :as str]))
+(require '[clojure.string :as str])
 
-(defn tokenize [s]
-  (if (nil? s) []
+(defn tokenize
+  [s]
+  (if (nil? s)
+    []
     (let [v (str/split s #"[ \t\n\r\f\x0B]+")
           n (count v)
           start (if (and (pos? n) (str/blank? (nth v 0))) 1 0)
           end (if (and (> n start) (str/blank? (nth v (dec n)))) (dec n) n)]
       (subvec v start end))))
 
-(defn read-int [tok]
+(defn read-int
+  [tok]
   (when (and (string? tok) (pos? (count tok)))
     (parse-long tok)))
 
 (def P 1000003)
+(def WRAP_MIN (- P 500))
 
 (defn bucket-of [a b m k] (mod (mod (+ (* a k) b) P) m))
+
+(defn cand-bs [xs n]
+  (loop [i 0 acc [0]]
+    (if (= i n)
+      (if (> (count acc) 1) (vec (distinct (sort acc))) acc)
+      (let [x (nth xs i)]
+        (if (>= x WRAP_MIN)
+          (recur (inc i) (conj acc (- P x)))
+          (recur (inc i) acc))))))
 
 (defn level1 [keys m]
   (let [n (count keys)
@@ -35,11 +46,14 @@
                      (if (= i n)
                        (persistent! acc)
                        (recur (inc i) (conj! acc (rem (* a (nth km i)) P)))))
+                bs-list (cand-bs xs n)
+                nb (count bs-list)
                 [ba bb bs]
-                (loop [b 0 ba best-a bb best-b bs best-s]
-                  (if (or (> b 500) (= bs n))
+                (loop [bi 0 ba best-a bb best-b bs best-s]
+                  (if (or (= bi nb) (= bs n))
                     [ba bb bs]
-                    (let [cnt (transient zeros)
+                    (let [b (nth bs-list bi)
+                          cnt (transient zeros)
                           s (loop [i 0 s 0]
                               (if (= i n)
                                 s
@@ -54,47 +68,47 @@
                                     (do (assoc! cnt idx (inc c))
                                         (recur (inc i) ns))))))]
                       (if (or (= bs -1) (< s bs))
-                        (recur (inc b) a b s)
-                        (recur (inc b) ba bb bs)))))]
+                        (recur (inc bi) a b s)
+                        (recur (inc bi) ba bb bs)))))]
             (recur (inc a) ba bb bs)))))))
 
-(defn collisions [seen gen xs nb b mj limit]
-  (loop [i 0 col 0]
+(defn collisions [xs nb b mj limit]
+  (loop [i 0 seen #{} col 0]
     (if (or (= i nb) (>= col limit))
       col
       (let [x (nth xs i)
             v (+ x b)
             vp (if (>= v P) (- v P) v)
             s (rem vp mj)]
-        (if (= (nth seen s) gen)
-          (recur (inc i) (inc col))
-          (do
-            (assoc! seen s gen)
-            (recur (inc i) col)))))))
+        (if (contains? seen s)
+          (recur (inc i) seen (inc col))
+          (recur (inc i) (conj seen s) col))))))
 
 (defn level2 [bucket]
   (let [nj (count bucket)
         mj (if (> nj 1) (* nj nj) 1)]
     (if (<= nj 1)
       [mj 1 0]
-      (let [km (mapv #(mod % P) bucket)
-            seen (transient (vec (repeat mj 0)))]
-        (loop [a 1 ba 1 bb 0 bc (inc nj) gen 1]
+      (let [km (mapv #(mod % P) bucket)]
+        (loop [a 1 ba 1 bb 0 bc (inc nj)]
           (if (or (> a 500) (zero? bc))
             [mj ba bb]
             (let [xs (loop [i 0 acc (transient [])]
                        (if (= i nj)
                          (persistent! acc)
                          (recur (inc i) (conj! acc (rem (* a (nth km i)) P)))))
-                  [ba2 bb2 bc2 gen2]
-                  (loop [b 0 ba ba bb bb bc bc gen gen]
-                    (if (or (> b 500) (zero? bc))
-                      [ba bb bc gen]
-                      (let [c (collisions seen gen xs nj b mj bc)]
+                  bs-list (cand-bs xs nj)
+                  nb (count bs-list)
+                  [ba2 bb2 bc2]
+                  (loop [bi 0 ba ba bb bb bc bc]
+                    (if (or (= bi nb) (zero? bc))
+                      [ba bb bc]
+                      (let [b (nth bs-list bi)
+                            c (collisions xs nj b mj bc)]
                         (if (< c bc)
-                          (recur (inc b) a b c (inc gen))
-                          (recur (inc b) ba bb bc (inc gen))))))]
-              (recur (inc a) ba2 bb2 bc2 gen2))))))))
+                          (recur (inc bi) a b c)
+                          (recur (inc bi) ba bb bc)))))]
+              (recur (inc a) ba2 bb2 bc2))))))))
 
 (defn solve [toks]
   (let [n (read-int (nth toks 0))
@@ -134,6 +148,6 @@
                        :else (recur (inc idx))))]
           (recur (inc i) (conj! out (if hit? "YES" "NO"))))))))
 
-(let [toks (let [s (slurp *in*)] (when-not (str/blank? s) (tokenize s)))]
+(let [toks (tokenize (slurp *in*))]
   (when (pos? (count toks))
     (print (str (str/join "\n" (solve toks)) "\n"))))
