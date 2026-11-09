@@ -3,20 +3,31 @@
 ;; alternating) gives O(E log V) time and O(V + E) space per case.
 (require 'clojure.string)
 
+(defn- parse-ints-slow
+  "Per-token parse used when a '+' appears (a leading '+' is invalid
+   here, but parse-long accepts it, so such inputs keep this path)."
+  [toks nt]
+  (loop [i 0 out (transient [])]
+    (if (= i nt)
+      (persistent! out)
+      (let [tok (nth toks i)]
+        (if (= tok "")
+          (recur (inc i) out)
+          (if-let [n (when (not= (nth tok 0) \+) (parse-long tok))]
+            (recur (inc i) (conj! out n))
+            nil))))))
+
 (defn- parse-ints
   "Reads all signed integers from string s into a vector, else nil."
   [s]
   (let [toks (clojure.string/split s #"[\x00-\x20]+")
         nt (count toks)]
-    (loop [i 0 out (transient [])]
-      (if (= i nt)
-        (persistent! out)
-        (let [tok (nth toks i)]
-          (if (= tok "")
-            (recur (inc i) out)
-            (if-let [n (when (not= (nth tok 0) \+) (parse-long tok))]
-              (recur (inc i) (conj! out n))
-              nil)))))))
+    (if (clojure.string/includes? s "+")
+      (parse-ints-slow toks nt)
+      (let [start (if (and (pos? nt) (= (nth toks 0) "")) 1 0)
+            ints (mapv parse-long (subvec toks start nt))]
+        (when-not (some nil? ints)
+          ints)))))
 
 (defn- report-error
   "Prints message to stderr and returns nil so the driver ends calmly."
