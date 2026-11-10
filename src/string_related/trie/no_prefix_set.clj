@@ -132,6 +132,18 @@
                         (recur (inc j) (inc nid)))))
                   false)))))))))
 
+(defn- sorted-pairs
+  "The [word input-index] pairs of words in sorted order. Its own
+   frame, so the unsorted pairs vector is dead before the sweep."
+  [words]
+  (let [acc (transient [])
+        nw (count words)]
+    (loop [i 0]
+      (if (= i nw)
+        (vec (sort (persistent! acc)))
+        (do (conj! acc [(nth words i) i])
+            (recur (inc i)))))))
+
 (defn- first-bad
   "Input index of the first bad word in words, or -1 when good.
    Sorts words carrying input indices, then sweeps with an
@@ -141,14 +153,7 @@
    word bad, and the smallest larger stack index is itself bad
    for prefixing this earlier word."
   [words]
-  (let [pairs (let [acc (transient [])
-                      nw (count words)]
-                  (loop [i 0]
-                    (if (= i nw)
-                      (persistent! acc)
-                      (do (conj! acc [(nth words i) i])
-                          (recur (inc i))))))
-        spairs (vec (sort pairs))
+  (let [spairs (sorted-pairs words)
         m (count spairs)]
     (loop [k 0 stack [] best -1]
       (if (= k m)
@@ -171,6 +176,23 @@
                            :else (recur (inc si) cand)))))
               best (if (and (>= cand 0) (or (< best 0) (< cand best))) cand best)]
           (recur (inc k) (conj stack [w j]) best))))))
+
+(defn- all-words
+  "Every word: the seen prefix, the buffered line's rest, then the
+   tokenized remainder of stdin — up to target words (fewer at
+   EOF). Its own frame, so the slurped text and its token vector
+   are dead before the sort sweep runs."
+  [seen buf idx target]
+  (let [rest-toks (tokenize (slurp *in*))]
+    (loop [acc seen src buf si idx]
+      (cond
+        (= (count acc) target)
+        (persistent! acc)
+        (< si (count src))
+        (recur (conj! acc (nth src si)) src (inc si))
+        (identical? src buf)
+        (recur acc rest-toks 0)
+        :else (persistent! acc)))))
 
 (def ^:private packed-budget
   "Words inserted into the packed trie before switching to the
@@ -196,16 +218,7 @@
                 (= wi target)
                 (print "GOOD SET\n")
                 (= wi packed-budget)
-                (let [rest-toks (tokenize (slurp *in*))
-                      words (loop [acc seen src buf si idx]
-                              (cond
-                                (= (count acc) target)
-                                (persistent! acc)
-                                (< si (count src))
-                                (recur (conj! acc (nth src si)) src (inc si))
-                                (identical? src buf)
-                                (recur acc rest-toks 0)
-                                :else (persistent! acc)))
+                (let [words (all-words seen buf idx target)
                       bad (first-bad words)]
                   (if (< bad 0)
                     (print "GOOD SET\n")
