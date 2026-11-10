@@ -34,7 +34,7 @@
               (when (some? val)
                 (if neg (- 0 val) val)))))))))
 
-(defn parse-all
+(defn parse-all-slow
   "Parse every token with parse-num, giving nil when any token is bad."
   [toks]
   (let [n (count toks)]
@@ -45,6 +45,17 @@
           (if (nil? v)
             nil
             (recur (inc i) (conj! acc v))))))))
+
+(defn parse-all
+  "Parse every token, giving nil when any token is bad. Plain longs
+  (the usual input) parse in one parse-long pass; any token it
+  rejects sends the whole input through parse-all-slow, whose
+  per-token parse-num also reads oversized digit runs."
+  [toks]
+  (let [fast (mapv parse-long toks)]
+    (if (some nil? fast)
+      (parse-all-slow toks)
+      fast)))
 
 (defn unbounded-one
   "Best fill for cap with reuse of vals where value equals weight, scanning upward.
