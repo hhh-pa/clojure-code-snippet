@@ -22,32 +22,45 @@
           end (if (and (> n start) (clojure.string/blank? (nth v (dec n)))) (dec n) n)]
       (subvec v start end))))
 
-(defn chunk-tokens
-  "Tokenize one block of lines: pre-parsed ints, or token strings
-   when the block contains a '+'."
-  [lines]
-  (let [text (clojure.string/join "\n" lines)
-        toks (tokenize text)]
-    (if (clojure.string/includes? text "+")
-      toks
-      (mapv parse-long toks))))
+(defn ws-at?
+  "True when the char of s at index i is one tokenize splits on."
+  [s i]
+  (let [c (nth s i)]
+    (or (= c \space) (= c \tab) (= c \newline) (= c \return))))
 
-(defn read-chunk
-  "The next block of input tokens (about 1MB of whole lines), or nil
-   at EOF. Blocks without a '+' come back pre-parsed by the bulk
-   mapv parse-long (nil for a bad token); a block containing '+'
-   stays as token strings for the per-token path (parse-num rejects
-   a leading '+', parse-long accepts it). Reading block-wise keeps
-   only one block of input alive while the union loop runs."
-  []
-  (loop [lines (transient []) chars 0]
-    (if (>= chars 1000000)
-      (chunk-tokens (persistent! lines))
-      (if-let [line (read-line)]
-        (recur (conj! lines line) (+ chars (count line)))
-        (let [v (persistent! lines)]
-          (when (seq v)
-            (chunk-tokens v)))))))
+(defn window-end
+  "End offset for the token window starting at pos: about 2MB on,
+   backed up to just past a whitespace char so no token is cut
+   (a single token longer than the window extends it instead)."
+  [input pos len]
+  (let [e (min len (+ pos 2000000))]
+    (if (= e len)
+      e
+      (loop [i e]
+        (if (<= i pos)
+          (loop [j e]
+            (if (or (= j len) (ws-at? input j))
+              j
+              (recur (inc j))))
+          (if (ws-at? input (dec i))
+            i
+            (recur (dec i))))))))
+
+(defn next-window
+  "The next token window of input from char offset pos as
+   [tokens next-pos], or nil at the end. Tokens come back
+   pre-parsed by the bulk mapv parse-long (nil for a bad token)
+   unless the input contains a '+', when they stay strings for
+   the per-token path (parse-num rejects a leading '+',
+   parse-long accepts it). Windowing the slurped text keeps only
+   one window of tokens and ints alive while the union loop runs:
+   retention is the input text itself plus the disjoint set."
+  [input plus? pos]
+  (let [len (count input)]
+    (when (< pos len)
+      (let [end (window-end input pos len)
+            toks (tokenize (subs input pos end))]
+        [(if plus? (vec toks) (mapv parse-long toks)) end]))))
 (defn parse-num
   "Parse tok as an integer, or nil when it is not one."
   [tok]
@@ -196,11 +209,11 @@
                            (assoc! size big (+ su sv)))))))))))))
 
 (defn run-dense
-  "Drive the dense union loop over chunked input; rendered output
+  "Drive the dense union loop over windowed input; rendered output
    chunks, or nil on an invalid endpoint."
-  [n first-chunk]
+  [n input plus? first-window]
   (let [ds (transient (vec (repeat n -1)))]
-    (loop [chunk first-chunk start 1 comps n cyc nil pending nil out (transient [])]
+    (loop [[chunk pos] first-window start 1 comps n cyc nil pending nil out (transient [])]
       (if (nil? chunk)
         (persistent! out)
         (let [lines (transient [])
@@ -210,13 +223,13 @@
                   out (if (pos? (count lines))
                         (conj! out (render-chunk (persistent! lines)))
                         out)]
-              (recur (read-chunk) 0 comps cyc pending out))))))))
+              (recur (next-window input plus? pos) 0 comps cyc pending out))))))))
 
 (defn run-sparse
-  "Drive the sparse union loop over chunked input; rendered output
+  "Drive the sparse union loop over windowed input; rendered output
    chunks, or nil on an invalid endpoint."
-  [n first-chunk]
-  (loop [chunk first-chunk start 1 comps n pending nil
+  [n input plus? first-window]
+  (loop [[chunk pos] first-window start 1 comps n pending nil
          parent (transient {}) size (transient {}) out (transient [])]
     (if (nil? chunk)
       (persistent! out)
@@ -227,21 +240,24 @@
                 out (if (pos? (count lines))
                       (conj! out (render-chunk (persistent! lines)))
                       out)]
-            (recur (read-chunk) 0 comps pending parent size out)))))))
+            (recur (next-window input plus? pos) 0 comps pending parent size out)))))))
 
 (defn -main
   "Read n plus edge pairs, printing the live component count per edge."
   []
-  (when-let [first-chunk (read-chunk)]
-    (let [t0 (nth first-chunk 0)
-          n (if (string? t0) (parse-num t0) t0)]
-      (if (or (nil? n) (neg? n))
-        (fail "invalid input: expected a node count n, then edge pairs")
-        (let [chunks (if (<= n 16777216)
-                       (run-dense n first-chunk)
-                       (run-sparse n first-chunk))]
-          (if (nil? chunks)
-            (fail "invalid input: edge endpoints must sit within 1 and n")
-            (emit-chunks chunks)))))))
+  (let [input (slurp *in*)
+        plus? (clojure.string/includes? input "+")
+        first-window (next-window input plus? 0)]
+    (when (and first-window (seq (nth first-window 0)))
+      (let [t0 (nth (nth first-window 0) 0)
+            n (if (string? t0) (parse-num t0) t0)]
+        (if (or (nil? n) (neg? n))
+          (fail "invalid input: expected a node count n, then edge pairs")
+          (let [chunks (if (<= n 16777216)
+                         (run-dense n input plus? first-window)
+                         (run-sparse n input plus? first-window))]
+            (if (nil? chunks)
+              (fail "invalid input: edge endpoints must sit within 1 and n")
+              (emit-chunks chunks))))))))
 
 (-main)
