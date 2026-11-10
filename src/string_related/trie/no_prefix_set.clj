@@ -197,8 +197,14 @@
 (def ^:private packed-budget
   "Words inserted into the packed trie before switching to the
    sort sweep: an early bad word exits at packed-insert cost,
-   while a large good set pays only this many wasted inserts."
-  20000)
+   while a large good set pays only this many wasted inserts.
+   A packed insert costs about ten sort-sweep words (one per char
+   against one native sort slot), so a long budget only taxes
+   the sets that reach the sweep: 20000 spent ~2.2G instructions
+   on 100000-word inputs whose bad word sits near 50000. 1024
+   still covers every early exit in the suite (the latest is the
+   70th word) and caps that waste near 100M."
+  1024)
 
 (defn -main
   "Streams tokens from *in* and prints the set verdict.
