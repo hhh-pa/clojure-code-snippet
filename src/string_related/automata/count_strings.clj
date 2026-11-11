@@ -153,70 +153,104 @@
     (let [[in out adj] (gen root (transient []))]
       [(persistent! adj) in out])))
 
-(defn- e-closure
-  "Empty move closure of NFA state start as a hash set."
-  [adj start]
-  (loop [q (transient [start]) qi 0 seen #{start}]
-    (if (>= qi (count q))
-      seen
-      (let [u (nth q qi)
-            es (nth adj u)
-            ne (count es)
-            [q seen] (loop [i 0 q q seen seen]
-                       (if (= i ne)
-                         [q seen]
-                         (let [edge (nth es i)
-                               v (nth edge 0)
-                               lab (nth edge 1)]
-                           (if (and (zero? lab) (not (contains? seen v)))
-                             (recur (inc i) (conj! q v) (conj seen v))
-                             (recur (inc i) q seen)))))]
-        (recur q (inc qi) seen)))))
+;; The subset construction mirrors the python twin: each DFA state
+;; is the sorted vector of its NFA states, and a transition moves on
+;; one label then closes over empty edges from the moved states only
+;; (no closure table over every NFA state up front).
+
+(defn- step-closure
+  "The sorted NFA states reached from DFA state cur (a sorted vector)
+  by one edge labelled tr, closed under empty edges ([] when none)."
+  [adj n cur tr]
+  (let [seen (transient (vec (repeat n false)))
+        nc (count cur)
+        q (loop [k 0 q (transient [])]
+            (if (= k nc)
+              q
+              (let [es (nth adj (nth cur k))
+                    ne (count es)]
+                (recur (inc k)
+                       (loop [i 0 q q]
+                         (if (= i ne)
+                           q
+                           (let [e (nth es i)
+                                 v (nth e 0)]
+                             (if (and (= (nth e 1) tr) (not (nth seen v)))
+                               (do (assoc! seen v true)
+                                   (recur (inc i) (conj! q v)))
+                               (recur (inc i) q)))))))))]
+    (loop [qi 0 q q]
+      (if (= qi (count q))
+        (vec (sort (persistent! q)))
+        (let [es (nth adj (nth q qi))
+              ne (count es)]
+          (recur (inc qi)
+                 (loop [i 0 q q]
+                   (if (= i ne)
+                     q
+                     (let [e (nth es i)
+                           v (nth e 0)]
+                       (if (and (zero? (nth e 1)) (not (nth seen v)))
+                         (do (assoc! seen v true)
+                             (recur (inc i) (conj! q v)))
+                         (recur (inc i) q)))))))))))
+
+(defn- has-state?
+  "True when sorted state vector st holds NFA state s."
+  [st s]
+  (let [n (count st)]
+    (loop [i 0]
+      (cond (= i n) false
+            (= (nth st i) s) true
+            :else (recur (inc i))))))
 
 (defn- nfa-to-dfa
-  "Subset construction over adj. Returns start, ends and rows."
+  "Subset construction over adj from nfa-in, breadth first like the
+  twin. Returns start, ends and rows ([a-next b-next] per state)."
   [adj nfa-in nfa-out]
-  (let [n-nfa (count adj)
-        ecls (mapv #(e-closure adj %) (range n-nfa))
-        s0 (nth ecls nfa-in)]
+  (let [n (count adj)
+        s0 (let [seen (transient (vec (repeat n false)))]
+             (assoc! seen nfa-in true)
+             (loop [qi 0 q (transient [nfa-in])]
+               (if (= qi (count q))
+                 (vec (sort (persistent! q)))
+                 (let [es (nth adj (nth q qi))
+                       ne (count es)]
+                   (recur (inc qi)
+                          (loop [i 0 q q]
+                            (if (= i ne)
+                              q
+                              (let [e (nth es i)
+                                    v (nth e 0)]
+                                (if (and (zero? (nth e 1)) (not (nth seen v)))
+                                  (do (assoc! seen v true)
+                                      (recur (inc i) (conj! q v)))
+                                  (recur (inc i) q))))))))))]
     (loop [states (transient [s0])
            idx (transient {s0 0})
-           dfa (transient [nil])
-           ends (if (contains? s0 nfa-out) #{0} #{})
-           q (transient [0])
+           rows (transient [])
            qi 0]
-      (if (>= qi (count q))
-        {:start 0 :ends ends :dfa (persistent! dfa)}
-        (let [cur (nth q qi)
-              curset (nth states cur)
-              [states idx dfa ends q]
-              (reduce (fn [[states idx dfa ends q] li]
-                        (let [tr (inc li)
-                              to (reduce (fn [acc u]
-                                           (let [es (nth adj u)
-                                                 ne (count es)]
-                                             (loop [i 0 acc acc]
-                                               (if (= i ne)
-                                                 acc
-                                                 (let [edge (nth es i)]
-                                                   (if (= (nth edge 1) tr)
-                                                     (recur (inc i) (into acc (nth ecls (nth edge 0))))
-                                                     (recur (inc i) acc)))))))
-                                         #{} curset)
-                              found (contains? idx to)
-                              nxt (if found (get idx to) (count states))
-                              states (if found states (conj! states to))
-                              idx (if found idx (assoc! idx to nxt))
-                              dfa (if found dfa (conj! dfa nil))
-                              q (if found q (conj! q nxt))
-                              ends (if (contains? to nfa-out)
-                                     (conj ends nxt)
-                                     ends)
-                              dfa (assoc! dfa cur
-                                          (assoc (or (nth dfa cur) [-1 -1]) li nxt))]
-                          [states idx dfa ends q]))
-                      [states idx dfa ends q] [0 1])]
-          (recur states idx dfa ends q (inc qi)))))))
+      (if (= qi (count states))
+        (let [all (persistent! states)
+              nd (count all)]
+          {:start 0
+           :ends (loop [d 0 ends #{}]
+                   (if (= d nd)
+                     ends
+                     (recur (inc d) (if (has-state? (nth all d) nfa-out) (conj ends d) ends))))
+           :dfa (persistent! rows)})
+        (let [cur (nth states qi)
+              ta (step-closure adj n cur 1)
+              ia (get idx ta)
+              states (if ia states (conj! states ta))
+              ia (or ia (dec (count states)))
+              idx (if (= ia (dec (count states))) (assoc! idx ta ia) idx)
+              tb (step-closure adj n cur 2)
+              ib (get idx tb)
+              states (if ib states (conj! states tb))
+              ib (or ib (dec (count states)))
+              idx (if (= ib (dec (count states))) (assoc! idx tb ib) idx)]
+          (recur states idx (conj! rows [ia ib]) (inc qi)))))))
 
 (defn- minimize-dfa
   "Minimizes the 2-symbol DFA (start=0, ends set, dfa vector of [a-next b-next])
@@ -334,35 +368,66 @@
               mp (if (> p 0) (mmult mp mp n) mp)]
           (recur rv mp p))))))
 
+(def ^:private dp-max
+  "Lengths up to this count paths by stepping the DFA directly
+  (l steps over 2 edges per state), cheaper than the matrix power
+  and its minimization at these sizes."
+  256)
+
+(defn- count-dp
+  "Strings of length l (0 to dp-max) accepted by the DFA: path
+  counts from state 0 stepped l times, summed over ends."
+  [dfa ends l]
+  (let [n (count dfa)]
+    (loop [k 0 c (assoc (vec (repeat n 0)) 0 1)]
+      (if (= k l)
+        (rem (reduce (fn [acc e] (+ acc (nth c e))) 0 ends) MOD)
+        (recur (inc k)
+               (persistent!
+                (loop [u 0 nc (transient (vec (repeat n 0)))]
+                  (if (= u n)
+                    nc
+                    (let [cu (nth c u)]
+                      (if (zero? cu)
+                        (recur (inc u) nc)
+                        (let [row (nth dfa u)
+                              a (nth row 0)
+                              b (nth row 1)]
+                          (assoc! nc a (rem (+ (nth nc a) cu) MOD))
+                          (assoc! nc b (rem (+ (nth nc b) cu) MOD))
+                          (recur (inc u) nc))))))))))))
+
 (defn- count-strings
   [r l]
   (let [[adj nfa-in nfa-out] (build-nfa (parse-regex r))
-        {:keys [dfa ends]} (nfa-to-dfa adj nfa-in nfa-out)
-        {:keys [dfa ends alive]} (minimize-dfa dfa ends)]
-    (if (not (contains? alive 0))
-      0
-      (let [alive-vec (vec (sort alive))
-            n (count alive-vec)
-            remap (into {} (map-indexed (fn [idx old-c] [old-c idx]) alive-vec))
-            m (persistent!
-                (reduce (fn [m idx]
-                          (let [old-c (nth alive-vec idx)
-                                row (nth dfa old-c)]
-                            (reduce (fn [m nxt-c]
-                                      (if-let [nxt-idx (get remap nxt-c)]
-                                        (let [cell (+ (* idx n) nxt-idx)]
-                                          (assoc! m cell (inc (nth m cell))))
-                                        m))
-                                    m row)))
-                        (transient (vec (repeat (* n n) 0)))
-                        (range n)))
-            row0 (mexp-row0 m l n)]
-        (rem (reduce (fn [acc old-e]
-                       (if-let [e-idx (get remap old-e)]
-                         (+ acc (nth row0 e-idx))
-                         acc))
-                     0 ends)
-             MOD)))))
+        {:keys [dfa ends]} (nfa-to-dfa adj nfa-in nfa-out)]
+    (if (<= 0 l dp-max)
+      (count-dp dfa ends l)
+      (let [{:keys [dfa ends alive]} (minimize-dfa dfa ends)]
+        (if (not (contains? alive 0))
+          0
+          (let [alive-vec (vec (sort alive))
+                n (count alive-vec)
+                remap (into {} (map-indexed (fn [idx old-c] [old-c idx]) alive-vec))
+                m (persistent!
+                    (reduce (fn [m idx]
+                              (let [old-c (nth alive-vec idx)
+                                    row (nth dfa old-c)]
+                                (reduce (fn [m nxt-c]
+                                          (if-let [nxt-idx (get remap nxt-c)]
+                                            (let [cell (+ (* idx n) nxt-idx)]
+                                              (assoc! m cell (inc (nth m cell))))
+                                            m))
+                                        m row)))
+                            (transient (vec (repeat (* n n) 0)))
+                            (range n)))
+                row0 (mexp-row0 m l n)]
+            (rem (reduce (fn [acc old-e]
+                           (if-let [e-idx (get remap old-e)]
+                             (+ acc (nth row0 e-idx))
+                             acc))
+                         0 ends)
+                 MOD)))))))
 
 (defn -main
   [data]
