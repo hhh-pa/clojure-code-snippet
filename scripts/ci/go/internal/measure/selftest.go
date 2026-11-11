@@ -429,7 +429,7 @@ func checkAOT(check func(string, bool, string)) {
 	ok := err == nil && tr.NS == "snip_t_prob_solution" &&
 		strings.Contains(tr.Source, "(defn script-main [input]") &&
 		strings.Contains(tr.Source, "(script-main (slurp *in*))") &&
-		strings.Contains(tr.Source, "(defn -main [& _args]\n  (-aot-run))")
+		strings.Contains(tr.Source, "(defn -main [& _args]\n  (try (-aot-run) (finally (flush))))")
 	check("aot-transform-inline", ok, fmt.Sprintf("%v %+v", err, tr))
 	forms, err := cljread.Split("(def a \"x)y\") ;; c\n[1 2]\n'quoted\n")
 	check("cljread-split-inline", err == nil && len(forms) == 3 &&

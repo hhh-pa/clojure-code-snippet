@@ -85,8 +85,15 @@ allocated bytes are comparable within one JDK build only
 malloc-request totals — ratio-meaningful against the JVM number
 per benchmark, not bit-comparable absolutes. `--aot` measures the
 AOT-compiled classes instead of `clojure.main` interpretation
-(gen-class transform, cached per source hash under
-`.ci/aot-cache/`); `--callgrind` adds the one-shot deterministic
+(gen-class transform whose `-main` flushes `*out*` like
+`clojure.main`, cached per label/stem/source hash under
+`.ci/aot-cache/`). `--build-template '<compiler> {script} -o {out}'`
+measures a native AOT compiler the same way: each script is built
+once, before its first measured run, into a cache keyed by the
+compiler's bytes, the template, and the script
+(`.ci/native-aot-cache/`, or `--build-cache`), and the binary is
+the measured command; a failed build fails the script's cases.
+Compile time never reaches a metric in either mode. `--callgrind` adds the one-shot deterministic
 instrumentation (~21s per case all-in on CI hardware), and
 `--pin` adds one inscount run per case. Both are opt-in: the
 sweep runs timed-only unless a manual dispatch sets the
@@ -110,13 +117,14 @@ one timed run per case — cpu/wall time, peak RSS, perf
 counters). The sweep doubles as the correctness gate: each timed
 leg diff-gates stdout exactly like `snip test` (same command,
 same normalization, same 300s timeout, missing resources fail),
-so every algorithm must pass for both runtimes; the small `test`
+so every algorithm must pass under all four runtimes (`jvm`,
+`jvm-aot`, `clojure-rs`, `clojure-rs-aot`); the small `test`
 job keeps only the focused SSA DF regression test.
-Pushes and PRs run the single-run mode: this tree only, both
+Pushes and PRs run the single-run mode: this tree only, all four
 runtimes sequentially on the same runner per shard. A manual
 dispatch may instead tick `compare` for comparison mode: each
 shard job then measures a from-tree and a to-tree (open PR
-base/head, else previous commit vs dispatched HEAD) for both
+base/head, else previous commit vs dispatched HEAD) for all four
 runtimes, and the
 fan-in `report-instrumentation` job merges each side per runtime
 (`snip measure --merge`) and matches them case by case (`snip
@@ -126,9 +134,7 @@ plus added/removed cases in the summary, full data in
 `sweep-compare-*.json`). A step verifies the runtime legs of
 each measured tree ran exactly the same cases. Dispatches may
 also add instrumentation via the `instrument` input (`none`,
-`callgrind`, `pin`, or `both`) in either mode. A non-blocking
-`perf-pilot` job keeps one `--aot` measurement per push as a
-stdout-gate canary. Nothing reports to Bencher: repeat-1 timing
+`callgrind`, `pin`, or `both`) in either mode. Nothing reports to Bencher: repeat-1 timing
 is not a threshold signal, so the stats live in the
 `sweep-results-*.json` artifacts and the summary tables. Clojure
 jars, apt packages, and the cargo build are cached between runs
@@ -138,15 +144,20 @@ dispatches, via their own cache).
 ## Comparing compilers
 
 Benchmark names stay identical across compilers (`jvm` for JVM
-Clojure, `clojure-rs` for the Rust port), and both legs of a
-shard run on the same runner, so the runtime legs stay directly
-comparable within each measured tree. A comparison dispatch adds
+Clojure via `clojure.main`, `jvm-aot` for its AOT-compiled
+classes, `clojure-rs` for the Rust port's `run`, `clojure-rs-aot`
+for its `build` binaries), and every leg of a shard runs on the
+same runner, so the runtime legs stay directly comparable within
+each measured tree. A comparison dispatch adds
 a from/to comparison per runtime, so version regressions show
-per runtime in the merged comparison tables. The native leg
-always builds clojure-rs master HEAD (resolved once per run so
-all 8 shard jobs share one revision; interpreter-only
-`cargo build --release --locked --no-default-features` — `run`
-needs no LLVM), since the sweep diff-gates every case; a manual
+per runtime in the merged comparison tables. The native legs
+always build clojure-rs master HEAD (resolved once per run so
+all 8 shard jobs share one revision): an interpreter-only
+`cargo build --release --locked --no-default-features` binary
+for `run`, plus an `aot`-feature binary with the `libcljrt.a`
+runtime archive beside it for `build` (LLVM 22 via the clojure-rs
+repo's own `setup-llvm` action; both cached per revision), since
+the sweep diff-gates every case; a manual
 dispatch may pin `clojure_rs_sha` to bisect or repro, and may
 add `instrument: callgrind`/`pin` for deterministic counts. To
 add a compiler:
@@ -157,7 +168,9 @@ add a compiler:
    `report-instrumentation` matrix entry) with whatever build
    steps it needs.
 2. Point `snip measure` at its invocation via `--runtime <label>
-   --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes);
+   --command-template '...'` (`{cp}`, `{script}`, `{stem}` holes),
+   or at its compile step via `--build-template '...'` (`{script}`,
+   `{stem}`, `{out}` holes) for an ahead-of-time compiler;
    the same GNU `time` + `perf` harness measures every runtime,
    and non-`java` commands automatically take the native
    callgrind recipe (plain callgrind + `LD_PRELOAD` counting) on

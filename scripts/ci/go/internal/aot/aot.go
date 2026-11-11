@@ -116,7 +116,9 @@ func Transform(scriptPath, label, stem string) (*TransformResult, error) {
 		sb.WriteString(strings.ReplaceAll(form, "\n", "\n  "))
 		sb.WriteString("\n")
 	}
-	sb.WriteString(")\n\n(defn -main [& _args]\n  (-aot-run))\n")
+	// clojure.main flushes *out* after a script; a bare gen-class
+	// entry point would drop a trailing print without newline.
+	sb.WriteString(")\n\n(defn -main [& _args]\n  (try (-aot-run) (finally (flush))))\n")
 	return &TransformResult{NS: ns, Source: sb.String(), Class: Munge(ns)}, nil
 }
 
@@ -380,12 +382,18 @@ func Compile(root, cacheDir, classpath, javaVersion, label, stem, scriptPath str
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256(raw)
-	key := hex.EncodeToString(sum[:])
+	// The key covers the generated namespace too: identical scripts
+	// under different labels/stems (a problem dir's solution.clj
+	// next to its named twin) compile to different classes and must
+	// never share, or race on, one slot.
+	h := sha256.New()
+	h.Write([]byte(label + "\x00" + stem + "\x00"))
+	h.Write(raw)
+	key := hex.EncodeToString(h.Sum(nil))
 	slot := filepath.Join(cacheDir, key)
 	classes := filepath.Join(slot, "classes")
 	marker := filepath.Join(slot, "ok")
-	wantMarker := "v1\n" + javaVersion + "\n" + classpath + "\n"
+	wantMarker := "v2\n" + javaVersion + "\n" + classpath + "\n"
 	if got, err := os.ReadFile(marker); err == nil && string(got) == wantMarker {
 		tr, err := Transform(scriptPath, label, stem)
 		if err != nil {

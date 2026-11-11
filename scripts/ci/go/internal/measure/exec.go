@@ -20,7 +20,12 @@ import (
 // (plus {{/}} escapes). Unknown holes and malformed templates are
 // errors shaped like the Python KeyError/ValueError texts.
 func ExpandTemplate(template, cp, script, stem string) (string, error) {
-	holes := map[string]string{"cp": cp, "script": script, "stem": stem}
+	return expandHoles(template, map[string]string{"cp": cp, "script": script, "stem": stem})
+}
+
+// expandHoles is ExpandTemplate over an arbitrary hole set (the
+// native build template adds {out}).
+func expandHoles(template string, holes map[string]string) (string, error) {
 	var sb strings.Builder
 	i := 0
 	for i < len(template) {
@@ -684,10 +689,20 @@ type CaseOpts struct {
 	Timeout         int
 	Root            string
 	AOT             *AOTCache // nil for script mode
+	// Native builds the script with a native AOT compiler and runs
+	// the binary (nil unless --build-template).
+	Native *NativeBuildCache
 }
 
 // innerCommand resolves the snippet argv for script or AOT mode.
 func (o CaseOpts) innerCommand() ([]string, error) {
+	if o.Native != nil {
+		bin, err := o.Native.Get(o.Label, o.Stem, o.Script)
+		if err != nil {
+			return nil, err
+		}
+		return []string{bin}, nil
+	}
 	if o.AOT != nil {
 		built, err := o.AOT.Get(o.Label, o.Stem, o.Script)
 		if err != nil {
@@ -719,7 +734,7 @@ func MeasureCase(o CaseOpts) CaseResult {
 	inner, err := o.innerCommand()
 	if err != nil {
 		msg := fmt.Sprintf("%s/%s: aot: %v", o.Label, o.Case, err)
-		if o.AOT == nil {
+		if o.AOT == nil && o.Native == nil {
 			msg = fmt.Sprintf("%s/%s: %v", o.Label, o.Case, err)
 		}
 		res.Error = &msg

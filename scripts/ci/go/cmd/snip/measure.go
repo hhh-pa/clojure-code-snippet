@@ -43,8 +43,18 @@ Usage: snip measure [--resources DIR] [--repeat N] [--jobs N] [--timeout S]
                    [--alloc-repeat N | --no-alloc] [--slope]
                    [--callgrind] [--callgrind-repeat N] [--aot]
                    [--aot-cache DIR]
+                   [--build-template T] [--build-cache DIR]
                    [--pin] [--pin-bin BIN] [--pin-tool SO] [--pin-repeat N]
                    [--pin-timeout S]
+
+--build-template measures a native AOT compiler: each script is built
+once (before any measured run) with T, whose {script} {stem} {out}
+holes name the source, its stem, and the binary to write (e.g.
+'clojure-rs build {script} -o {out}'), into a cache keyed by the
+compiler's bytes, T, and the script (--build-cache, default
+.ci/native-aot-cache); the binary itself is the measured command.
+A failed build fails the script's cases. Excludes --aot and
+--command-template; allocation runs are skipped (no JVM).
 
 --script-extension selects the measured scripts (default ".clj");
 the head-to-head gate measures the python twin repo with ".py"
@@ -60,6 +70,7 @@ func runMeasure(argv []string) int {
 	root := snipcore.RepoRoot()
 	resources := filepath.Join(root, "tests", "resources")
 	var cp, only, output, bmfOutput, summaryFile, timeBin, shard, aotCache, pinBin, pinTool string
+	var buildTemplate, buildCache string
 	scriptExt := ".clj"
 	runtimeName := "jvm"
 	template := measure.DefaultCommandTemplate
@@ -89,6 +100,7 @@ func runMeasure(argv []string) int {
 			"shard": &shard, "aot-cache": &aotCache,
 			"pin-bin": &pinBin, "pin-tool": &pinTool,
 			"script-extension": &scriptExt,
+			"build-template":   &buildTemplate, "build-cache": &buildCache,
 		},
 		Ints: map[string]*int{
 			"jobs": &jobs, "timeout": &timeout, "repeat": &repeat,
@@ -165,6 +177,10 @@ func runMeasure(argv []string) int {
 		fmt.Fprintln(os.Stderr, "snip measure: cannot combine --aot with --command-template")
 		return 2
 	}
+	if buildTemplate != "" && (aotFlag || template != measure.DefaultCommandTemplate) {
+		fmt.Fprintln(os.Stderr, "snip measure: --build-template runs the built binary; drop --aot/--command-template")
+		return 2
+	}
 
 	timeBinPath, err := measure.ResolveTimeBin(timeBin)
 	if err != nil {
@@ -193,7 +209,7 @@ func runMeasure(argv []string) int {
 	}
 	classpath, err := snipcore.ResolveClasspath(root, cp)
 	if err != nil {
-		if !snipcore.TemplateNeedsClasspath(template) {
+		if !snipcore.TemplateNeedsClasspath(template) || buildTemplate != "" {
 			fmt.Fprintln(os.Stderr, "warning: no Clojure classpath; continuing without one (template has no {cp} hole)")
 			classpath = ""
 		} else {
@@ -245,6 +261,10 @@ func runMeasure(argv []string) int {
 	if alloc {
 		effectiveAlloc = allocRepeat
 	}
+	if effectiveAlloc > 0 && buildTemplate != "" {
+		fmt.Fprintln(os.Stderr, "warning: allocation measurement needs a JVM; skipping for the native build (BMF will omit allocated_bytes)")
+		effectiveAlloc = 0
+	}
 	if effectiveAlloc > 0 && len(tasks) > 0 && !aotFlag {
 		t0 := tasks[0]
 		if !measure.AllocSupported(template, classpath, t0.script, t0.stem) {
@@ -279,6 +299,24 @@ func runMeasure(argv []string) int {
 		}
 	}
 
+	var nativeCache *measure.NativeBuildCache
+	compilerPath := ""
+	if buildTemplate != "" {
+		path, fingerprint, err := measure.NativeFingerprint(buildTemplate)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "snip measure:", err)
+			return 1
+		}
+		compilerPath = path
+		if buildCache == "" {
+			buildCache = filepath.Join(root, ".ci", "native-aot-cache")
+		}
+		nativeCache = &measure.NativeBuildCache{
+			Template: buildTemplate, CacheDir: buildCache,
+			Fingerprint: fingerprint, Timeout: timeout,
+		}
+	}
+
 	results := make([]measure.CaseResult, len(tasks))
 	work := make(chan int)
 	total := len(tasks)
@@ -300,6 +338,7 @@ func runMeasure(argv []string) int {
 					PinBin: pinBin, PinTool: pinTool, PinRepeat: effectivePin,
 					PinTimeout: pinTimeout,
 					Timeout:    timeout, Root: root, AOT: aotCacheObj,
+					Native: nativeCache,
 				})
 				n := done.Add(1)
 				printMu.Lock()
@@ -362,6 +401,7 @@ func runMeasure(argv []string) int {
 				PinBin: pinBin, PinTool: pinTool, PinRepeat: 0,
 				PinTimeout: pinTimeout,
 				Timeout:    req.Timeout, Root: root, AOT: aotCacheObj,
+				Native: nativeCache,
 			})
 			out := slope.ScaleOutcome{Ok: res.Ok}
 			if !res.Ok {
@@ -395,7 +435,9 @@ func runMeasure(argv []string) int {
 
 	javaLeg := aotFlag
 	nativeBin := ""
-	if !aotFlag && len(tasks) > 0 {
+	if nativeCache != nil {
+		nativeBin = compilerPath
+	} else if !aotFlag && len(tasks) > 0 {
 		t0 := tasks[0]
 		if inner, err := measure.BuildInnerCommand(template, classpath, t0.script, t0.stem); err == nil && len(inner) > 0 {
 			if measure.InnerIsJava(inner) {
@@ -430,7 +472,7 @@ func runMeasure(argv []string) int {
 			Shard: strOrNil(shard), AllocRepeat: &effectiveAlloc,
 			Slope: slopeFlag, SlopeRepeat: slopeRepeat,
 			CallgrindRepeat: effectiveCg, PinRepeat: effectivePin, PinTimeout: pinTimeout,
-			Aot: aotFlag,
+			Aot: aotFlag, BuildTemplate: strOrNil(buildTemplate),
 		},
 		Results: results, Failures: failures, Missing: missing,
 		Complexity: complexity,
