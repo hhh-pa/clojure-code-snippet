@@ -38,9 +38,10 @@ concurrency:
 # passphrase, set the organization secret to the same value, and
 # rebuild the sibling bundles too (see `snip bundle --help`).
 
-# The perf-instrumentation native leg always builds clojure-rs master HEAD
-# (interpreter-only build; `run` needs no LLVM), resolved once per
-# run by the resolve-rs job below. A bad upstream commit fails
+# The perf-instrumentation native legs always build clojure-rs master HEAD
+# (an interpreter-only build for `run`, plus an `aot`-feature build
+# with LLVM 22 and the clj-rt runtime archive for `build`, issue #66),
+# resolved once per run by the resolve-rs job below. A bad upstream commit fails
 # loudly (the sweep diff-gates every case); to bisect or repro,
 # dispatch manually with `clojure_rs_sha`.
 
@@ -158,9 +159,9 @@ jobs:
       # Let every shard finish so partial artifacts upload for diagnosis.
       fail-fast: false
       matrix:
-        # Shard index only: both runtime legs (jvm, clojure-rs)
-        # run inside each shard job on the same runner (see the
-        # measure step). Benchmark names stay identical across
+        # Shard index only: all four runtime legs (jvm, jvm-aot,
+        # clojure-rs, clojure-rs-aot) run inside each shard job on
+        # the same runner (see the measure step). Benchmark names stay identical across
         # runtimes. Keep the leg list in sync with the
         # report-instrumentation job's runtime matrix below.
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
@@ -215,12 +216,16 @@ jobs:
       # loudly. The built binary is
       # cached by resolved SHA: repeat runs on the same upstream
       # revision skip checkout + toolchain + build on all 8 shard jobs.
+      # Both binaries (interpreter-only for `run`, `aot` + runtime
+      # archive for `build`) share one cache entry per revision.
       - name: Restore cached clojure-rs binary
         id: cljrs-bin-cache
         uses: actions/cache@v5
         with:
-          path: cljrs-bin
-          key: cljrs-bin-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
+          path: |
+            cljrs-bin
+            cljrs-aot
+          key: cljrs-bin-aot-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
 
       - name: Install Rust toolchain
         if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
@@ -240,14 +245,27 @@ jobs:
         with:
           workspaces: clojure-rs/rust
 
+      # LLVM 22 for the `aot` build: the clojure-rs repo's own pinned
+      # setup action (from the checkout above), so the snippet sweep
+      # and clojure-rs CI cannot drift.
+      - name: Set up LLVM for clojure-rs build
+        if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
+        uses: ./clojure-rs/.github/actions/setup-llvm
+
       - name: Build clojure-rs
         if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
         run: |
           cd clojure-rs/rust
-          cargo build --release --locked --no-default-features
-          mkdir -p "$GITHUB_WORKSPACE/cljrs-bin"
+          # `run` leg: the interpreter-only binary (unchanged series).
+          cargo build --release --locked --no-default-features -p clojure-rs
+          mkdir -p "$GITHUB_WORKSPACE/cljrs-bin" "$GITHUB_WORKSPACE/cljrs-aot"
           cp target/release/clojure-rs "$GITHUB_WORKSPACE/cljrs-bin/"
+          # `build` leg: the LLVM backend plus the runtime archive it
+          # links every binary against (found next to the compiler).
+          cargo build --release --locked -p clojure-rs -p clj-rt
+          cp target/release/clojure-rs target/release/libcljrt.a "$GITHUB_WORKSPACE/cljrs-aot/"
           echo "${{ needs.resolve-rs.outputs.sha }}" > "$GITHUB_WORKSPACE/cljrs-bin/.rev"
+          echo "${{ needs.resolve-rs.outputs.sha }}" > "$GITHUB_WORKSPACE/cljrs-aot/.rev"
 
       # Runs on hit AND miss (the build step above only runs on miss):
       # the .rev marker proves the cached binary was built from the
@@ -256,6 +274,18 @@ jobs:
       - name: Use clojure-rs binary
         run: |
           test "$(cat cljrs-bin/.rev)" = "${{ needs.resolve-rs.outputs.sha }}"
+          test "$(cat cljrs-aot/.rev)" = "${{ needs.resolve-rs.outputs.sha }}"
+          test -x cljrs-aot/clojure-rs && test -f cljrs-aot/libcljrt.a
+          # Cache hits skip setup-llvm, so the aot compiler must not
+          # need LLVM shared libraries at runtime; prove it, and that
+          # `build` links a runnable binary, on hit and miss alike.
+          if ldd cljrs-aot/clojure-rs | grep -i 'libLLVM'; then
+            echo "error: cljrs-aot/clojure-rs links LLVM dynamically" >&2
+            exit 1
+          fi
+          printf '(defn sq [x] (* x x))\n(println (map sq [1 2 3]))\n' > "$RUNNER_TEMP/aot-smoke.clj"
+          cljrs-aot/clojure-rs build "$RUNNER_TEMP/aot-smoke.clj" -o "$RUNNER_TEMP/aot-smoke"
+          test "$("$RUNNER_TEMP/aot-smoke")" = "(1 4 9)"
           echo "$GITHUB_WORKSPACE/cljrs-bin" >> "$GITHUB_PATH"
 
       - name: Decrypt and extract resources
@@ -370,10 +400,14 @@ jobs:
         # Lean recipe per leg: one timed run per case (stdout gate
         # plus cpu/wall time, peak RSS, perf counters). No --alloc,
         # no --slope (slope fits timed runs).
-        # Both legs run here on this same runner, sequentially:
-        # same hardware, same checkout, same resources — so the JVM
-        # vs clojure-rs numbers are apples-to-apples per shard.
-        # The next step proves both legs measured exactly the same
+        # All four legs run here on this same runner, sequentially:
+        # same hardware, same checkout, same resources — so the
+        # JVM, JVM-AOT, clojure-rs, and clojure-rs-AOT numbers are
+        # apples-to-apples per shard. AOT legs compile each script
+        # once before its first measured run (JVM: gen-class into
+        # .ci/aot-cache; clojure-rs: `build` into
+        # .ci/native-aot-cache), so compile time is never measured.
+        # The next step proves every leg measured exactly the same
         # (label, stem, case) set.
         # Instrumentation is opt-in per dispatch (`instrument`
         # input: callgrind and/or Pin add their phases per case;
@@ -396,15 +430,24 @@ jobs:
             --output sweep-results-jvm.json --bmf-output sweep-bmf-jvm.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
           "$GITHUB_WORKSPACE/snip-bin/snip" measure "${common[@]}" \
+            --runtime jvm-aot --aot \
+            --output sweep-results-jvm-aot.json --bmf-output sweep-bmf-jvm-aot.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure "${common[@]}" \
             --runtime clojure-rs --command-template 'clojure-rs run {script}' \
             --output sweep-results-clojure-rs.json --bmf-output sweep-bmf-clojure-rs.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+          "$GITHUB_WORKSPACE/snip-bin/snip" measure "${common[@]}" \
+            --runtime clojure-rs-aot \
+            --build-template "$GITHUB_WORKSPACE/cljrs-aot/clojure-rs build {script} -o {out}" \
+            --output sweep-results-clojure-rs-aot.json --bmf-output sweep-bmf-clojure-rs-aot.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Measure sweep (comparison)
         if: github.event_name == 'workflow_dispatch' && inputs.compare
-        # Four legs on this same runner: to-tree (workspace
-        # checkout) and from-tree (worktree above) crossed with
-        # both runtimes. One harness build measures both trees,
+        # Eight legs on this same runner: to-tree (workspace
+        # checkout) and from-tree (worktree above) crossed with all
+        # four runtimes. One harness build measures both trees,
         # with the same resources, jars, and clojure-rs binary —
         # only the snippets differ. Timed-only unless the dispatch
         # also sets `instrument` (same flags as the single run).
@@ -414,6 +457,7 @@ jobs:
           RES="$GITHUB_WORKSPACE/tests/resources"
           CP=$(ls "$GITHUB_WORKSPACE/.ci/jars/"*.jar | sort | tr '\n' ':' | sed 's/:$//')
           SHARD="${{ matrix.shard }}/8"
+          RSAOT="$GITHUB_WORKSPACE/cljrs-aot/clojure-rs build {script} -o {out}"
           extra=()
           if [ "${{ inputs.instrument }}" = "callgrind" ] || [ "${{ inputs.instrument }}" = "both" ]; then
             extra+=(--callgrind --callgrind-repeat 1)
@@ -432,8 +476,20 @@ jobs:
           "$SNIP" measure --resources tests/resources \
             --repeat 1 --no-alloc --jobs 2 --timeout 300 \
             --shard "$SHARD" "${extra[@]}" \
+            --runtime jvm-aot --aot \
+            --output sweep-results-to-jvm-aot.json --bmf-output sweep-bmf-to-jvm-aot.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+          "$SNIP" measure --resources tests/resources \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
+            --shard "$SHARD" "${extra[@]}" \
             --runtime clojure-rs --command-template 'clojure-rs run {script}' \
             --output sweep-results-to-clojure-rs.json --bmf-output sweep-bmf-to-clojure-rs.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+          "$SNIP" measure --resources tests/resources \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
+            --shard "$SHARD" "${extra[@]}" \
+            --runtime clojure-rs-aot --build-template "$RSAOT" \
+            --output sweep-results-to-clojure-rs-aot.json --bmf-output sweep-bmf-to-clojure-rs-aot.json \
             --summary-file "$GITHUB_STEP_SUMMARY"
           (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" --cp "$CP" \
             --repeat 1 --no-alloc --jobs 2 --timeout 300 \
@@ -444,8 +500,20 @@ jobs:
           (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" --cp "$CP" \
             --repeat 1 --no-alloc --jobs 2 --timeout 300 \
             --shard "$SHARD" "${extra[@]}" \
+            --runtime jvm-aot --aot \
+            --output "$OUT/sweep-results-from-jvm-aot.json" --bmf-output "$OUT/sweep-bmf-from-jvm-aot.json" \
+            --summary-file "$GITHUB_STEP_SUMMARY")
+          (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" --cp "$CP" \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
+            --shard "$SHARD" "${extra[@]}" \
             --runtime clojure-rs --command-template 'clojure-rs run {script}' \
             --output "$OUT/sweep-results-from-clojure-rs.json" --bmf-output "$OUT/sweep-bmf-from-clojure-rs.json" \
+            --summary-file "$GITHUB_STEP_SUMMARY")
+          (cd /tmp/sweep-from && "$SNIP" measure --resources "$RES" \
+            --repeat 1 --no-alloc --jobs 2 --timeout 300 \
+            --shard "$SHARD" "${extra[@]}" \
+            --runtime clojure-rs-aot --build-template "$RSAOT" \
+            --output "$OUT/sweep-results-from-clojure-rs-aot.json" --bmf-output "$OUT/sweep-bmf-from-clojure-rs-aot.json" \
             --summary-file "$GITHUB_STEP_SUMMARY")
 
       # Within one tree, shard membership must be
@@ -458,9 +526,14 @@ jobs:
       - name: Verify legs measured the same shard
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.compare }}" = "true" ]; then
-            pairs="from-jvm:from-clojure-rs to-jvm:to-clojure-rs"
+            pairs=""
+            for side in from to; do
+              for leg in jvm-aot clojure-rs clojure-rs-aot; do
+                pairs="$pairs $side-jvm:$side-$leg"
+              done
+            done
           else
-            pairs="jvm:clojure-rs"
+            pairs="jvm:jvm-aot jvm:clojure-rs jvm:clojure-rs-aot"
           fi
           for pair in $pairs; do
             a="${pair%%:*}"; b="${pair##*:}"
@@ -496,6 +569,24 @@ jobs:
           path: |
             sweep-results-clojure-rs.json
             sweep-bmf-clojure-rs.json
+
+      - name: Upload sweep results (jvm-aot)
+        if: always() && (github.event_name != 'workflow_dispatch' || !inputs.compare)
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-jvm-aot-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-jvm-aot.json
+            sweep-bmf-jvm-aot.json
+
+      - name: Upload sweep results (clojure-rs-aot)
+        if: always() && (github.event_name != 'workflow_dispatch' || !inputs.compare)
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-clojure-rs-aot-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-clojure-rs-aot.json
+            sweep-bmf-clojure-rs-aot.json
 
       - name: Upload sweep results (from-jvm)
         if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
@@ -537,84 +628,45 @@ jobs:
             sweep-bmf-to-clojure-rs.json
             sweep-refs.json
 
-  # AOT pilot: one benchmark per push as a cheap AOT stdout-gate
-  # canary (the callgrind half moved to the full-matrix sweep
-  # above). continue-on-error: an AOT/JDK toolchain skew on the
-  # hosted runner must never fail the push; pilot evidence lands
-  # in the uploaded artifacts either way.
-  perf-pilot:
-    needs: test
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/profile-runner
-        with:
-          cache-key: runner-profile-${{ runner.os }}-${{ hashFiles('.github/actions/profile-runner/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/runner-profile/**', 'scripts/ci/go/internal/executil/**') }}
-      - uses: ./.github/actions/snip-tools
-        with:
-          cache-key: snip-${{ runner.os }}-${{ hashFiles('.github/actions/snip-tools/**', 'scripts/ci/go/go.mod', 'scripts/ci/go/cmd/snip/**', 'scripts/ci/go/internal/snipcore/**', 'scripts/ci/go/internal/mtrand/**', 'scripts/ci/go/internal/pyjson/**', 'scripts/ci/go/internal/cljread/**', 'scripts/ci/go/internal/aot/**', 'scripts/ci/go/internal/generators/**', 'scripts/ci/go/internal/slope/**', 'scripts/ci/go/internal/measure/**', 'scripts/ci/go/internal/bundle/**') }}
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '21.0.13'
-
-      - name: Cache Clojure jars
-        id: jars-cache
-        uses: actions/cache@v5
-        with:
-          path: .ci/jars
-          key: clojure-jars-1.12.0-spec0.5.238-core0.4.74-v1
-
-      - name: Download Clojure jars
-        if: steps.jars-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p .ci/jars
-          base=https://repo1.maven.org/maven2
-          curl -fsSL -o .ci/jars/clojure.jar "$base/org/clojure/clojure/1.12.0/clojure-1.12.0.jar"
-          curl -fsSL -o .ci/jars/spec.alpha.jar "$base/org/clojure/spec.alpha/0.5.238/spec.alpha-0.5.238.jar"
-          curl -fsSL -o .ci/jars/core.specs.alpha.jar "$base/org/clojure/core.specs.alpha/0.4.74/core.specs.alpha-0.4.74.jar"
-
-      - name: Decrypt and extract resources
-        env:
-          RESOURCES_PASSPHRASE: ${{ secrets.RESOURCES_PASSPHRASE }}
-        run: |
-          if [ -z "$RESOURCES_PASSPHRASE" ]; then
-            echo "error: RESOURCES_PASSPHRASE secret is not configured" >&2
-            exit 1
-          fi
-          mkdir -p tests/resources
-          gpg --batch --yes --pinentry-mode loopback \
-            --passphrase "$RESOURCES_PASSPHRASE" \
-            -d tests/resources.tar.xz.asc | tar -xJ -C tests/resources --strip-components=1
-
-      - name: Install measurement tools
-        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
-        with:
-          packages: time linux-tools-common linux-tools-generic valgrind
-          version: 1.1
-
-      - name: Measure AOT pilot
-        run: |
-          "$GITHUB_WORKSPACE/snip-bin/snip" measure --resources tests/resources \
-            --only sort/bubble_sort --aot \
-            --repeat 1 --alloc-repeat 1 --jobs 1 --timeout 300 \
-            --runtime jvm \
-            --output pilot-aot.json --bmf-output pilot-aot-bmf.json \
-            --summary-file "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload pilot results
-        if: always()
+      - name: Upload sweep results (from-jvm-aot)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
         uses: actions/upload-artifact@v7
         with:
-          name: perf-pilot-jvm
+          name: sweep-results-from-jvm-aot-shard-${{ matrix.shard }}
           path: |
-            pilot-aot.json
-            pilot-aot-bmf.json
+            sweep-results-from-jvm-aot.json
+            sweep-bmf-from-jvm-aot.json
+            sweep-refs.json
+
+      - name: Upload sweep results (from-clojure-rs-aot)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-from-clojure-rs-aot-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-from-clojure-rs-aot.json
+            sweep-bmf-from-clojure-rs-aot.json
+            sweep-refs.json
+
+      - name: Upload sweep results (to-jvm-aot)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-to-jvm-aot-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-to-jvm-aot.json
+            sweep-bmf-to-jvm-aot.json
+            sweep-refs.json
+
+      - name: Upload sweep results (to-clojure-rs-aot)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.compare
+        uses: actions/upload-artifact@v7
+        with:
+          name: sweep-results-to-clojure-rs-aot-shard-${{ matrix.shard }}
+          path: |
+            sweep-results-to-clojure-rs-aot.json
+            sweep-bmf-to-clojure-rs-aot.json
+            sweep-refs.json
 
   report-instrumentation:
     needs: perf-instrumentation
@@ -627,7 +679,7 @@ jobs:
     # in the perf-instrumentation measure step above.
     strategy:
       matrix:
-        runtime: [jvm, clojure-rs]
+        runtime: [jvm, jvm-aot, clojure-rs, clojure-rs-aot]
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/profile-runner

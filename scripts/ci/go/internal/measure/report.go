@@ -54,6 +54,10 @@ type Config struct {
 	PinRepeat       int     `json:"pin_repeat"`
 	PinTimeout      int     `json:"pin_timeout"`
 	Aot             bool    `json:"aot"`
+	// BuildTemplate is the native AOT compile command (issue #66;
+	// absent for script and JVM-AOT legs, so older reports and
+	// byte-parity fixtures are unchanged).
+	BuildTemplate *string `json:"build_template,omitempty"`
 }
 
 // Report is the full perf-report JSON document.

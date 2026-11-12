@@ -37,7 +37,7 @@ func TestTransformBubbleSort(t *testing.T) {
 		"(defn script-main",
 		"(script-main (slurp *in*))",
 		"(defn -aot-run []",
-		"(defn -main [& _args]\n  (-aot-run))",
+		"(defn -main [& _args]\n  (try (-aot-run) (finally (flush))))",
 	} {
 		if !strings.Contains(tr.Source, want) {
 			t.Fatalf("source lacks %q", want)
