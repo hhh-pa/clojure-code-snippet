@@ -225,7 +225,7 @@ jobs:
           path: |
             cljrs-bin
             cljrs-aot
-          key: cljrs-bin-aot-v2-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
+          key: cljrs-bin-aot-v3-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
 
       - name: Install Rust toolchain
         if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
@@ -262,7 +262,10 @@ jobs:
           cp target/release/clojure-rs "$GITHUB_WORKSPACE/cljrs-bin/"
           # `build` leg: the LLVM backend plus the runtime archive it
           # links every binary against (found next to the compiler).
-          cargo build --release --locked -p clojure-rs -p clj-rt
+          cargo build --release --locked -p clojure-rs
+          # The archive alone (hhh-pa/clojure#259): built next to its
+          # rlib, cargo skips the release profile's fat LTO for it.
+          cargo rustc --release --locked -p clj-rt --crate-type staticlib
           cp target/release/clojure-rs target/release/libcljrt.a "$GITHUB_WORKSPACE/cljrs-aot/"
           # Linux link layout next to the archive (hhh-pa/clojure#258):
           # `build` then links AOT binaries with the same hot-text
