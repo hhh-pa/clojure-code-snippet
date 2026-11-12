@@ -225,7 +225,7 @@ jobs:
           path: |
             cljrs-bin
             cljrs-aot
-          key: cljrs-bin-aot-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
+          key: cljrs-bin-aot-v2-${{ runner.os }}-${{ needs.resolve-rs.outputs.sha }}
 
       - name: Install Rust toolchain
         if: steps.cljrs-bin-cache.outputs.cache-hit != 'true'
@@ -264,6 +264,10 @@ jobs:
           # links every binary against (found next to the compiler).
           cargo build --release --locked -p clojure-rs -p clj-rt
           cp target/release/clojure-rs target/release/libcljrt.a "$GITHUB_WORKSPACE/cljrs-aot/"
+          # Linux link layout next to the archive (hhh-pa/clojure#258):
+          # `build` then links AOT binaries with the same hot-text
+          # section order the `run` binary has.
+          if [ -f hot-text.ld ]; then cp hot-text.ld "$GITHUB_WORKSPACE/cljrs-aot/"; fi
           echo "${{ needs.resolve-rs.outputs.sha }}" > "$GITHUB_WORKSPACE/cljrs-bin/.rev"
           echo "${{ needs.resolve-rs.outputs.sha }}" > "$GITHUB_WORKSPACE/cljrs-aot/.rev"
 
