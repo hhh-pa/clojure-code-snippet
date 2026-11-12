@@ -276,6 +276,16 @@ jobs:
           test "$(cat cljrs-bin/.rev)" = "${{ needs.resolve-rs.outputs.sha }}"
           test "$(cat cljrs-aot/.rev)" = "${{ needs.resolve-rs.outputs.sha }}"
           test -x cljrs-aot/clojure-rs && test -f cljrs-aot/libcljrt.a
+          # Cache hits skip setup-llvm, so the aot compiler must not
+          # need LLVM shared libraries at runtime; prove it, and that
+          # `build` links a runnable binary, on hit and miss alike.
+          if ldd cljrs-aot/clojure-rs | grep -i 'libLLVM'; then
+            echo "error: cljrs-aot/clojure-rs links LLVM dynamically" >&2
+            exit 1
+          fi
+          printf '(defn sq [x] (* x x))\n(println (map sq [1 2 3]))\n' > "$RUNNER_TEMP/aot-smoke.clj"
+          cljrs-aot/clojure-rs build "$RUNNER_TEMP/aot-smoke.clj" -o "$RUNNER_TEMP/aot-smoke"
+          test "$("$RUNNER_TEMP/aot-smoke")" = "(1 4 9)"
           echo "$GITHUB_WORKSPACE/cljrs-bin" >> "$GITHUB_PATH"
 
       - name: Decrypt and extract resources
