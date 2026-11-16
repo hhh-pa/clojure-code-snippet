@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/common-child/problem
 ;; Longest common subsequence length for two input lines.
 ;; Input: two lines of text; a missing second line counts as empty.
 ;; Output: the length on one line.

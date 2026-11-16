@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/kmp-fp/problem
 ;; Zeta function substring search.
 ;; Input: a count n then n pairs of <text> <pattern> tokens.
 ;; Output: YES or NO per pair, each on its own line.

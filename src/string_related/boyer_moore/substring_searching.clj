@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/kmp-fp/problem
 ;; Boyer Moore substring search with the bad character rule,
 ;; mirroring the python twin exactly: a 256-slot last-occurrence
 ;; table indexed by char code, plus a small overflow map for codes

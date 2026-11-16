@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/floyd-city-of-blinding-lights/problem
 ;; All pairs shortest paths with the Floyd Warshall method in pure clojure.
 ;; Time O(n**3) and space O(n**2), which is the best known practical
 ;; bound for dense all pairs shortest paths. The distance table is one

@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/convex-hull-fp/problem
 ;; Hull perimeter by monotone chain.
 ;;
 ;; Time: O(n log n) -- sorting dominates; worst-case optimal because any

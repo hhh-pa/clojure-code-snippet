@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/pairs/problem
 ;; Count of pairs with difference k in an int list.
 ;; Sorting dominates with O(n log n) time, then a linear two pointer scan
 ;; counts matches in one pass with O(n) space for the sorted values.
