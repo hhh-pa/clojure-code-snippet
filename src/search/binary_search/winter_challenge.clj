@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/contests/launchpad-1-winter-challenge/challenges/binary-search-advanced
 ;; Range search for a key in sorted ints with binary search bounds.
 ;; Lower and upper bound scans halve the range each step, taking O(log n)
 ;; time and O(1) extra space, matching the reference port bound logic,

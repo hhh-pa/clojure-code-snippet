@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/sherlock-and-anagrams/problem
 ;; Sherlock and anagrams: count unordered substring pairs that are
 ;; anagrams of each other.
 ;; Input: a count q then q string tokens. Output: one count per line.

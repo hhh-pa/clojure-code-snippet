@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/contests/srin-aadc03/challenges/classic-01-knapsack/problem
 (require '[clojure.string :as str])
 
 ;; 0-1 Knapsack with single-row transient DP table.

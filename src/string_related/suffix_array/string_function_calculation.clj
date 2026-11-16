@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/string-function-calculation
 ;; String function calculation: max over all distinct substrings of
 ;; length times occurrences.
 ;; Input: a single lowercase string token. Output: the maximum.

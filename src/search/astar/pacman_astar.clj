@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/pacman-astar/problem
 ;; Pacman food search solved with A star over a grid.
 ;; Open cells live in a sorted set ordered by cost then row then col, which
 ;; keeps the same expansion order as a heap keyed the same way, so the run

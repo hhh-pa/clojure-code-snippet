@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/contests/data-structure-tasks-binary-tree-union-find/challenges/connected-component/problem
 (require 'clojure.string)
 
 ;; Optimal bounds: union by size with path halving gives amortized

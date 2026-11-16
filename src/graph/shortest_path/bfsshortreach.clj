@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/bfsshortreach/problem
 ;; Breadth first shortest reach over many cases in pure clojure.
 ;; Each case costs O(V + E) time and O(V + E) space with a vector
 ;; queue and transient distances, the best known bound for

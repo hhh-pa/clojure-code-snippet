@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/even-tree/problem
 ;; Even tree edge cuts in pure clojure. One iterative depth first
 ;; search roots the tree at vertex 1 in O(n) time, then a reverse
 ;; pass sums subtree sizes and counts edges to even subtrees, also

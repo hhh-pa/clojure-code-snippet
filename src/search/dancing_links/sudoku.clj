@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/sudoku/problem
 ;; Sudoku solver using exact cover search in the spirit of dancing links.
 ;; Each placement covers four columns for cell row digit col digit and box
 ;; digit, and search always branches on the open cell with fewest options,

@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/dijkstrashortreach/problem
 ;; Dijkstra shortest reach over many cases in pure clojure. A
 ;; binary heap over a flat transient vector (distance and vertex
 ;; alternating) gives O(E log V) time and O(V + E) space per case.

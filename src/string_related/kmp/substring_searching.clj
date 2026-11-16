@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/kmp-fp/problem
 ;; KMP substring search with the prefix function.
 ;; Input: a count n then n pairs of <text> <pattern> tokens.
 ;; Output: YES or NO per pair, each on its own line.

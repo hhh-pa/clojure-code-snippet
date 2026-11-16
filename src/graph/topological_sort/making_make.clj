@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/contests/lab-assignment-2/challenges/making-make
 (require '[clojure.string :as str])
 
 ;; Topological order with max-first Kahn search.

@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/no-prefix-set/problem
 ;; No prefix set: a word is bad when it duplicates, prefixes, or is
 ;; prefixed by an earlier word; print GOOD SET, or BAD SET plus the
 ;; first bad word in input order.

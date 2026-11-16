@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/count-strings
 ;; Count strings of length l matching a regex over a and b symbols.
 ;; Input: a count t then t pairs of <regex> <l> tokens.
 ;; Output: one answer per line, modulo 1000000007.

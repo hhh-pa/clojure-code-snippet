@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/find-the-median/problem
 ;; quickselect: pure Clojure randomized selection with median driver.
 ;;
 ;; Finds the element of rank k without sorting: pick a random pivot,

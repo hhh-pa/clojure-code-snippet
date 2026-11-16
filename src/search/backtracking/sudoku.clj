@@ -1,3 +1,4 @@
+;; https://www.hackerrank.com/challenges/sudoku/problem
 ;; Sudoku solver using backtracking with minimum remaining values.
 ;; Empty cells are picked in row major order by fewest legal digits, with
 ;; digits tried from 1 to 9, so the first solution found matches the shared
