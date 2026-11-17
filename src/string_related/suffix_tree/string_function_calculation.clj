@@ -1,5 +1,6 @@
 ;; String function calculation with a suffix tree: max over all
 ;; distinct substrings of length times occurrences.
+;; HackerRank: https://www.hackerrank.com/challenges/string-function-calculation/problem
 ;; Input: a single lowercase string token. Output: the maximum.
 ;; Linear time and space with the online tree method over the string
 ;; plus a terminal mark; the answer is the max over tree nodes of
