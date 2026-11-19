@@ -1,0 +1,82 @@
+;; SHA-256 from scratch (FIPS 180-4): Merkle-Damgard over the 64-round
+;; compression function. All words masked to 32 bits (long arithmetic).
+
+(def K [0x428A2F98 0x71374491 0xB5C0FBCF 0xE9B5DBA5 0x3956C25B 0x59F111F1 0x923F82A4 0xAB1C5ED5
+        0xD807AA98 0x12835B01 0x243185BE 0x550C7DC3 0x72BE5D74 0x80DEB1FE 0x9BDC06A7 0xC19BF174
+        0xE49B69C1 0xEFBE4786 0x0FC19DC6 0x240CA1CC 0x2DE92C6F 0x4A7484AA 0x5CB0A9DC 0x76F988DA
+        0x983E5152 0xA831C66D 0xB00327C8 0xBF597FC7 0xC6E00BF3 0xD5A79147 0x06CA6351 0x14292967
+        0x27B70A85 0x2E1B2138 0x4D2C6DFC 0x53380D13 0x650A7354 0x766A0ABB 0x81C2C92E 0x92722C85
+        0xA2BFE8A1 0xA81A664B 0xC24B8B70 0xC76C51A3 0xD192E819 0xD6990624 0xF40E3585 0x106AA070
+        0x19A4C116 0x1E376C08 0x2748774C 0x34B0BCB5 0x391C0CB3 0x4ED8AA4A 0x5B9CCA4F 0x682E6FF3
+        0x748F82EE 0x78A5636F 0x84C87814 0x8CC70208 0x90BEFFFA 0xA4506CEB 0xBEF9A3F7 0xC67178F2])
+
+(defn rotr [x n]
+  (bit-and (bit-or (unsigned-bit-shift-right x n) (bit-shift-left x (- 32 n))) 0xFFFFFFFF))
+
+(defn compress [h block]
+  (let [w0 (mapv (fn [i]
+                   (+ (bit-shift-left (nth block (* i 4)) 24)
+                      (bit-shift-left (nth block (+ (* i 4) 1)) 16)
+                      (bit-shift-left (nth block (+ (* i 4) 2)) 8)
+                      (nth block (+ (* i 4) 3))))
+                 (range 16))
+        w (loop [i 16
+                 w w0]
+            (if (>= i 64)
+              w
+              (let [x15 (nth w (- i 15))
+                    x2 (nth w (- i 2))
+                    s0 (bit-xor (bit-xor (rotr x15 7) (rotr x15 18)) (unsigned-bit-shift-right x15 3))
+                    s1 (bit-xor (bit-xor (rotr x2 17) (rotr x2 19)) (unsigned-bit-shift-right x2 10))]
+                (recur (inc i)
+                       (conj w (bit-and (+ (nth w (- i 16)) s0 (nth w (- i 7)) s1) 0xFFFFFFFF))))))]
+    (loop [i 0
+           a (nth h 0) b (nth h 1) c (nth h 2) d (nth h 3)
+           e (nth h 4) f (nth h 5) g (nth h 6) hh (nth h 7)]
+      (if (>= i 64)
+        [(bit-and (+ (nth h 0) a) 0xFFFFFFFF) (bit-and (+ (nth h 1) b) 0xFFFFFFFF)
+         (bit-and (+ (nth h 2) c) 0xFFFFFFFF) (bit-and (+ (nth h 3) d) 0xFFFFFFFF)
+         (bit-and (+ (nth h 4) e) 0xFFFFFFFF) (bit-and (+ (nth h 5) f) 0xFFFFFFFF)
+         (bit-and (+ (nth h 6) g) 0xFFFFFFFF) (bit-and (+ (nth h 7) hh) 0xFFFFFFFF)]
+        (let [s1 (bit-xor (bit-xor (rotr e 6) (rotr e 11)) (rotr e 25))
+              ch (bit-xor (bit-and e f) (bit-and (bit-xor e 0xFFFFFFFF) g))
+              t1 (bit-and (+ hh s1 ch (nth K i) (nth w i)) 0xFFFFFFFF)
+              s0 (bit-xor (bit-xor (rotr a 2) (rotr a 13)) (rotr a 22))
+              maj (bit-xor (bit-xor (bit-and a b) (bit-and a c)) (bit-and b c))
+              t2 (bit-and (+ s0 maj) 0xFFFFFFFF)]
+          (recur (inc i) (bit-and (+ t1 t2) 0xFFFFFFFF) a b c
+                 (bit-and (+ d t1) 0xFFFFFFFF) e f g))))))
+
+(defn sha256-bytes [msg]
+  (let [ml (* (count msg) 8)
+        padded (loop [p (conj (vec msg) 0x80)]
+                 (if (= (rem (count p) 64) 56)
+                   p
+                   (recur (conj p 0x00))))
+        padded (vec (concat padded (map #(bit-and (bit-shift-right ml %) 0xFF) [56 48 40 32 24 16 8 0])))
+        h0 [0x6A09E667 0xBB67AE85 0x3C6EF372 0xA54FF53A 0x510E527F 0x9B05688C 0x1F83D9AB 0x5BE0CD19]]
+    (loop [off 0
+           h h0]
+      (if (>= off (count padded))
+        (vec (mapcat (fn [v] [(bit-and (unsigned-bit-shift-right v 24) 0xFF)
+                              (bit-and (unsigned-bit-shift-right v 16) 0xFF)
+                              (bit-and (unsigned-bit-shift-right v 8) 0xFF)
+                              (bit-and v 0xFF)])
+                     h))
+        (recur (+ off 64) (compress h (subvec padded off (+ off 64))))))))
+
+(defn hex-val [c]
+  (let [v (Character/digit ^char c 16)]
+    v))
+
+(defn parse-hex [s]
+  (mapv (fn [i] (+ (* (hex-val (nth s i)) 16) (hex-val (nth s (inc i)))))
+        (range 0 (count s) 2)))
+
+(defn -main
+  "Read hex message (empty allowed); print the hex digest."
+  [input]
+  (let [hex (apply str (remove #(Character/isWhitespace ^char %) input))]
+    (print (apply str (map #(format "%02x" %) (sha256-bytes (parse-hex hex)))))))
+
+(-main (slurp *in*))

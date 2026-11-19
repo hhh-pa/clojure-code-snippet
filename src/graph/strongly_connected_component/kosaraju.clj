@@ -1,3 +1,4 @@
+;; https://www.hackerearth.com/practice/algorithms/graphs/strongly-connected-components/tutorial/
 ;; Kosaraju strongly connected components in pure clojure. One
 ;; iterative depth first search over the reversed graph builds
 ;; postorder in O(V + E) time, then forward searches from that

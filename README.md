@@ -28,27 +28,26 @@ For automated validation, the shared test cases from the recipes superproject (`
 
 ### CI/CD Pipeline
 
-`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, decrypts the bundle with the `RESOURCES_PASSPHRASE` organization secret (shared with the python/ocaml snippet repos), builds the `snip` tool once (cached per source hash), and runs:
+`.github/workflows/test.yml` validates the snippets on push to `master`, pull requests, and manual dispatch. It downloads the Clojure jars, pulls the `hhhpa/snippet-resources:t1263` image and decrypts the bundle with the `RESOURCES_IMAGE_PASSPHRASE` organization secret (shared with the python/ocaml snippet repos), builds the `snip` tool once (cached per source hash), and runs:
 
 ```sh
 snip test --resources tests/resources --jobs 4 --timeout 300
 ```
 
 To test locally, build `snip` (`go build -o snip ./cmd/snip` in
-`scripts/ci/go`; stdlib-only, no dependencies), decrypt the bundle
+`scripts/ci/go`; stdlib-only, no dependencies), pull the `hhhpa/snippet-resources:t1263` image, decrypt the bundle
 into `tests/resources/` (passphrase holders only) and run the same
 command. The Clojure classpath comes from `--cp` or `$CLOJURE_CP`;
 when neither is set, sibling `spec.alpha` / `core.specs.alpha` jars
 next to a jar named by `$CLOJURE_JAR` (or `.ci/jars/*.jar`) are picked
 up automatically.
 
-Rebuild the bundle after resource changes with:
+Rebuild the bundle after resource changes with `snip bundle <resource/shared dir> <image-passphrase-file>` (current image passphrase), copy the bundle next to `tests/Dockerfile`, then rebuild + push the image and delete the local copy (only the image ships it):
 
 ```sh
-snip bundle <resource/shared dir> <passphrase-file>
+docker build -t hhhpa/snippet-resources:t1263 -f tests/Dockerfile tests/
+docker push hhhpa/snippet-resources:t1263
 ```
-
-See `snip bundle --help` for the rotation instructions when using a fresh passphrase.
 
 ## Performance tracking
 
