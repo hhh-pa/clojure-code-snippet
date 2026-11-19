@@ -39,30 +39,53 @@
 
 (defn aes-enc [key blk] (block-enc (expand-key key) blk))
 
-(def BI0 BigInteger/ZERO)
-(def RPOLY (.shiftLeft (BigInteger. "e1" 16) 120))
+;; 128-bit values as [hi lo] long pairs (java.math.BigInteger interop
+;; is unsupported by clojure-rs-aot; every op below is pure longs).
+;; RPOLY = 0xe1 << 120, i.e. hi = -(2^64 - 0xe1 * 2^56), lo = 0.
+(def RPOLY [(- (* (- 256 0xe1) 72057594037927936)) 0])
+
+(defn xor128 [a b]
+  [(bit-xor (nth a 0) (nth b 0)) (bit-xor (nth a 1) (nth b 1))])
+
+(defn shl1-128 [[h l]]
+  [(bit-or (bit-shift-left h 1) (unsigned-bit-shift-right l 63))
+   (bit-shift-left l 1)])
+
+(defn shr1-128 [[h l]]
+  [(unsigned-bit-shift-right h 1)
+   (bit-or (unsigned-bit-shift-right l 1) (bit-shift-left (bit-and h 1) 63))])
+
+(defn shl8-128 [[h l]]
+  [(bit-or (bit-shift-left h 8) (unsigned-bit-shift-right l 56))
+   (bit-shift-left l 8)])
+
+(defn shr8-128 [[h l]]
+  [(unsigned-bit-shift-right h 8)
+   (bit-or (unsigned-bit-shift-right l 8) (bit-shift-left (bit-and h 0xff) 56))])
 
 (defn bytes-to-int [bs]
-  (reduce (fn [r b] (.add (.shiftLeft r 8) (BigInteger/valueOf (long b)))) BI0 bs))
+  (reduce (fn [[h l] b] (let [[h2 l2] (shl8-128 [h l])] [h2 (bit-or l2 b)])) [0 0] bs))
 
 (defn ghash-mul [x y]
-  (loop [i 0 z BI0 v y]
-    (if (>= i 128) (.and z (.subtract (.shiftLeft BigInteger/ONE 128) BigInteger/ONE))
-        (let [z2 (if (.testBit x (- 127 i)) (.xor z v) z)
-              lsb (.testBit v 0) v2 (.shiftRight v 1)]
-          (recur (inc i) z2 (if lsb (.xor v2 RPOLY) v2))))))
+  (loop [i 0 z [0 0] v y x x]
+    (if (>= i 128) z
+        (let [z2 (if (neg? (nth x 0)) (xor128 z v) z)
+              lsb (odd? (nth v 1))
+              v2 (shr1-128 v)]
+          (recur (inc i) z2 (if lsb (xor128 v2 RPOLY) v2) (shl1-128 x))))))
 
 (defn pad16 [bs] (into (vec bs) (repeat (mod (- (count bs)) 16) 0)))
 
 (defn ghash [h aad ct]
   (let [data (vec (concat (pad16 aad) (pad16 ct)))
-        y (reduce (fn [acc blk] (ghash-mul (.xor acc (bytes-to-int blk)) h)) BI0 (partition 16 data))
-        lens (.add (.shiftLeft (BigInteger/valueOf (* 8 (count aad))) 64)
-                   (BigInteger/valueOf (* 8 (count ct))))]
-    (ghash-mul (.xor y lens) h)))
+        y (reduce (fn [acc blk] (ghash-mul (xor128 acc (bytes-to-int blk)) h)) [0 0] (partition 16 data))
+        lens [(* 8 (count aad)) (* 8 (count ct))]]
+    (ghash-mul (xor128 y lens) h)))
 
 (defn int-to-bytes [x]
-  (mapv (fn [i] (.intValue (.and (.shiftRight x (* 8 (- 15 i))) (BigInteger/valueOf 255)))) (range 16)))
+  (loop [i 0 [h l] x acc []]
+    (if (>= i 16) (vec (reverse acc))
+        (recur (inc i) (shr8-128 [h l]) (conj acc (bit-and l 0xff))))))
 
 (defn gctr [rk j0 data]
   (loop [i 0 ctr (vec j0) out []]
@@ -79,7 +102,7 @@
       s0 (block-enc rk j0)]
   (if (= op "GCM_ENC")
     (let [pt (parse-hex (nth toks 3 "")) aad (parse-hex (nth toks 4 "")) ct (gctr rk j0 pt)]
-      (print (str (hex-of ct) " " (hex-of (int-to-bytes (.xor (ghash h aad ct) (bytes-to-int s0)))))))
+      (print (str (hex-of ct) " " (hex-of (int-to-bytes (xor128 (ghash h aad ct) (bytes-to-int s0)))))))
     (let [ct (parse-hex (nth toks 3 "")) tag (parse-hex (nth toks 4 "")) aad (parse-hex (nth toks 5 ""))
-          expect (int-to-bytes (.xor (ghash h aad ct) (bytes-to-int s0)))]
+          expect (int-to-bytes (xor128 (ghash h aad ct) (bytes-to-int s0)))]
       (if (= expect tag) (print (hex-of (gctr rk j0 ct))) (print "FAIL")))))
