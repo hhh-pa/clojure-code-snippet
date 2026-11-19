@@ -1,6 +1,5 @@
 ;; K-way merge of sorted lists (heap, O(N log k)).
 (require '[clojure.string :as str])
-(import '[java.util PriorityQueue Comparator])
 
 (let [s (slurp *in*)]
   (when-not (str/blank? s)
@@ -11,19 +10,18 @@
                         [acc p]
                         (let [m (nth toks p)]
                           (recur (inc i) (+ p 1 m) (conj acc (subvec toks (+ p 1) (+ p 1 m)))))))
-          cmp (reify Comparator
-                (compare [_ a b]
-                  (let [c (compare (nth a 0) (nth b 0))]
-                    (if (zero? c) (compare (nth a 1) (nth b 1)) c))))
-          heap (PriorityQueue. 16 cmp)]
-      (doseq [i (range k)]
-        (when (seq (nth lists i))
-          (.add heap [(nth (nth lists i) 0) i 0])))
-      (loop [out []]
-        (if (.isEmpty heap)
+          heap (loop [i 0 h (sorted-set)]
+                 (if (>= i k)
+                   h
+                   (let [lst (nth lists i)]
+                     (recur (inc i) (if (seq lst) (conj h [(nth lst 0) i 0]) h)))))]
+      (loop [heap heap out []]
+        (if (empty? heap)
           (print (str/join " " out))
-          (let [[v i j] (.poll heap)
-                lst (nth lists i)]
-            (when (< (inc j) (count lst))
-              (.add heap [(nth lst (inc j)) i (inc j)]))
-            (recur (conj out v))))))))
+          (let [[v i j] (first heap)
+                lst (nth lists i)
+                nj (inc j)]
+            (recur (if (< nj (count lst))
+                     (conj (disj heap [v i j]) [(nth lst nj) i nj])
+                     (disj heap [v i j]))
+                   (conj out v))))))))

@@ -1,23 +1,16 @@
 ;; Multiprocessor makespan: list scheduling + LPT rule (CLRS 35).
 (require '[clojure.string :as str])
-(import '[java.util PriorityQueue Comparator])
 
 (defn- ms-schedule
   [m jobs]
-  (let [cmp (reify Comparator
-              (compare [_ a b]
-                (let [c (compare (nth a 0) (nth b 0))]
-                  (if (zero? c) (compare (nth a 1) (nth b 1)) c))))
-        heap (PriorityQueue. 16 cmp)]
-    (doseq [i (range m)]
-      (.add heap [0 i]))
-    (loop [js jobs best 0]
-      (if (empty? js)
-        best
-        (let [[load i] (.poll heap)
-              nl (+ load (first js))]
-          (.add heap [nl i])
-          (recur (rest js) (max best nl)))))))
+  (loop [heap (loop [i 0 h (sorted-set)]
+                (if (>= i m) h (recur (inc i) (conj h [0 i]))))
+         js jobs best 0]
+    (if (empty? js)
+      best
+      (let [[load i] (first heap)
+            nl (+ load (first js))]
+        (recur (conj (disj heap [load i]) [nl i]) (rest js) (max best nl))))))
 
 (let [s (slurp *in*)]
   (when-not (str/blank? s)

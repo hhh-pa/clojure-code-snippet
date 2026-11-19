@@ -66,11 +66,26 @@
         (recur (+ off 64) (compress h (subvec padded off (+ off 64))))))))
 
 
+;; Overflow-free modular arithmetic on longs (all RSA values fit in
+;; i64; clojure-rs has no bigint-from-string, so no BigInt is used).
+(defn addmod [a b m]
+  (let [d (- m b)]
+    (if (<= d a) (- a d) (+ a b))))
+
+(defn mulmod [a b m]
+  (loop [a (mod a m) b (mod b m) r 0]
+    (if (zero? b) r
+        (recur (addmod a a m) (quot b 2) (if (odd? b) (addmod r a m) r)))))
+
 (defn modpow [b e m]
   (loop [r (mod 1 m) b (mod b m) e e]
     (if (zero? e) r
-        (recur (if (odd? e) (mod (* r b) m) r)
-               (mod (* b b) m) (quot e 2)))))
+        (recur (if (odd? e) (mulmod r b m) r)
+               (mulmod b b m) (quot e 2)))))
+
+(defn bitlen [n]
+  (loop [x n c 0]
+    (if (zero? x) c (recur (quot x 2) (inc c)))))
 
 (defn parse-hex [s]
   (mapv (fn [i] (+ (* (Character/digit ^char (nth s i) 16) 16)
@@ -78,7 +93,7 @@
         (range 0 (count s) 2)))
 
 (defn hash-mod [msg n]
-  (reduce (fn [h b] (mod (+ (* h 256) b) n)) 0 (sha256-bytes msg)))
+  (reduce (fn [h b] (addmod (mulmod h 256 n) b n)) 0 (sha256-bytes msg)))
 
 
 (def HLEN 2)
@@ -115,21 +130,21 @@
   (reduce (fn [v b] (+ (* v 256) b)) 0 em))
 
 (defn i2osp [v k]
-  (mapv (fn [i] (long (mod (quot v (reduce * (repeat (- (dec k) i) 256))) 256))) (range k)))
+  (mapv (fn [i] (mod (quot v (reduce * (repeat (- (dec k) i) 256))) 256)) (range k)))
 
 (defn hex-of [bs]
   (apply str (map #(format "%02x" %) bs)))
 
 (let [toks (vec (.split (.trim (slurp *in*)) " " -1)) op (first toks)]
   (when (>= (count toks) 4)
-    (let [n (bigint (second toks))
-          k (quot (+ (.bitLength (.toBigInteger n)) 7) 8)]
+    (let [n (Long/parseLong (second toks))
+          k (quot (+ (bitlen n) 7) 8)]
       (if (= op "ENC")
-        (let [e (bigint (nth toks 2))
+        (let [e (Long/parseLong (nth toks 2))
               msg (parse-hex (nth toks 3 ""))
               seed (parse-hex (nth toks 4 ""))]
-          (print (long (modpow (os2ip (oaep-encode msg seed k)) e n))))
-        (let [d (bigint (nth toks 2))
-              em (i2osp (modpow (bigint (nth toks 3)) d n) k)
+          (print (modpow (os2ip (oaep-encode msg seed k)) e n)))
+        (let [d (Long/parseLong (nth toks 2))
+              em (i2osp (modpow (Long/parseLong (nth toks 3)) d n) k)
               msg (oaep-decode em k)]
           (print (if (nil? msg) "ERROR" (hex-of msg))))))))
