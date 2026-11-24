@@ -14,6 +14,9 @@
 
 (defn canon [v] (if (< (absv v) 5e-7) 0.0 v))
 
+(defn fmax [a b] (if (> a b) a b))
+(defn fmin [a b] (if (< a b) a b))
+
 (defn ell-rf [x y z]
   (let [errtol 0.0025 third (/ 1.0 3.0) c1 (/ 1.0 24.0) c2 0.1 c3 (/ 3.0 44.0) c4 (/ 1.0 14.0)]
     (loop [xt x yt y zt z]
@@ -22,7 +25,7 @@
             xt (* 0.25 (+ xt al)) yt (* 0.25 (+ yt al)) zt (* 0.25 (+ zt al))
             av (* third (+ xt yt zt))
             dx (/ (- av xt) av) dy (/ (- av yt) av) dz (/ (- av zt) av)]
-        (if (> (Math/max (Math/max (absv dx) (absv dy)) (absv dz)) errtol)
+        (if (> (fmax (fmax (absv dx) (absv dy)) (absv dz)) errtol)
           (recur xt yt zt)
           (let [e2 (- (* dx dy) (* dz dz)) e3 (* (* dx dy) dz)]
             (/ (+ 1.0 (* (- (* c1 e2) c2 (* c3 e3)) e2) (* c4 e3)) (Math/sqrt av))))))))
@@ -49,7 +52,7 @@
             xt (* 0.25 (+ xt al)) yt (* 0.25 (+ yt al)) zt (* 0.25 (+ zt al))
             av (* 0.2 (+ xt yt (* 3.0 zt)))
             dx (/ (- av xt) av) dy (/ (- av yt) av) dz (/ (- av zt) av)]
-        (if (> (Math/max (Math/max (absv dx) (absv dy)) (absv dz)) errtol)
+        (if (> (fmax (fmax (absv dx) (absv dy)) (absv dz)) errtol)
           (recur xt yt zt sm fac)
           (let [ea (* dx dy) eb (* dz dz) ec (- ea eb)
                 ed (- ea (* 6.0 eb)) ee (+ (+ ed ec) ec)]
@@ -62,8 +65,8 @@
   (let [errtol 0.0015 c1 (/ 3.0 14.0) c2 (/ 1.0 3.0) c3 (/ 3.0 22.0)
         c4 (/ 3.0 26.0) c5 (* 0.75 c3) c6 (* 1.5 c4) c7 (* 0.5 c2) c8 (+ c3 c3)
         pos (> p 0.0)
-        xt0 (if pos x (Math/min (Math/min x y) z))
-        zt0 (if pos z (Math/max (Math/max x y) z))
+        xt0 (if pos x (fmin (fmin x y) z))
+        zt0 (if pos z (fmax (fmax x y) z))
         yt0 (if pos y (- (+ (+ x y) z) xt0 zt0))
         a (if pos 0.0 (/ 1.0 (- yt0 p)))
         b (if pos 0.0 (* (* a (- zt0 yt0)) (- yt0 xt0)))
@@ -79,7 +82,7 @@
             av (* 0.2 (+ (+ (+ xt yt) zt) pt pt))
             dx (/ (- av xt) av) dy (/ (- av yt) av)
             dz (/ (- av zt) av) dp (/ (- av pt) av)]
-        (if (> (Math/max (Math/max (absv dx) (absv dy)) (Math/max (absv dz) (absv dp))) errtol)
+        (if (> (fmax (fmax (absv dx) (absv dy)) (fmax (absv dz) (absv dp))) errtol)
           (recur xt yt zt pt sm fac)
           (let [ea (+ (* dx (+ dy dz)) (* dy dz)) eb (* (* dx dy) dz) ec (* dp dp)
                 ed (- ea (* 3.0 ec)) ee (+ eb (* (* 2.0 dp) (- ea ec)))

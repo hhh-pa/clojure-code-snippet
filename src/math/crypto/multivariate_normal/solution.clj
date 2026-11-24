@@ -19,7 +19,14 @@
 (def VINIT 4101842887655102017)
 (def DOUBC 5.42101086242752217E-20)
 
-(defn u64-dbl [v] (Double/parseDouble (Long/toUnsignedString v)))
+(defn parse-u64 [s]
+  (let [cs (seq s)
+        cs (if (= (first cs) \+) (next cs) cs)]
+    (reduce (fn [acc ch] (u+ (u* acc 10) (Character/digit ^char ch 10))) 0 cs)))
+
+(defn u64-dbl [v]
+  (+ (* 4294967296.0 (double (unsigned-bit-shift-right v 32)))
+     (double (bit-and v 0xFFFFFFFF))))
 
 (defn ran-step [[u v w]]
   (let [u (u+ (u* u 2862933555777941757) 7046029254386353087)
@@ -64,7 +71,7 @@
           mm (Long/parseLong (next-tok))
           mean (vec (repeatedly mm #(Double/parseDouble (next-tok))))
           a (vec (for [_ (range mm)] (vec (for [_ (range mm)] (Double/parseDouble (next-tok))))))
-          seed (Long/parseUnsignedLong (next-tok))
+          seed (parse-u64 (next-tok))
           n (Long/parseLong (next-tok))
           l (cholesky a mm)]
       (loop [d 0 st (ran-init seed) lines []]

@@ -59,8 +59,7 @@
     (let [op (nth toks 0)]
       (cond
         (= op "PSDES") (let [[l r] (psdes (Long/parseLong (nth toks 1)) (Long/parseLong (nth toks 2)))]
-                         (println (str (Long/toUnsignedString (bit-and l m32)) " "
-                                       (Long/toUnsignedString (bit-and r m32)))))
+                         (println (str (bit-and l m32) " " (bit-and r m32))))
         (= op "HASHALL") (let [m (Long/parseLong (nth toks 1))
                                arr (vec (map #(Long/parseLong %) (subvec toks 2 (+ 2 m))))]
-                           (println (str/join " " (map #(Long/toUnsignedString (bit-and % m32)) (hashall arr)))))))))
+                           (println (str/join " " (map #(bit-and % m32) (hashall arr)))))))))

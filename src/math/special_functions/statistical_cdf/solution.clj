@@ -13,6 +13,9 @@
 
 (defn canon [v] (if (< (absv v) 5e-7) 0.0 v))
 
+(defn fmax [a b] (if (> a b) a b))
+(defn fmin [a b] (if (< a b) a b))
+
 (def geps 2.220446049250313e-16)
 (def gfpmin 1.0020841800044864e-292)
 
@@ -170,7 +173,7 @@
 (defn invgammp [p a]
   (let [eps 1.0e-8 gln (gammln a) a1 (- a 1.0)]
     (cond
-      (>= p 1.0) (Math/max 100.0 (+ a (* 100.0 (Math/sqrt a))))
+      (>= p 1.0) (fmax 100.0 (+ a (* 100.0 (Math/sqrt a))))
       (<= p 0.0) 0.0
       :else (let [[x0 lna1 afac] (if (> a 1.0)
                                   (let [lna1 (Math/log a1)
@@ -179,7 +182,7 @@
                                         t (Math/sqrt (* -2.0 (Math/log pp)))
                                         x (- (/ (+ 2.30753 (* t 0.27061)) (+ 1.0 (* t (+ 0.99229 (* t 0.04481))))) t)
                                         x (if (< p 0.5) (- x) x)]
-                                    [(Math/max 1.0e-3 (* a (Math/pow (- (- 1.0 (/ 1.0 (* 9.0 a))) (/ x (* 3.0 (Math/sqrt a)))) 3.0))) lna1 afac])
+                                    [(fmax 1.0e-3 (* a (Math/pow (- (- 1.0 (/ 1.0 (* 9.0 a))) (/ x (* 3.0 (Math/sqrt a)))) 3.0))) lna1 afac])
                                   (let [t (- 1.0 (* a (+ 0.253 (* a 0.12))))]
                                     [(if (< p t)
                                        (Math/pow (/ p t) (/ 1.0 a))
@@ -238,7 +241,7 @@
                         s (+ (+ 1.0 (Math/pow y 4.0)) (Math/pow y 12.0))
                         ff (/ f (* s s))
                         u (/ (- (* y logy) ff) (+ 1.0 logy))
-                        t (/ u (Math/max 0.5 (- 1.0 (/ (* 0.5 u) (* y (+ 1.0 logy))))))
+                        t (/ u (fmax 0.5 (- 1.0 (/ (* 0.5 u) (* y (+ 1.0 logy))))))
                         ny (- y t)]
                     (if (> (absv (/ t ny)) 1.0e-15)
                       (recur ny)
@@ -257,7 +260,7 @@
 (defn poisson-inv [lam p]
   (if (< p (Math/exp (- lam)))
     0
-    (let [n0 (long (Math/max (Math/sqrt lam) 5.0))]
+    (let [n0 (long (fmax (Math/sqrt lam) 5.0))]
       (loop [n n0 inc 1 up (not (< p (poisson-cdf lam n0)))]
         (if (not up)
           (let [n (if (> (- n inc) 0) (- n inc) 0) inc (* inc 2)]
@@ -324,7 +327,7 @@
                                 p (* 0.5 (betai (* 0.5 nu) 0.5 (/ nu (+ nu (* z z)))))]
                             (println (fmt6 (canon (if (>= t mu) (- 1.0 p) p)))))
         (= op "STUDENTT_INV") (let [nu (f 1) mu (f 2) sig (f 3) p (f 4)
-                                    x (invbetai (* 2.0 (Math/min p (- 1.0 p))) (* 0.5 nu) 0.5)
+                                    x (invbetai (* 2.0 (fmin p (- 1.0 p))) (* 0.5 nu) 0.5)
                                     x (* sig (Math/sqrt (/ (* nu (- 1.0 x)) x)))]
                                 (println (fmt6 (canon (if (>= p 0.5) (+ mu x) (- mu x))))))
         (= op "STUDENTT_AA") (let [nu (f 1) t (f 2)]

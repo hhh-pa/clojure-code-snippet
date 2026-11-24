@@ -144,11 +144,22 @@
   (if (< x 6.0) (k1s x)
       (* (Math/sqrt (/ Math/PI (* 2.0 x))) (Math/exp (- x)) (aser x 1 16 false))))
 
+(defn dbl-exp [x]
+  (let [m (if (neg? x) (- x) x)]
+    (cond (and (not (< m 0.0)) (not (>= m 0.0))) 1024
+          (> m 1.7976931348623157e308) 1024
+          (< m 2.2250738585072014e-308) -1023
+          :else (loop [e 0 m m]
+                  (cond (>= m 2.0) (recur (inc e) (/ m 2.0))
+                        (< m 1.0) (recur (dec e) (* m 2.0))
+                        :else e)))))
+
 (defn frexp-k [x]
-  (if (zero? x) -1000 (inc (Math/getExponent (double x)))))
+  (if (zero? x) -1000 (inc (dbl-exp x))))
 
 (defn ldexp-m512 [x]
-  (Math/scalb x -512))
+  (loop [x (double x) n 512]
+    (if (zero? n) x (recur (/ x 2.0) (dec n)))))
 
 (defn bjn [n x]
   (cond (zero? n) (j0f x)

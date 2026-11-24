@@ -191,7 +191,11 @@
            :wtype wtype
            :hanntab (when (= wtype 3) (make-hann (* 2 m))) })))
 
-(defn ^double ldexp [^double x ^long n] (Math/scalb x (int n)))
+(defn ^double ldexp [^double x ^long n]
+  (loop [x x n n]
+    (cond (zero? n) x
+          (pos? n) (recur (* x 2.0) (dec n))
+          :else (recur (/ x 2.0) (inc n)))))
 
 (defn slepian-fill [m jres kt]
   ;; Returns dpss table (vector of double-arrays) or nil on invalid params.

@@ -19,7 +19,14 @@
 (def VINIT 4101842887655102017)
 (def DOUBC 5.42101086242752217E-20)
 
-(defn u64-dbl [v] (Double/parseDouble (Long/toUnsignedString v)))
+(defn parse-u64 [s]
+  (let [cs (seq s)
+        cs (if (= (first cs) \+) (next cs) cs)]
+    (reduce (fn [acc ch] (u+ (u* acc 10) (Character/digit ^char ch 10))) 0 cs)))
+
+(defn u64-dbl [v]
+  (+ (* 4294967296.0 (double (unsigned-bit-shift-right v 32)))
+     (double (bit-and v 0xFFFFFFFF))))
 
 (defn ran-step [[u v w]]
   (let [u (u+ (u* u 2862933555777941757) 7046029254386353087)
@@ -237,7 +244,7 @@
                    (> v2 (* (* 8.4 u) (* (- 0.645 u) (+ u 0.1)))))
               (recur st)
               (let [kf (Math/floor (+ (* (:sq prep) (/ v u)) (:np prep) 0.5))]
-                (if (or (< kf 0.0) (> kf (double n)) (Double/isNaN kf))
+                (if (or (< kf 0.0) (> kf (double n)) (and (not (< kf 0.0)) (not (>= kf 0.0))))
                   (recur st)
                   (let [k (long kf) u2 (* u u)]
                     (if (if (>= v 0.0)
@@ -266,7 +273,7 @@
   (when (seq toks)
     (let [op (nth toks 0)
           f (fn [i] (Double/parseDouble (nth toks i)))
-          pu (fn [i] (Long/parseUnsignedLong (nth toks i)))
+          pu (fn [i] (parse-u64 (nth toks i)))
           pi (fn [i] (Long/parseLong (nth toks i)))]
       (println
        (str/join " "
