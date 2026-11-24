@@ -1,5 +1,5 @@
 ;; Iterative refinement of a linear solve (NR 2.5, mprove).
-;; Port of the C++ reference.
+;;
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

@@ -1,4 +1,4 @@
-;; Polynomial and derivatives at a point (NR 5.1, ddpoly). Port of the C++ reference.
+;; Polynomial and derivatives at a point (NR 5.1, ddpoly).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

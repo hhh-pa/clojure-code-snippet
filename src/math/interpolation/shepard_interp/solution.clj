@@ -1,4 +1,4 @@
-;; Shepard interpolation (NR 3.7.4). Port of the C++ reference.
+;; Shepard interpolation (NR 3.7.4).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

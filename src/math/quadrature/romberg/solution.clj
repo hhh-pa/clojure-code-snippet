@@ -1,4 +1,4 @@
-;; Romberg integration (NR 4.3). Port of the C++ reference.
+;; Romberg integration (NR 4.3).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

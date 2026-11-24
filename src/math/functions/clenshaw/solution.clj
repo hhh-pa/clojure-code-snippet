@@ -1,4 +1,4 @@
-;; Clenshaw's recurrence (NR 5.4). Port of the C++ reference.
+;; Clenshaw's recurrence (NR 5.4).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

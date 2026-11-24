@@ -1,5 +1,5 @@
 ;; Singular value decomposition (NR 2.6 contract): one-sided Jacobi.
-;; Port of the C++ reference.
+;;
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

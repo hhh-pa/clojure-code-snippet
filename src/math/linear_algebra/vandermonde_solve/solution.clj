@@ -1,4 +1,4 @@
-;; Vandermonde solve in O(n^2) (NR 2.8.1, vander). Port of the C++ reference.
+;; Vandermonde solve in O(n^2) (NR 2.8.1, vander).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

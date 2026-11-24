@@ -1,4 +1,4 @@
-;; Toeplitz solve in O(n^2) (NR 2.8.2, toeplz). Port of the C++ reference.
+;; Toeplitz solve in O(n^2) (NR 2.8.2, toeplz).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

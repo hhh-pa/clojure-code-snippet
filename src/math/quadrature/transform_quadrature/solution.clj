@@ -1,4 +1,4 @@
-;; Quadrature by variable transformation (NR 4.5). Port of the C++ reference.
+;; Quadrature by variable transformation (NR 4.5).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

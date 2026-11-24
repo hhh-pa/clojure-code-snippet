@@ -1,4 +1,4 @@
-;; Quadratic and cubic equations (NR 5.6). Port of the C++ reference.
+;; Quadratic and cubic equations (NR 5.6).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

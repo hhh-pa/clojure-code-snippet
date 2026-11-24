@@ -1,4 +1,4 @@
-;; Cubic spline interpolation (NR 3.3). Port of the C++ reference.
+;; Cubic spline interpolation (NR 3.3).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

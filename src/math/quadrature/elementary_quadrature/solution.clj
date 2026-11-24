@@ -1,4 +1,4 @@
-;; Elementary quadrature (NR 4.2). Port of the C++ reference.
+;; Elementary quadrature (NR 4.2).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

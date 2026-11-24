@@ -1,4 +1,4 @@
-;; Continued fraction evaluation (NR 5.2, modified Lentz's method). Port of the C++ reference.
+;; Continued fraction evaluation (NR 5.2, modified Lentz's method).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

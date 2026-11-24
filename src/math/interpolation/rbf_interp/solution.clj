@@ -1,4 +1,4 @@
-;; Radial basis function interpolation (NR 3.7). Port of the C++ reference.
+;; Radial basis function interpolation (NR 3.7).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

@@ -1,4 +1,4 @@
-;; Chebyshev approximation (NR 5.8-5.11). Port of the C++ reference.
+;; Chebyshev approximation (NR 5.8-5.11).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

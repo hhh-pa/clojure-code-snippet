@@ -1,4 +1,4 @@
-;; Kriging interpolation (NR 3.7.6). Port of the C++ reference.
+;; Kriging interpolation (NR 3.7.6).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

@@ -1,4 +1,4 @@
-;; Grid interpolation (NR 3.6). Port of the C++ reference.
+;; Grid interpolation (NR 3.6).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

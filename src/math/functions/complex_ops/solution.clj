@@ -1,4 +1,4 @@
-;; Complex arithmetic (NR 5.5). Port of the C++ reference.
+;; Complex arithmetic (NR 5.5).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

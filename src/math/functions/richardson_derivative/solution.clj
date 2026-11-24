@@ -1,4 +1,4 @@
-;; Numerical derivative (NR 5.7, Ridders' method). Port of the C++ reference.
+;; Numerical derivative (NR 5.7, Ridders' method).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

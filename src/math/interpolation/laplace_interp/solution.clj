@@ -1,4 +1,4 @@
-;; Laplace interpolation (NR 3.8). Port of the C++ reference.
+;; Laplace interpolation (NR 3.8).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

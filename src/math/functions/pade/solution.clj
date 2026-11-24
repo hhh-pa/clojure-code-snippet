@@ -1,4 +1,4 @@
-;; Pade approximants (NR 5.12). Port of the C++ reference.
+;; Pade approximants (NR 5.12).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

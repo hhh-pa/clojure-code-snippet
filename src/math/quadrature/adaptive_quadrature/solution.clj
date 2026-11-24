@@ -1,4 +1,4 @@
-;; Adaptive quadrature (NR 4.7). Port of the C++ reference.
+;; Adaptive quadrature (NR 4.7).
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]

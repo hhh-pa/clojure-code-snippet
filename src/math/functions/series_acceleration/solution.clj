@@ -1,4 +1,4 @@
-;; Series acceleration (NR 5.3): epsilon algorithm and Levin u-transform. Port of the C++ reference.
+;; Series acceleration (NR 5.3): epsilon algorithm and Levin u-transform.
 (require '[clojure.string :as str])
 
 (defn fmt6 [v]
