@@ -1,3 +1,4 @@
+;; https://www.hackerearth.com/practice/data-structures/advanced-data-structures/segment-trees/tutorial/
 (require '[clojure.string :as str])
 
 ;; Optimal bounds: the tree is built in O(n), then each range minimum query

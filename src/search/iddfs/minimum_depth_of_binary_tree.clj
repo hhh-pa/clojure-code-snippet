@@ -1,3 +1,4 @@
+;; https://leetcode.com/problems/minimum-depth-of-binary-tree/
 ;; Minimum depth of a tiny binary tree built by a quirky reference port.
 ;; The reference queue never mutates its front entry, so every node past the
 ;; root overwrites the left child, leaving root plus one left child at most.
